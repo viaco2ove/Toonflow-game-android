@@ -1,0 +1,191 @@
+package com.toonflow.game.data
+
+import com.google.gson.JsonElement
+import com.google.gson.annotations.SerializedName
+
+data class ApiEnvelope<T>(
+  @SerializedName("code") val code: Int,
+  @SerializedName("data") val data: T,
+  @SerializedName("message") val message: String,
+)
+
+data class ProjectItem(
+  @SerializedName("id") val id: Long,
+  @SerializedName("name") val name: String,
+  @SerializedName("intro") val intro: String? = null,
+)
+
+data class RoleParameterCard(
+  @SerializedName("name") val name: String = "",
+  @SerializedName("raw_setting") val rawSetting: String = "",
+  @SerializedName("gender") val gender: String = "",
+  @SerializedName("age") val age: Int? = null,
+  @SerializedName("personality") val personality: String = "",
+  @SerializedName("appearance") val appearance: String = "",
+  @SerializedName("voice") val voice: String = "",
+  @SerializedName("skills") val skills: List<String> = emptyList(),
+  @SerializedName("items") val items: List<String> = emptyList(),
+  @SerializedName("equipment") val equipment: List<String> = emptyList(),
+  @SerializedName("hp") val hp: Int = 100,
+  @SerializedName("mp") val mp: Int = 0,
+  @SerializedName("money") val money: Int = 0,
+  @SerializedName("other") val other: List<String> = emptyList(),
+)
+
+data class StoryRole(
+  @SerializedName("id") val id: String,
+  @SerializedName("roleType") val roleType: String,
+  @SerializedName("name") val name: String,
+  @SerializedName("avatarPath") val avatarPath: String = "",
+  @SerializedName("avatarBgPath") val avatarBgPath: String = "",
+  @SerializedName("description") val description: String = "",
+  @SerializedName("voice") val voice: String = "",
+  @SerializedName("voiceMode") val voiceMode: String = "text",
+  @SerializedName("voiceConfigId") val voiceConfigId: Long? = null,
+  @SerializedName("voicePresetId") val voicePresetId: String = "",
+  @SerializedName("voiceReferenceAudioPath") val voiceReferenceAudioPath: String = "",
+  @SerializedName("voiceReferenceAudioName") val voiceReferenceAudioName: String = "",
+  @SerializedName("voiceReferenceText") val voiceReferenceText: String = "",
+  @SerializedName("voicePromptText") val voicePromptText: String = "",
+  @SerializedName("voiceMixVoices") val voiceMixVoices: List<VoiceMixItem> = emptyList(),
+  @SerializedName("sample") val sample: String = "",
+  @SerializedName("parameterCardJson") val parameterCardJson: RoleParameterCard? = null,
+)
+
+data class VoiceMixItem(
+  @SerializedName("voiceId") val voiceId: String = "",
+  @SerializedName("weight") val weight: Double = 0.7,
+)
+
+data class VoiceBindingDraft(
+  val label: String = "",
+  val configId: Long? = null,
+  val presetId: String = "",
+  val mode: String = "text",
+  val referenceAudioPath: String = "",
+  val referenceAudioName: String = "",
+  val referenceText: String = "",
+  val promptText: String = "",
+  val mixVoices: List<VoiceMixItem> = emptyList(),
+)
+
+data class MiniGameState(
+  @SerializedName("gameType") val gameType: String = "",
+  @SerializedName("status") val status: String = "idle",
+  @SerializedName("round") val round: Int = 0,
+  @SerializedName("stage") val stage: String = "",
+  @SerializedName("winner") val winner: String = "",
+  @SerializedName("rewards") val rewards: List<String> = emptyList(),
+  @SerializedName("notes") val notes: String = "",
+)
+
+data class ChapterExtra(
+  @SerializedName("chapterId") val chapterId: Long? = null,
+  @SerializedName("sort") val sort: Int = 0,
+  @SerializedName("openingRole") val openingRole: String = "旁白",
+  @SerializedName("openingLine") val openingLine: String = "",
+  @SerializedName("background") val background: String = "",
+  @SerializedName("music") val music: String = "",
+  @SerializedName("conditionVisible") val conditionVisible: Boolean = true,
+)
+
+data class WorldSettings(
+  @SerializedName("roles") val roles: List<StoryRole> = emptyList(),
+  @SerializedName("narratorVoice") val narratorVoice: String = "默认旁白",
+  @SerializedName("narratorVoiceMode") val narratorVoiceMode: String = "text",
+  @SerializedName("narratorVoiceConfigId") val narratorVoiceConfigId: Long? = null,
+  @SerializedName("narratorVoicePresetId") val narratorVoicePresetId: String = "",
+  @SerializedName("narratorVoiceReferenceAudioPath") val narratorVoiceReferenceAudioPath: String = "",
+  @SerializedName("narratorVoiceReferenceAudioName") val narratorVoiceReferenceAudioName: String = "",
+  @SerializedName("narratorVoiceReferenceText") val narratorVoiceReferenceText: String = "",
+  @SerializedName("narratorVoicePromptText") val narratorVoicePromptText: String = "",
+  @SerializedName("narratorVoiceMixVoices") val narratorVoiceMixVoices: List<VoiceMixItem> = emptyList(),
+  @SerializedName("globalBackground") val globalBackground: String = "",
+  @SerializedName("coverPath") val coverPath: String = "",
+  @SerializedName("coverBgPath") val coverBgPath: String = "",
+  @SerializedName("allowRoleView") val allowRoleView: Boolean = true,
+  @SerializedName("allowChatShare") val allowChatShare: Boolean = true,
+  @SerializedName("miniGameState") val miniGameState: MiniGameState = MiniGameState(),
+  @SerializedName("publishStatus") val publishStatus: String = "draft",
+  @SerializedName("chapterExtras") val chapterExtras: List<ChapterExtra> = emptyList(),
+)
+
+data class WorldItem(
+  @SerializedName("id") val id: Long,
+  @SerializedName("projectId") val projectId: Long,
+  @SerializedName("name") val name: String,
+  @SerializedName("intro") val intro: String = "",
+  @SerializedName("chapterCount") val chapterCount: Int? = 0,
+  @SerializedName("sessionCount") val sessionCount: Int? = 0,
+  @SerializedName("settings") val settings: WorldSettings? = null,
+  @SerializedName("playerRole") val playerRole: StoryRole? = null,
+  @SerializedName("narratorRole") val narratorRole: StoryRole? = null,
+)
+
+data class ChapterItem(
+  @SerializedName("id") val id: Long,
+  @SerializedName("title") val title: String,
+  @SerializedName("content") val content: String = "",
+  @SerializedName("entryCondition") val entryCondition: JsonElement? = null,
+  @SerializedName("sort") val sort: Int = 0,
+  @SerializedName("status") val status: String = "draft",
+  @SerializedName("completionCondition") val completionCondition: JsonElement? = null,
+)
+
+data class MessageItem(
+  @SerializedName("id") val id: Long,
+  @SerializedName("role") val role: String = "",
+  @SerializedName("roleType") val roleType: String = "",
+  @SerializedName("eventType") val eventType: String = "",
+  @SerializedName("content") val content: String = "",
+  @SerializedName("createTime") val createTime: Long = 0L,
+)
+
+data class SessionItem(
+  @SerializedName("sessionId") val sessionId: String,
+  @SerializedName("worldId") val worldId: Long,
+  @SerializedName("worldName") val worldName: String = "",
+  @SerializedName("worldIntro") val worldIntro: String = "",
+  @SerializedName("worldCoverPath") val worldCoverPath: String = "",
+  @SerializedName("chapterId") val chapterId: Long? = null,
+  @SerializedName("chapterTitle") val chapterTitle: String = "",
+  @SerializedName("projectId") val projectId: Long? = null,
+  @SerializedName("projectName") val projectName: String = "",
+  @SerializedName("title") val title: String = "",
+  @SerializedName("status") val status: String = "",
+  @SerializedName("updateTime") val updateTime: Long = 0L,
+  @SerializedName("latestMessage") val latestMessage: MessageItem? = null,
+)
+
+data class SessionDetail(
+  @SerializedName("sessionId") val sessionId: String = "",
+  @SerializedName("title") val title: String = "",
+  @SerializedName("status") val status: String = "",
+  @SerializedName("chapterId") val chapterId: Long? = null,
+  @SerializedName("state") val state: JsonElement? = null,
+  @SerializedName("world") val world: WorldItem? = null,
+  @SerializedName("chapter") val chapter: ChapterItem? = null,
+  @SerializedName("messages") val messages: List<MessageItem> = emptyList(),
+)
+
+data class GeneratedImageResult(
+  @SerializedName("path") val path: String = "",
+  @SerializedName("filePath") val filePath: String = "",
+)
+
+data class VoiceModelConfig(
+  @SerializedName("id") val id: Long,
+  @SerializedName("model") val model: String = "",
+  @SerializedName("manufacturer") val manufacturer: String = "",
+  @SerializedName("baseUrl") val baseUrl: String = "",
+)
+
+data class VoicePresetItem(
+  @SerializedName("voiceId") val voiceId: String,
+  @SerializedName("name") val name: String,
+)
+
+data class UploadedVoiceAudioResult(
+  @SerializedName("filePath") val filePath: String = "",
+  @SerializedName("url") val url: String = "",
+)
