@@ -24,19 +24,25 @@ import com.toonflow.game.data.ChapterExtra
 import com.toonflow.game.data.GameRepository
 import com.toonflow.game.data.MessageItem
 import com.toonflow.game.data.MiniGameState
+import com.toonflow.game.data.ModelConfigItem
 import com.toonflow.game.data.ProjectItem
+import com.toonflow.game.data.PromptItem
 import com.toonflow.game.data.RoleParameterCard
 import com.toonflow.game.data.SessionDetail
 import com.toonflow.game.data.SessionItem
 import com.toonflow.game.data.SettingsStore
 import com.toonflow.game.data.StoryRole
 import com.toonflow.game.data.UploadedVoiceAudioResult
+import com.toonflow.game.data.AiModelMapItem
 import com.toonflow.game.data.VoiceBindingDraft
 import com.toonflow.game.data.VoiceModelConfig
 import com.toonflow.game.data.VoiceMixItem
 import com.toonflow.game.data.VoicePresetItem
 import com.toonflow.game.data.WorldItem
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.URL
 
@@ -50,8 +56,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private val coverBgWidth = 1536
   private val coverBgHeight = 864
 
+  data class SettingsModelSlot(
+    val key: String,
+    val label: String,
+    val configType: String,
+  )
+
+  data class SettingsModelTestResult(
+    val kind: String,
+    val content: String,
+  )
+
   val baseTabs = listOf("主页", "创建", "聊过", "我的")
   val miniGameTags = listOf("#狼人杀", "#钓鱼", "#修炼", "#研发技能", "#炼药", "#挖矿", "#升级装备")
+  val settingsModelSlots = listOf(
+    SettingsModelSlot("storyOrchestratorModel", "编排师", "text"),
+    SettingsModelSlot("storyMemoryModel", "记忆管理", "text"),
+    SettingsModelSlot("storyImageModel", "AI生图", "image"),
+    SettingsModelSlot("storyVoiceModel", "语音生成", "voice"),
+    SettingsModelSlot("storyAsrModel", "语音识别", "voice"),
+  )
+  val storyPromptCodes = listOf(
+    "story-main",
+    "story-orchestrator",
+    "story-memory",
+    "story-chapter",
+    "story-mini-game",
+    "story-safety",
+  )
 
   var baseUrl by mutableStateOf(settingsStore.baseUrl)
   var token by mutableStateOf(settingsStore.token)
@@ -109,8 +141,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   val npcRoles = mutableStateListOf<StoryRole>()
   val chapterExtras = mutableStateListOf<ChapterExtra>()
   val voiceModels = mutableStateListOf<VoiceModelConfig>()
+  val settingsTextConfigs = mutableStateListOf<ModelConfigItem>()
+  val settingsImageConfigs = mutableStateListOf<ModelConfigItem>()
+  val settingsVoiceConfigs = mutableStateListOf<VoiceModelConfig>()
+  val settingsAiModelMap = mutableStateListOf<AiModelMapItem>()
+  val storyPrompts = mutableStateListOf<PromptItem>()
   private val voicePresetsCache = mutableStateMapOf<Long, List<VoicePresetItem>>()
   var voiceLoading by mutableStateOf(false)
+  var settingsPanelLoading by mutableStateOf(false)
+  var settingsPanelLoaded by mutableStateOf(false)
   var aiGenerating by mutableStateOf(false)
 
   var chapterTitle by mutableStateOf("")
@@ -151,6 +190,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var debugEndDialog by mutableStateOf<String?>(null)
   private var debugChapterSequence: List<ChapterItem> = emptyList()
   private var debugMessageSeed: Long = 1L
+  private data class StoryEditorPersistSnapshot(
+    val worldId: Long,
+    val worldName: String,
+    val worldIntro: String,
+    val worldCoverPath: String,
+    val worldCoverBgPath: String,
+    val playerName: String,
+    val playerDesc: String,
+    val playerVoice: String,
+    val playerVoiceConfigId: Long?,
+    val playerVoicePresetId: String,
+    val playerVoiceMode: String,
+    val playerVoiceReferenceAudioPath: String,
+    val playerVoiceReferenceAudioName: String,
+    val playerVoiceReferenceText: String,
+    val playerVoicePromptText: String,
+    val playerVoiceMixVoices: List<VoiceMixItem>,
+    val narratorName: String,
+    val narratorVoice: String,
+    val narratorVoiceConfigId: Long?,
+    val narratorVoicePresetId: String,
+    val narratorVoiceMode: String,
+    val narratorVoiceReferenceAudioPath: String,
+    val narratorVoiceReferenceAudioName: String,
+    val narratorVoiceReferenceText: String,
+    val narratorVoicePromptText: String,
+    val narratorVoiceMixVoices: List<VoiceMixItem>,
+    val globalBackground: String,
+    val allowRoleView: Boolean,
+    val allowChatShare: Boolean,
+    val worldPublishStatus: String,
+    val npcRoles: List<StoryRole>,
+    val chapters: List<ChapterItem>,
+    val chapterExtras: List<ChapterExtra>,
+    val selectedChapterId: Long?,
+    val chapterTitle: String,
+    val chapterContent: String,
+    val chapterEntryCondition: String,
+    val chapterCondition: String,
+    val chapterOpeningRole: String,
+    val chapterOpeningLine: String,
+    val chapterBackground: String,
+    val chapterMusic: String,
+    val chapterConditionVisible: Boolean,
+  )
+  private var storyEditorAutoPersistJob: Job? = null
+  private var storyEditorPersistMuted = false
+  private var lastPersistedStoryEditorSnapshot: StoryEditorPersistSnapshot? = null
+  private var undoStoryEditorSnapshot: StoryEditorPersistSnapshot? = null
 
   init {
     if (token.isBlank()) {
@@ -164,6 +252,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun setTab(tab: String) {
     activeTab = tab
+    if (tab == "设置" && token.isNotBlank()) {
+      ensureSettingsPanelData()
+    }
   }
 
   fun openHall() {
@@ -172,6 +263,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun openSettings() {
     activeTab = "设置"
+    if (token.isNotBlank()) {
+      ensureSettingsPanelData()
+    }
   }
 
   fun backToMy() {
@@ -181,6 +275,353 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun voicePresets(configId: Long?): List<VoicePresetItem> {
     val key = configId ?: return emptyList()
     return voicePresetsCache[key] ?: emptyList()
+  }
+
+  fun isAdminAccount(): Boolean {
+    return userId == 1L || userName.trim().equals("admin", ignoreCase = true)
+  }
+
+  fun settingsConfigOptions(type: String): List<ModelConfigItem> {
+    return when (type) {
+      "text" -> settingsTextConfigs.toList()
+      "image" -> settingsImageConfigs.toList()
+      "voice" -> settingsVoiceConfigs.map {
+        ModelConfigItem(
+          id = it.id,
+          type = "voice",
+          model = it.model,
+          manufacturer = it.manufacturer,
+          baseUrl = it.baseUrl,
+        )
+      }
+      else -> emptyList()
+    }
+  }
+
+  fun settingsModelBinding(key: String): AiModelMapItem? {
+    return settingsAiModelMap.firstOrNull { it.key == key }
+  }
+
+  fun currentStoryPromptValue(code: String): String {
+    val row = storyPrompts.firstOrNull { it.code == code } ?: return ""
+    return row.customValue?.takeIf { it.isNotBlank() } ?: row.defaultValue.orEmpty()
+  }
+
+  fun canUndoStoryAutoPersist(): Boolean = undoStoryEditorSnapshot != null
+
+  fun primeStoryEditorPersistState(clearUndo: Boolean = true) {
+    storyEditorAutoPersistJob?.cancel()
+    lastPersistedStoryEditorSnapshot = captureStoryEditorSnapshot()
+    if (clearUndo) {
+      undoStoryEditorSnapshot = null
+    }
+  }
+
+  fun scheduleStoryEditorAutoPersist() {
+    if (storyEditorPersistMuted || activeTab != "创建" || selectedProjectId <= 0L) return
+    val current = captureStoryEditorSnapshot()
+    if (!hasPersistableStoryEditorContent(current)) return
+    if (lastPersistedStoryEditorSnapshot == current) return
+    storyEditorAutoPersistJob?.cancel()
+    storyEditorAutoPersistJob = viewModelScope.launch {
+      delay(900)
+      if (storyEditorPersistMuted || activeTab != "创建") return@launch
+      val latest = captureStoryEditorSnapshot()
+      if (!hasPersistableStoryEditorContent(latest) || lastPersistedStoryEditorSnapshot == latest) return@launch
+      val previous = lastPersistedStoryEditorSnapshot?.copyDeep()
+      storyEditorPersistMuted = true
+      runCatching {
+        saveWorldInternal(false)
+        val savedChapter = saveEditorChapterInternal("draft")
+        if (savedChapter != null) {
+          saveWorldInternal(false)
+        }
+        refreshStoryData()
+        lastPersistedStoryEditorSnapshot = captureStoryEditorSnapshot()
+        undoStoryEditorSnapshot = previous
+      }.onFailure {
+        notice = "自动保存失败: ${it.message ?: "未知错误"}"
+      }
+      storyEditorPersistMuted = false
+    }
+  }
+
+  fun undoStoryAutoPersist() {
+    val snapshot = undoStoryEditorSnapshot?.copyDeep() ?: return
+    storyEditorAutoPersistJob?.cancel()
+    undoStoryEditorSnapshot = null
+    viewModelScope.launch {
+      storyEditorPersistMuted = true
+      runCatching {
+        applyStoryEditorSnapshot(snapshot)
+        saveWorldInternal(false)
+        val savedChapter = saveEditorChapterInternal("draft")
+        if (savedChapter != null) {
+          saveWorldInternal(false)
+        }
+        refreshStoryData()
+        notice = "已撤回到上一次自动保存前"
+        lastPersistedStoryEditorSnapshot = captureStoryEditorSnapshot()
+      }.onFailure {
+        notice = "撤回失败: ${it.message ?: "未知错误"}"
+      }
+      storyEditorPersistMuted = false
+    }
+  }
+
+  private fun StoryEditorPersistSnapshot.copyDeep(): StoryEditorPersistSnapshot =
+    copy(
+      playerVoiceMixVoices = playerVoiceMixVoices.map { it.copy() },
+      narratorVoiceMixVoices = narratorVoiceMixVoices.map { it.copy() },
+      npcRoles = npcRoles.map { it.copy(voiceMixVoices = it.voiceMixVoices.map { voice -> voice.copy() }) },
+      chapters = chapters.map { it.copy() },
+      chapterExtras = chapterExtras.map { it.copy() },
+    )
+
+  private fun captureStoryEditorSnapshot(): StoryEditorPersistSnapshot {
+    return StoryEditorPersistSnapshot(
+      worldId = worldId,
+      worldName = worldName,
+      worldIntro = worldIntro,
+      worldCoverPath = worldCoverPath,
+      worldCoverBgPath = worldCoverBgPath,
+      playerName = playerName,
+      playerDesc = playerDesc,
+      playerVoice = playerVoice,
+      playerVoiceConfigId = playerVoiceConfigId,
+      playerVoicePresetId = playerVoicePresetId,
+      playerVoiceMode = playerVoiceMode,
+      playerVoiceReferenceAudioPath = playerVoiceReferenceAudioPath,
+      playerVoiceReferenceAudioName = playerVoiceReferenceAudioName,
+      playerVoiceReferenceText = playerVoiceReferenceText,
+      playerVoicePromptText = playerVoicePromptText,
+      playerVoiceMixVoices = playerVoiceMixVoices.map { it.copy() },
+      narratorName = narratorName,
+      narratorVoice = narratorVoice,
+      narratorVoiceConfigId = narratorVoiceConfigId,
+      narratorVoicePresetId = narratorVoicePresetId,
+      narratorVoiceMode = narratorVoiceMode,
+      narratorVoiceReferenceAudioPath = narratorVoiceReferenceAudioPath,
+      narratorVoiceReferenceAudioName = narratorVoiceReferenceAudioName,
+      narratorVoiceReferenceText = narratorVoiceReferenceText,
+      narratorVoicePromptText = narratorVoicePromptText,
+      narratorVoiceMixVoices = narratorVoiceMixVoices.map { it.copy() },
+      globalBackground = globalBackground,
+      allowRoleView = allowRoleView,
+      allowChatShare = allowChatShare,
+      worldPublishStatus = worldPublishStatus,
+      npcRoles = npcRoles.map { it.copy(voiceMixVoices = it.voiceMixVoices.map { voice -> voice.copy() }) },
+      chapters = chapters.map { it.copy() },
+      chapterExtras = chapterExtras.map { it.copy() },
+      selectedChapterId = selectedChapterId,
+      chapterTitle = chapterTitle,
+      chapterContent = chapterContent,
+      chapterEntryCondition = chapterEntryCondition,
+      chapterCondition = chapterCondition,
+      chapterOpeningRole = chapterOpeningRole,
+      chapterOpeningLine = chapterOpeningLine,
+      chapterBackground = chapterBackground,
+      chapterMusic = chapterMusic,
+      chapterConditionVisible = chapterConditionVisible,
+    )
+  }
+
+  private fun applyStoryEditorSnapshot(snapshot: StoryEditorPersistSnapshot) {
+    worldId = snapshot.worldId
+    worldName = snapshot.worldName
+    worldIntro = snapshot.worldIntro
+    worldCoverPath = snapshot.worldCoverPath
+    worldCoverBgPath = snapshot.worldCoverBgPath
+    playerName = snapshot.playerName
+    playerDesc = snapshot.playerDesc
+    playerVoice = snapshot.playerVoice
+    playerVoiceConfigId = snapshot.playerVoiceConfigId
+    playerVoicePresetId = snapshot.playerVoicePresetId
+    playerVoiceMode = snapshot.playerVoiceMode
+    playerVoiceReferenceAudioPath = snapshot.playerVoiceReferenceAudioPath
+    playerVoiceReferenceAudioName = snapshot.playerVoiceReferenceAudioName
+    playerVoiceReferenceText = snapshot.playerVoiceReferenceText
+    playerVoicePromptText = snapshot.playerVoicePromptText
+    playerVoiceMixVoices = snapshot.playerVoiceMixVoices.map { it.copy() }
+    narratorName = snapshot.narratorName
+    narratorVoice = snapshot.narratorVoice
+    narratorVoiceConfigId = snapshot.narratorVoiceConfigId
+    narratorVoicePresetId = snapshot.narratorVoicePresetId
+    narratorVoiceMode = snapshot.narratorVoiceMode
+    narratorVoiceReferenceAudioPath = snapshot.narratorVoiceReferenceAudioPath
+    narratorVoiceReferenceAudioName = snapshot.narratorVoiceReferenceAudioName
+    narratorVoiceReferenceText = snapshot.narratorVoiceReferenceText
+    narratorVoicePromptText = snapshot.narratorVoicePromptText
+    narratorVoiceMixVoices = snapshot.narratorVoiceMixVoices.map { it.copy() }
+    globalBackground = snapshot.globalBackground
+    allowRoleView = snapshot.allowRoleView
+    allowChatShare = snapshot.allowChatShare
+    worldPublishStatus = snapshot.worldPublishStatus
+    npcRoles.clear()
+    npcRoles.addAll(snapshot.npcRoles.map { it.copy(voiceMixVoices = it.voiceMixVoices.map { voice -> voice.copy() }) })
+    chapters.clear()
+    chapters.addAll(snapshot.chapters.map { it.copy() })
+    chapterExtras.clear()
+    chapterExtras.addAll(snapshot.chapterExtras.map { it.copy() })
+    selectedChapterId = snapshot.selectedChapterId
+    chapterTitle = snapshot.chapterTitle
+    chapterContent = snapshot.chapterContent
+    chapterEntryCondition = snapshot.chapterEntryCondition
+    chapterCondition = snapshot.chapterCondition
+    chapterOpeningRole = snapshot.chapterOpeningRole
+    chapterOpeningLine = snapshot.chapterOpeningLine
+    chapterBackground = snapshot.chapterBackground
+    chapterMusic = snapshot.chapterMusic
+    chapterConditionVisible = snapshot.chapterConditionVisible
+  }
+
+  private fun hasPersistableStoryEditorContent(snapshot: StoryEditorPersistSnapshot = captureStoryEditorSnapshot()): Boolean {
+    if (snapshot.worldId > 0L) return true
+    if (snapshot.worldName.isNotBlank() || snapshot.worldIntro.isNotBlank()) return true
+    if (snapshot.worldCoverPath.isNotBlank() || snapshot.playerDesc.isNotBlank() || snapshot.globalBackground.isNotBlank()) return true
+    if (snapshot.chapterTitle.isNotBlank() || snapshot.chapterContent.isNotBlank() || snapshot.chapterOpeningLine.isNotBlank()) return true
+    if (snapshot.chapterEntryCondition.isNotBlank() || snapshot.chapterCondition.isNotBlank()) return true
+    if (snapshot.chapterBackground.isNotBlank() || snapshot.chapterMusic.isNotBlank()) return true
+    return snapshot.npcRoles.any { role ->
+      role.name.isNotBlank() ||
+        role.description.isNotBlank() ||
+        role.avatarPath.isNotBlank() ||
+        role.avatarBgPath.isNotBlank() ||
+        role.voice.isNotBlank() ||
+        role.sample.isNotBlank()
+    }
+  }
+
+  fun ensureSettingsPanelData(force: Boolean = false) {
+    if (token.isBlank()) return
+    if (settingsPanelLoading) return
+    if (settingsPanelLoaded && !force) return
+    settingsPanelLoading = true
+    viewModelScope.launch {
+      runCatching {
+        val configs = repository.getModelConfigs()
+        val voices = repository.getVoiceModels()
+        val bindings = repository.getAiModelMap()
+        val prompts = repository.getPrompts()
+        settingsTextConfigs.clear()
+        settingsTextConfigs.addAll(configs.filter { it.type == "text" }.sortedBy { it.id })
+        settingsImageConfigs.clear()
+        settingsImageConfigs.addAll(configs.filter { it.type == "image" }.sortedBy { it.id })
+        settingsVoiceConfigs.clear()
+        settingsVoiceConfigs.addAll(voices.sortedBy { it.id })
+        settingsAiModelMap.clear()
+        settingsAiModelMap.addAll(bindings.filter { item -> settingsModelSlots.any { it.key == item.key } }.sortedBy { it.id })
+        storyPrompts.clear()
+        storyPrompts.addAll(prompts.filter { it.code in storyPromptCodes }.sortedBy { it.id })
+        settingsPanelLoaded = true
+      }.onFailure {
+        notice = "加载设置失败: ${it.message ?: "未知错误"}"
+      }
+      settingsPanelLoading = false
+    }
+  }
+
+  fun bindGameModel(key: String, configId: Long) {
+    val row = settingsModelBinding(key)
+    if (row == null) {
+      notice = "模型槽位不存在"
+      return
+    }
+    viewModelScope.launch {
+      runCatching {
+        repository.bindModelConfig(row.id, configId)
+        ensureSettingsPanelData(true)
+      }.onSuccess {
+        notice = "模型配置已保存"
+      }.onFailure {
+        notice = "保存模型配置失败: ${it.message ?: "未知错误"}"
+      }
+    }
+  }
+
+  suspend fun addManagedModelConfig(
+    type: String,
+    model: String,
+    baseUrl: String,
+    apiKey: String,
+    modelType: String,
+    manufacturer: String,
+  ) {
+    repository.addModelConfig(type, model, baseUrl, apiKey, modelType, manufacturer)
+    ensureSettingsPanelData(true)
+  }
+
+  suspend fun updateManagedModelConfig(
+    id: Long,
+    type: String,
+    model: String,
+    baseUrl: String,
+    apiKey: String,
+    modelType: String,
+    manufacturer: String,
+  ) {
+    repository.updateModelConfig(id, type, model, baseUrl, apiKey, modelType, manufacturer)
+    ensureSettingsPanelData(true)
+  }
+
+  suspend fun deleteManagedModelConfig(id: Long) {
+    repository.deleteModelConfig(id)
+    ensureSettingsPanelData(true)
+  }
+
+  suspend fun testManagedModelConfig(config: ModelConfigItem): SettingsModelTestResult {
+    return when (config.type.ifBlank { "text" }) {
+      "text" -> SettingsModelTestResult(
+        kind = "text",
+        content = repository.testTextModel(config.model, config.apiKey, config.baseUrl, config.manufacturer),
+      )
+      "image" -> SettingsModelTestResult(
+        kind = "image",
+        content = resolveMediaPath(repository.testImageModel(config.model, config.apiKey, config.baseUrl, config.manufacturer)),
+      )
+      else -> {
+        val presets = repository.getVoicePresets(config.id)
+        val firstVoice = presets.firstOrNull { it.voiceId.isNotBlank() }?.voiceId
+          ?: error("当前语音模型没有可用音色，无法测试")
+        SettingsModelTestResult(
+          kind = "audio",
+          content = resolveMediaPath(
+            repository.previewVoice(
+              configId = config.id,
+              text = "这是 AI 故事设置页的语音模型测试。",
+              mode = "text",
+              voiceId = firstVoice,
+            ),
+          ),
+        )
+      }
+    }
+  }
+
+  fun saveStoryPrompt(code: String, value: String) {
+    val row = storyPrompts.firstOrNull { it.code == code }
+    if (row == null) {
+      notice = "提示词不存在"
+      return
+    }
+    viewModelScope.launch {
+      runCatching {
+        repository.updatePrompt(row.id, code, value)
+        val index = storyPrompts.indexOfFirst { it.code == code }
+        if (index >= 0) {
+          storyPrompts[index] = storyPrompts[index].copy(customValue = value)
+        }
+      }.onSuccess {
+        notice = "提示词已保存"
+      }.onFailure {
+        notice = "保存提示词失败: ${it.message ?: "未知错误"}"
+      }
+    }
+  }
+
+  fun resetStoryPrompt(code: String) {
+    saveStoryPrompt(code, "")
+    notice = "提示词已重置为默认值"
   }
 
   companion object {
@@ -228,6 +669,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (token.isNotBlank()) {
       settingsStore.token = token
       notice = "连接设置已保存"
+      settingsPanelLoaded = false
       reloadAll()
     } else {
       notice = "连接设置已保存，请先登录账号"
@@ -249,8 +691,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         settingsStore.token = fetchedToken
         notice = "登录成功"
         reloadAll()
+        ensureSettingsPanelData(true)
+        activeTab = "我的"
       }.onFailure {
         notice = "登录失败: ${it.message ?: "未知错误"}"
+      }
+    }
+  }
+
+  fun registerAndLogin(username: String, password: String) {
+    if (username.isBlank() || password.isBlank()) {
+      notice = "请输入用户名和密码"
+      return
+    }
+    viewModelScope.launch {
+      runCatching {
+        settingsStore.baseUrl = baseUrl
+        val result = repository.register(username.trim(), password)
+        val fetchedToken = result.get("token")?.asString?.trim().orEmpty()
+        if (fetchedToken.isBlank()) error("注册成功但未返回 token")
+        token = fetchedToken
+        settingsStore.token = fetchedToken
+        loginUsername = username.trim()
+        loginPassword = password
+        notice = "注册成功"
+        reloadAll()
+        ensureSettingsPanelData(true)
+        activeTab = "我的"
+      }.onFailure {
+        notice = "注册失败: ${it.message ?: "未知错误"}"
+      }
+    }
+  }
+
+  fun changePassword(oldPassword: String, newPassword: String) {
+    if (token.isBlank()) {
+      notice = "请先登录账号"
+      return
+    }
+    viewModelScope.launch {
+      runCatching {
+        repository.changePassword(oldPassword, newPassword)
+        loginPassword = newPassword
+      }.onSuccess {
+        notice = "密码已更新"
+      }.onFailure {
+        notice = "修改密码失败: ${it.message ?: "未知错误"}"
       }
     }
   }
@@ -277,6 +763,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
   }
 
+  suspend fun polishVoicePrompt(text: String, style: String = ""): String {
+    return repository.polishVoicePrompt(text, style)
+  }
+
   suspend fun uploadVoiceReferenceAudio(rawUri: String): UploadedVoiceAudioResult {
     if (selectedProjectId <= 0L) error("请先选择项目后再上传参考音频")
     val uri = Uri.parse(rawUri)
@@ -287,6 +777,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun clearToken() {
     token = ""
     settingsStore.token = ""
+    settingsPanelLoaded = false
+    settingsTextConfigs.clear()
+    settingsImageConfigs.clear()
+    settingsVoiceConfigs.clear()
+    settingsAiModelMap.clear()
+    storyPrompts.clear()
     resetRuntimeData()
     activeTab = "设置"
     notice = "已退出登录"
@@ -381,14 +877,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         voiceMixVoices = narratorVoiceMixVoices,
         sample = "",
       )
-      return listOf(player, narrator) + npcRoles.toList()
+      return (listOf(player, narrator) + npcRoles.toList()).map(::resolveRoleMedia)
     }
     val world = sessionDetail?.world ?: return emptyList()
     val roles = mutableListOf<StoryRole>()
     world.playerRole?.let { roles.add(it) }
     world.narratorRole?.let { roles.add(it) }
     world.settings?.roles?.filter { it.roleType == "npc" }?.forEach { roles.add(it) }
-    return roles.distinctBy { it.id.ifBlank { "${it.roleType}:${it.name}" } }
+    return roles.map(::resolveRoleMedia).distinctBy { it.id.ifBlank { "${it.roleType}:${it.name}" } }
   }
 
   fun closeDebugDialog(backToCreate: Boolean) {
@@ -429,11 +925,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     viewModelScope.launch {
       runCatching {
-        val saved = saveAvatarFiles(uri, "user_${userId}")
+        val saved = saveAvatarFiles(uri, "user_${userId}", projectScoped = false)
         accountAvatarPath = saved.foregroundPath
         accountAvatarBgPath = saved.backgroundPath
-        settingsStore.setAvatarPath(userId, accountAvatarPath)
-        settingsStore.setAvatarBgPath(userId, accountAvatarBgPath)
+        val storedAvatarPath = normalizeStoredMediaPath(accountAvatarPath)
+        val storedAvatarBgPath = normalizeStoredMediaPath(accountAvatarBgPath)
+        settingsStore.setAvatarPath(userId, storedAvatarPath)
+        settingsStore.setAvatarBgPath(userId, storedAvatarBgPath)
+        repository.saveUser(
+          avatarPath = storedAvatarPath,
+          avatarBgPath = storedAvatarBgPath,
+        )
         notice = "账号头像已更新"
       }.onFailure {
         notice = "账号头像更新失败: ${it.message ?: "未知错误"}"
@@ -451,7 +953,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     viewModelScope.launch {
       runCatching {
         val key = if (worldId > 0L) "world_${worldId}_player" else "project_${selectedProjectId}_player"
-        val saved = saveAvatarFiles(uri, key)
+        val saved = saveAvatarFiles(uri, key, projectScoped = true)
         userAvatarPath = saved.foregroundPath
         userAvatarBgPath = saved.backgroundPath
         notice = "头像已更新"
@@ -469,7 +971,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     viewModelScope.launch {
       runCatching {
-        val saved = saveAvatarFiles(uri, storageKey)
+        val saved = saveAvatarFiles(uri, storageKey, projectScoped = true)
         onSaved(saved.foregroundPath, saved.backgroundPath)
         notice = "头像已更新"
       }.onFailure {
@@ -509,8 +1011,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) { fg, bg ->
       accountAvatarPath = fg
       accountAvatarBgPath = bg
-      settingsStore.setAvatarPath(userId, accountAvatarPath)
-      settingsStore.setAvatarBgPath(userId, accountAvatarBgPath)
+      viewModelScope.launch {
+        runCatching {
+          val storedAvatarPath = normalizeStoredMediaPath(accountAvatarPath)
+          val storedAvatarBgPath = normalizeStoredMediaPath(accountAvatarBgPath)
+          settingsStore.setAvatarPath(userId, storedAvatarPath)
+          settingsStore.setAvatarBgPath(userId, storedAvatarBgPath)
+          repository.saveUser(
+            avatarPath = storedAvatarPath,
+            avatarBgPath = storedAvatarBgPath,
+          )
+        }.onFailure {
+          notice = "账号头像同步失败: ${it.message ?: "未知错误"}"
+        }
+      }
     }
   }
 
@@ -560,6 +1074,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  fun importChapterMusic(rawUri: String) {
+    val uri = runCatching { Uri.parse(rawUri) }.getOrNull()
+    if (uri == null) {
+      notice = "背景音乐选择失败"
+      return
+    }
+    viewModelScope.launch {
+      runCatching {
+        if (selectedProjectId <= 0L) error("请先选择项目后再上传背景音乐")
+        val (base64Data, fileName) = audioUriToBase64(uri)
+        val uploaded = repository.uploadVoiceAudio(selectedProjectId, base64Data, fileName)
+        chapterMusic = uploaded.filePath.ifBlank { uploaded.url }
+        notice = "背景音乐已上传"
+      }.onFailure {
+        notice = "背景音乐上传失败: ${it.message ?: "未知错误"}"
+      }
+    }
+  }
+
   fun generateChapterBackground(prompt: String, referenceUris: List<String> = emptyList()) {
     val chapterKey = selectedChapterId?.takeIf { it > 0L }?.toString()
       ?: "draft_${currentChapterSort()}"
@@ -591,7 +1124,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     viewModelScope.launch {
       runCatching {
         val source = decodeBitmapFromUri(uri)
-        val saved = saveBitmapPair(source, storageKey, coverStdWidth, coverStdHeight, coverBgWidth, coverBgHeight)
+        val saved = uploadBitmapPair(
+          source = source,
+          storageKey = storageKey,
+          fgWidth = coverStdWidth,
+          fgHeight = coverStdHeight,
+          bgWidth = coverBgWidth,
+          bgHeight = coverBgHeight,
+          type = "scene",
+          projectScoped = true,
+        )
         onSaved(saved.foregroundPath, saved.backgroundPath)
         notice = "图片已更新"
       }.onFailure {
@@ -634,12 +1176,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           base64List = base64List,
           aspectRatio = aspectRatio,
         )
-        if (result.path.isBlank()) error("生成成功但未返回图片地址")
-        val source = decodeBitmapFromUrl(result.path)
+        val remotePath = result.filePath.ifBlank { result.path }.ifBlank { error("生成成功但未返回图片地址") }
+        val source = decodeBitmapFromUrl(resolveMediaPath(remotePath))
         val saved = if (wide) {
-          saveBitmapPair(source, storageKey, coverStdWidth, coverStdHeight, coverBgWidth, coverBgHeight)
+          uploadBitmapPair(source, storageKey, coverStdWidth, coverStdHeight, coverBgWidth, coverBgHeight, "scene", true)
         } else {
-          saveBitmapPair(source, storageKey, avatarStdSize, avatarStdSize, avatarBgSize, avatarBgSize)
+          uploadBitmapPair(source, storageKey, avatarStdSize, avatarStdSize, avatarBgSize, avatarBgSize, "role", true)
         }
         onSaved(saved.foregroundPath, saved.backgroundPath)
         notice = "AI 图片已生成并应用"
@@ -650,47 +1192,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
-  private fun saveAvatarFiles(uri: Uri, storageKey: String): SavedImagePaths {
+  private suspend fun saveAvatarFiles(uri: Uri, storageKey: String, projectScoped: Boolean): SavedImagePaths {
     val source = decodeBitmapFromUri(uri)
-    return saveBitmapPair(source, storageKey, avatarStdSize, avatarStdSize, avatarBgSize, avatarBgSize)
+    return uploadBitmapPair(source, storageKey, avatarStdSize, avatarStdSize, avatarBgSize, avatarBgSize, "role", projectScoped)
   }
 
-  private fun saveBitmapPair(
+  private suspend fun uploadBitmapPair(
     source: Bitmap,
     storageKey: String,
     fgWidth: Int,
     fgHeight: Int,
     bgWidth: Int,
     bgHeight: Int,
+    type: String,
+    projectScoped: Boolean,
   ): SavedImagePaths {
-    val app = getApplication<Application>()
-    val avatarDir = File(app.filesDir, "avatars")
-    if (!avatarDir.exists()) avatarDir.mkdirs()
-
     val foreground = centerCropBitmap(source, fgWidth, fgHeight)
     val background = centerCropBitmap(source, bgWidth, bgHeight)
     source.recycle()
 
     val safeKey = storageKey.replace(Regex("[^A-Za-z0-9._-]"), "_")
     val version = System.currentTimeMillis()
-    cleanupOldImageVersions(avatarDir, safeKey)
-    val fg = File(avatarDir, "${safeKey}_${version}_fg.png")
-    val bg = File(avatarDir, "${safeKey}_${version}_bg.png")
-    fg.outputStream().use { output ->
-      foreground.compress(Bitmap.CompressFormat.PNG, 100, output)
+    val targetProjectId = if (projectScoped) selectedProjectId.takeIf { it > 0L } ?: error("请先选择项目后再上传图片") else null
+    return try {
+      val fgResult = repository.uploadImage(
+        projectId = targetProjectId,
+        type = type,
+        base64Data = bitmapToBase64Payload(foreground),
+        fileName = "${safeKey}_${version}_fg.png",
+      )
+      val bgResult = repository.uploadImage(
+        projectId = targetProjectId,
+        type = type,
+        base64Data = bitmapToBase64Payload(background),
+        fileName = "${safeKey}_${version}_bg.png",
+      )
+      SavedImagePaths(
+        foregroundPath = resolveMediaPath(fgResult.filePath.ifBlank { fgResult.path }),
+        backgroundPath = resolveMediaPath(bgResult.filePath.ifBlank { bgResult.path }),
+      )
+    } finally {
+      foreground.recycle()
+      background.recycle()
     }
-    bg.outputStream().use { output ->
-      background.compress(Bitmap.CompressFormat.PNG, 100, output)
-    }
-    foreground.recycle()
-    background.recycle()
-    return SavedImagePaths(fg.absolutePath, bg.absolutePath)
-  }
-
-  private fun cleanupOldImageVersions(dir: File, safeKey: String) {
-    dir.listFiles()
-      ?.filter { it.name.startsWith("${safeKey}_") && (it.name.endsWith("_fg.png") || it.name.endsWith("_bg.png")) }
-      ?.forEach { it.delete() }
   }
 
   private fun decodeBitmapFromUri(uri: Uri): Bitmap {
@@ -706,6 +1250,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return URL(url).openStream().use { input ->
       BitmapFactory.decodeStream(input) ?: error("图片解码失败")
     }
+  }
+
+  private fun bitmapToBase64Payload(bitmap: Bitmap): String {
+    val output = ByteArrayOutputStream()
+    bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+    val bytes = output.toByteArray()
+    return "data:image/png;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}"
+  }
+
+  private fun fileBytesToBase64Payload(file: File): String {
+    val ext = file.extension.trim().lowercase()
+    val mime = when (ext) {
+      "jpg", "jpeg" -> "image/jpeg"
+      "webp" -> "image/webp"
+      "gif" -> "image/gif"
+      else -> "image/png"
+    }
+    return "data:$mime;base64,${Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)}"
   }
 
   private fun uriToBase64(uri: Uri): String {
@@ -841,27 +1403,108 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
   }
 
+  private fun safeText(value: String?): String = value.orEmpty()
+
+  private fun normalizeBaseUrlValue(value: String): String {
+    return value.trim().trimEnd('/')
+  }
+
+  fun resolveMediaPath(value: String?): String {
+    val raw = safeText(value).trim()
+    if (raw.isBlank()) return ""
+    if (raw.startsWith("/data/")) return raw
+    if (raw.startsWith("content://", ignoreCase = true)) return raw
+    if (raw.startsWith("file://", ignoreCase = true)) return raw
+    if (raw.startsWith("data:", ignoreCase = true)) return raw
+    if (raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)) return raw
+    val base = normalizeBaseUrlValue(baseUrl.ifBlank { settingsStore.baseUrl })
+    if (base.isBlank()) return raw
+    return if (raw.startsWith("/")) "$base$raw" else "$base/$raw"
+  }
+
+  private fun normalizeStoredMediaPath(value: String?): String {
+    val raw = safeText(value).trim()
+    if (raw.isBlank()) return ""
+    val base = normalizeBaseUrlValue(baseUrl.ifBlank { settingsStore.baseUrl })
+    if (base.isNotBlank() && raw.startsWith(base, ignoreCase = true)) {
+      val suffix = raw.substring(base.length).trim()
+      return if (suffix.startsWith("/")) suffix else "/$suffix"
+    }
+    return raw
+  }
+
+  private suspend fun ensureRemoteStoredMediaPath(
+    value: String?,
+    type: String,
+    fileName: String,
+    projectScoped: Boolean,
+  ): String {
+    val raw = safeText(value).trim()
+    if (raw.isBlank()) return ""
+    val normalized = normalizeStoredMediaPath(raw)
+    if (!normalized.startsWith("/data/")) {
+      return normalized
+    }
+    val file = File(normalized)
+    if (!file.exists() || !file.isFile) {
+      return normalized
+    }
+    val ext = file.extension.trim().ifBlank { "png" }
+    val targetProjectId = if (projectScoped) selectedProjectId.takeIf { it > 0L } ?: error("请先选择项目后再上传图片") else null
+    val uploaded = repository.uploadImage(
+      projectId = targetProjectId,
+      type = type,
+      base64Data = fileBytesToBase64Payload(file),
+      fileName = "$fileName.$ext",
+    )
+    return uploaded.filePath.ifBlank { uploaded.path }
+  }
+
+  private fun resolveRoleMedia(role: StoryRole): StoryRole {
+    return role.copy(
+      avatarPath = resolveMediaPath(role.avatarPath),
+      avatarBgPath = resolveMediaPath(role.avatarBgPath),
+    )
+  }
+
   fun isWorldPublished(world: WorldItem): Boolean {
-    return world.settings?.publishStatus?.trim()?.lowercase() == "published"
+    val topLevelStatus = safeText(world.publishStatus).trim().lowercase()
+    if (topLevelStatus.isNotBlank()) {
+      return topLevelStatus == "published"
+    }
+    return safeText(world.settings?.publishStatus).trim().lowercase() == "published"
   }
 
   fun worldCoverPath(world: WorldItem?): String {
     if (world == null) return ""
-    return world.settings?.coverPath.orEmpty()
+    return resolveMediaPath(
+      safeText(world.coverPath)
+      .ifBlank { safeText(world.settings?.coverPath) }
+      .ifBlank { safeText(world.coverBgPath) }
+      .ifBlank { safeText(world.settings?.coverBgPath) },
+    )
   }
 
   fun playChapterBackgroundPath(): String {
     if (debugMode) {
       val chapter = playCurrentChapter() ?: return ""
       val useEditorState = (selectedChapterId != null && chapter.id == selectedChapterId) || (selectedChapterId == null && chapter.id < 0L)
-      if (useEditorState && chapterBackground.isNotBlank()) return chapterBackground
-      return chapterExtraFor(chapter.id.takeIf { it > 0L }, chapter.sort)?.background.orEmpty()
+      if (useEditorState && chapterBackground.isNotBlank()) return resolveMediaPath(chapterBackground)
+      return resolveMediaPath(
+        normalizeScalarEditorText(chapterExtraFor(chapter.id.takeIf { it > 0L }, chapter.sort)?.background).ifBlank {
+          normalizeScalarEditorText(chapter.backgroundPath)
+        },
+      )
     }
     val chapter = sessionDetail?.chapter ?: return ""
     val extra = sessionDetail?.world?.settings?.chapterExtras?.firstOrNull {
       (chapter.id > 0L && it.chapterId == chapter.id) || (chapter.sort > 0 && it.sort == chapter.sort)
     }
-    return extra?.background.orEmpty()
+    return resolveMediaPath(
+      normalizeScalarEditorText(extra?.background).ifBlank {
+        normalizeScalarEditorText(chapter.backgroundPath)
+      },
+    )
   }
 
   fun mentionRoleNames(): List<String> {
@@ -910,13 +1553,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun avatarPathForMessage(message: MessageItem): String {
     val roleName = message.role.trim()
     if (message.roleType == "player") {
-      return playStoryRoles().firstOrNull { it.roleType == "player" }?.avatarPath.orEmpty()
+      return resolveMediaPath(playStoryRoles().firstOrNull { it.roleType == "player" }?.avatarPath)
     }
     val matched = playStoryRoles().firstOrNull { role ->
       (role.roleType == message.roleType && roleName.isNotBlank() && role.name == roleName) ||
         (roleName.isNotBlank() && role.name == roleName)
     } ?: playStoryRoles().firstOrNull { it.roleType == message.roleType }
-    return matched?.avatarPath.orEmpty()
+    return resolveMediaPath(matched?.avatarPath)
   }
 
   fun displayNameForMessage(message: MessageItem): String {
@@ -973,16 +1616,72 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       chapterMusic.isNotBlank()
   }
 
-  private fun stripOpeningPrefix(content: String, openingRole: String, openingLine: String): String {
-    val role = openingRole.trim()
-    val line = openingLine.trim()
-    if (role.isBlank() || line.isBlank()) return content
-    val prefix = "开场白[$role]：$line"
-    return if (content.startsWith(prefix)) {
-      content.removePrefix(prefix).trimStart('\n', '\r')
-    } else {
-      content
+  private data class OpeningContentParts(
+    val role: String,
+    val line: String,
+    val body: String,
+  )
+
+  private fun normalizeScalarEditorText(raw: Any?): String {
+    if (raw == null) return ""
+    val text = when (raw) {
+      is JsonElement -> {
+        if (raw.isJsonNull) {
+          ""
+        } else if (raw.isJsonPrimitive && raw.asJsonPrimitive.isString) {
+          raw.asString
+        } else {
+          raw.toString()
+        }
+      }
+
+      else -> raw.toString()
     }
+    val trimmed = text.trim()
+    return if (
+      trimmed.isEmpty() ||
+      trimmed == "null" ||
+      trimmed == "undefined" ||
+      trimmed == "\"\"" ||
+      trimmed == "''" ||
+      trimmed == "\"null\"" ||
+      trimmed == "\"undefined\""
+    ) {
+      ""
+    } else {
+      text
+    }
+  }
+
+  private fun normalizeConditionEditorText(raw: JsonElement?): String {
+    if (raw == null || raw.isJsonNull) return ""
+    if (raw.isJsonPrimitive) {
+      val primitive = raw.asJsonPrimitive
+      if (primitive.isString) return normalizeScalarEditorText(primitive.asString).trim()
+    }
+    return raw.toString()
+  }
+
+  private fun extractOpeningContentParts(content: String): OpeningContentParts? {
+    val text = normalizeScalarEditorText(content)
+    if (text.isBlank()) return null
+    val match = Regex("^开场白(?:\\[(.+?)\\]|([^\\[\\]:：\\r\\n]+))\\s*[:：]\\s*([^\\r\\n]*)(?:\\r?\\n)*").find(text) ?: return null
+    val role = (match.groupValues.getOrNull(1).orEmpty().ifBlank { match.groupValues.getOrNull(2).orEmpty() }).trim()
+    val line = match.groupValues.getOrNull(3).orEmpty().trim()
+    val body = text.removeRange(0, match.range.last + 1).replace(Regex("^[\\s\\r\\n]+"), "")
+    if (role.isBlank() && line.isBlank()) return null
+    return OpeningContentParts(role = role, line = line, body = body)
+  }
+
+  private fun stripOpeningPrefix(content: String, openingRole: String, openingLine: String): String {
+    val text = normalizeScalarEditorText(content)
+    if (text.isBlank()) return ""
+    val extracted = extractOpeningContentParts(text) ?: return text
+    val role = normalizeScalarEditorText(openingRole).trim()
+    val line = normalizeScalarEditorText(openingLine).trim()
+    val roleMatches = role.isBlank() || extracted.role.isBlank() || extracted.role == role
+    val lineMatches = line.isBlank() || extracted.line.isBlank() || extracted.line == line
+    return if (roleMatches && lineMatches) extracted.body else text
   }
 
   private fun buildPersistedChapterContent(): String {
@@ -1003,7 +1702,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       return chapterOpeningRole.ifBlank { narratorName.ifBlank { "旁白" } } to chapterOpeningLine
     }
     val extra = chapterExtraFor(chapter.id.takeIf { it > 0L }, chapter.sort)
-    return (extra?.openingRole?.ifBlank { narratorName.ifBlank { "旁白" } } ?: narratorName.ifBlank { "旁白" }) to extra?.openingLine.orEmpty()
+    val role = normalizeScalarEditorText(extra?.openingRole).trim().ifBlank {
+      normalizeScalarEditorText(chapter.openingRole).trim().ifBlank { narratorName.ifBlank { "旁白" } }
+    }
+    val line = normalizeScalarEditorText(extra?.openingLine).trim().ifBlank {
+      normalizeScalarEditorText(chapter.openingText).trim()
+    }
+    return role to line
   }
 
   private fun buildEditorChapterSnapshot(): ChapterItem? {
@@ -1018,6 +1723,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       sort = sort,
       status = if (worldPublishStatus == "published") "published" else "draft",
       completionCondition = parseChapterCondition(chapterCondition),
+      chapterKey = title,
+      backgroundPath = chapterBackground,
+      openingRole = chapterOpeningRole.ifBlank { narratorName.ifBlank { "旁白" } },
+      openingText = chapterOpeningLine,
+      bgmPath = chapterMusic,
+      showCompletionCondition = chapterConditionVisible,
     )
   }
 
@@ -1034,32 +1745,49 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       chapterBackground = ""
       chapterMusic = ""
       chapterConditionVisible = true
+      primeStoryEditorPersistState()
       return
     }
     val extra = chapterExtraFor(chapter.id, chapter.sort)
-    val openingRole = extra?.openingRole?.ifBlank { narratorName.ifBlank { "旁白" } } ?: narratorName.ifBlank { "旁白" }
-    val openingLine = extra?.openingLine.orEmpty()
-    chapterTitle = chapter.title
+    val extractedOpening = extractOpeningContentParts(chapter.content)
+    val openingRole = normalizeScalarEditorText(extra?.openingRole).trim().ifBlank {
+      normalizeScalarEditorText(chapter.openingRole).trim().ifBlank {
+        extractedOpening?.role ?: narratorName.ifBlank { "旁白" }
+      }
+    }
+    val openingLine = normalizeScalarEditorText(extra?.openingLine).trim().ifBlank {
+      normalizeScalarEditorText(chapter.openingText).trim().ifBlank {
+        extractedOpening?.line.orEmpty()
+      }
+    }
+    chapterTitle = normalizeScalarEditorText(chapter.title)
     chapterContent = stripOpeningPrefix(chapter.content, openingRole, openingLine)
-    chapterEntryCondition = chapter.entryCondition?.toString().orEmpty().ifBlank { "" }
-    chapterCondition = chapter.completionCondition?.toString().orEmpty().ifBlank { "" }
+    chapterEntryCondition = normalizeConditionEditorText(chapter.entryCondition)
+    chapterCondition = normalizeConditionEditorText(chapter.completionCondition)
     chapterOpeningRole = openingRole
     chapterOpeningLine = openingLine
-    chapterBackground = extra?.background.orEmpty()
-    chapterMusic = extra?.music.orEmpty()
-    chapterConditionVisible = extra?.conditionVisible ?: true
+    chapterBackground = resolveMediaPath(
+      normalizeScalarEditorText(extra?.background).ifBlank {
+        normalizeScalarEditorText(chapter.backgroundPath)
+      },
+    )
+    chapterMusic = normalizeScalarEditorText(extra?.music).ifBlank {
+      normalizeScalarEditorText(chapter.bgmPath)
+    }
+    chapterConditionVisible = extra?.conditionVisible ?: chapter.showCompletionCondition
+    primeStoryEditorPersistState()
   }
 
   fun appendGlobalMention(roleName: String) {
     val trimmed = roleName.trim()
     if (trimmed.isEmpty()) return
-    globalBackground = "$globalBackground${if (globalBackground.isBlank()) "" else " "}@$trimmed"
+    globalBackground = "$globalBackground${if (globalBackground.isBlank()) "" else " "}@$trimmed "
   }
 
   fun appendChapterMention(roleName: String) {
     val trimmed = roleName.trim()
     if (trimmed.isEmpty()) return
-    chapterContent = "$chapterContent${if (chapterContent.isBlank()) "" else " "}@$trimmed"
+    chapterContent = "$chapterContent${if (chapterContent.isBlank()) "" else " "}@$trimmed "
   }
 
   fun addNpcRole() {
@@ -1190,6 +1918,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     chapterBackground = ""
     chapterMusic = ""
     chapterConditionVisible = true
+    primeStoryEditorPersistState()
   }
 
   private fun chapterExtraFor(chapterId: Long?, sort: Int): ChapterExtra? {
@@ -1204,7 +1933,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       sort = sort,
       openingRole = chapterOpeningRole.ifBlank { narratorName.ifBlank { "旁白" } },
       openingLine = chapterOpeningLine,
-      background = chapterBackground,
+      background = normalizeStoredMediaPath(chapterBackground),
       music = chapterMusic,
       conditionVisible = chapterConditionVisible,
     )
@@ -1229,12 +1958,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private suspend fun saveWorldInternal(publish: Boolean? = null): WorldItem {
     val safeWorldName = prepareWorldNameForSave(publish)
+    val worldKey = if (worldId > 0L) "world_$worldId" else "project_${selectedProjectId}"
+    val persistedUserAvatarPath = ensureRemoteStoredMediaPath(userAvatarPath, "role", "${worldKey}_player_fg", true)
+    val persistedUserAvatarBgPath = ensureRemoteStoredMediaPath(userAvatarBgPath, "role", "${worldKey}_player_bg", true)
+    val persistedWorldCoverPath = ensureRemoteStoredMediaPath(worldCoverPath, "scene", "${worldKey}_cover_fg", true)
+    val persistedWorldCoverBgPath = ensureRemoteStoredMediaPath(worldCoverBgPath, "scene", "${worldKey}_cover_bg", true)
     val playerRole = buildRole(
       id = "player",
       roleType = "player",
       name = playerName.ifBlank { "用户" },
-      avatarPath = userAvatarPath,
-      avatarBgPath = userAvatarBgPath,
+      avatarPath = persistedUserAvatarPath,
+      avatarBgPath = persistedUserAvatarBgPath,
       description = playerDesc,
       voice = playerVoice,
       voiceMode = playerVoiceMode,
@@ -1265,24 +1999,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       voiceMixVoices = narratorVoiceMixVoices,
       sample = "",
     )
-    val npc = npcRoles.map { role ->
-      buildRole(
-        id = role.id,
-        roleType = "npc",
-        name = role.name,
-        avatarPath = role.avatarPath,
-        avatarBgPath = role.avatarBgPath,
-        description = role.description,
-        voice = role.voice,
-        voiceMode = role.voiceMode,
-        voiceConfigId = role.voiceConfigId,
-        voicePresetId = role.voicePresetId,
-        voiceReferenceAudioPath = role.voiceReferenceAudioPath,
-        voiceReferenceAudioName = role.voiceReferenceAudioName,
-        voiceReferenceText = role.voiceReferenceText,
-        voicePromptText = role.voicePromptText,
-        voiceMixVoices = role.voiceMixVoices,
-        sample = role.sample,
+    val npc = mutableListOf<StoryRole>()
+    npcRoles.forEachIndexed { index, role ->
+      npc.add(
+        buildRole(
+          id = role.id,
+          roleType = "npc",
+          name = role.name,
+          avatarPath = ensureRemoteStoredMediaPath(role.avatarPath, "role", "${worldKey}_npc_${index}_fg", true),
+          avatarBgPath = ensureRemoteStoredMediaPath(role.avatarBgPath, "role", "${worldKey}_npc_${index}_bg", true),
+          description = role.description,
+          voice = role.voice,
+          voiceMode = role.voiceMode,
+          voiceConfigId = role.voiceConfigId,
+          voicePresetId = role.voicePresetId,
+          voiceReferenceAudioPath = role.voiceReferenceAudioPath,
+          voiceReferenceAudioName = role.voiceReferenceAudioName,
+          voiceReferenceText = role.voiceReferenceText,
+          voicePromptText = role.voicePromptText,
+          voiceMixVoices = role.voiceMixVoices,
+          sample = role.sample,
+        ),
       )
     }
     val mini = MiniGameState(
@@ -1299,6 +2036,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       false -> "draft"
       else -> worldPublishStatus.ifBlank { "draft" }
     }
+    val persistedChapterExtras = mutableListOf<ChapterExtra>()
+    chapterExtras.forEachIndexed { index, extra ->
+      persistedChapterExtras.add(
+        extra.copy(
+          background = ensureRemoteStoredMediaPath(
+            extra.background,
+            "scene",
+            "${worldKey}_chapter_extra_${extra.chapterId ?: extra.sort.takeIf { it > 0 } ?: index}_bg",
+            true,
+          ),
+        ),
+      )
+    }
     val settings = linkedMapOf<String, Any?>(
       "roles" to (listOf(playerRole) + npc),
       "narratorVoice" to narratorVoice,
@@ -1311,13 +2061,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       "narratorVoicePromptText" to narratorVoicePromptText,
       "narratorVoiceMixVoices" to narratorVoiceMixVoices,
       "globalBackground" to globalBackground,
-      "coverPath" to worldCoverPath,
-      "coverBgPath" to worldCoverBgPath,
+      "coverPath" to persistedWorldCoverPath,
+      "coverBgPath" to persistedWorldCoverBgPath,
       "allowRoleView" to allowRoleView,
       "allowChatShare" to allowChatShare,
       "miniGameState" to mini,
       "publishStatus" to targetStatus,
-      "chapterExtras" to chapterExtras.toList(),
+      "chapterExtras" to persistedChapterExtras,
     )
     val payload = JsonObject().apply {
       if (worldId > 0) addProperty("worldId", worldId)
@@ -1338,11 +2088,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (worldId <= 0L || !hasCurrentChapterDraft()) return null
     val currentId = selectedChapterId
     val currentSort = currentChapterSort()
+    val normalizedOpeningRole = chapterOpeningRole.ifBlank { narratorName.ifBlank { "旁白" } }.trim()
+    val normalizedOpeningLine = normalizeScalarEditorText(chapterOpeningLine).trim()
+    val normalizedChapterBackground = normalizeStoredMediaPath(chapterBackground)
+    val normalizedChapterMusic = normalizeScalarEditorText(chapterMusic).trim()
     val payload = JsonObject().apply {
       if (currentId != null && currentId > 0L) addProperty("chapterId", currentId)
       addProperty("worldId", worldId)
       addProperty("title", chapterTitle.ifBlank { "第 $currentSort 章" }.trim())
+      addProperty("chapterKey", chapterTitle.ifBlank { "第 $currentSort 章" }.trim())
       addProperty("content", buildPersistedChapterContent())
+      addProperty("backgroundPath", normalizedChapterBackground)
+      addProperty("openingRole", normalizedOpeningRole)
+      addProperty("openingText", normalizedOpeningLine)
+      addProperty("bgmPath", normalizedChapterMusic)
+      addProperty("showCompletionCondition", chapterConditionVisible)
       parseChapterCondition(chapterEntryCondition)?.let { add("entryCondition", it) }
       parseChapterCondition(chapterCondition)?.let { add("completionCondition", it) }
       addProperty("sort", currentSort)
@@ -1398,6 +2158,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  fun deleteWorld(world: WorldItem) {
+    viewModelScope.launch {
+      runCatching {
+        repository.deleteWorld(world.id)
+        if (world.id == worldId) {
+          beginNewStoryDraft()
+        }
+        refreshStoryData()
+        notice = "已删除故事"
+      }.onFailure {
+        notice = "删除故事失败: ${it.message ?: "未知错误"}"
+      }
+    }
+  }
+
   fun saveWorldConfig(publish: Boolean? = null, successNotice: String = "世界观保存成功") {
     if (selectedProjectId <= 0) {
       notice = "请先选择项目"
@@ -1412,6 +2187,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       runCatching {
         saveWorldInternal(publish)
         refreshStoryData()
+        primeStoryEditorPersistState()
         notice = successNotice
       }.onFailure {
         notice = "保存失败: ${it.message ?: "未知错误"}"
@@ -1419,7 +2195,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
-  fun saveStoryEditor(publish: Boolean? = null, startNextDraft: Boolean = false, successNotice: String = "故事设定已保存") {
+  fun saveStoryEditor(publish: Boolean? = null, startNextDraft: Boolean = false, successNotice: String? = "故事设定已保存") {
     if (selectedProjectId <= 0) {
       notice = "请先选择项目"
       return
@@ -1446,7 +2222,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           startNextDraft -> beginNewChapterDraft()
           savedChapter != null -> selectChapter(savedChapter.id)
         }
-        notice = successNotice
+        primeStoryEditorPersistState()
+        if (!successNotice.isNullOrBlank()) {
+          notice = successNotice
+        }
       }.onFailure {
         notice = "保存失败: ${it.message ?: "未知错误"}"
       }
@@ -1475,6 +2254,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           selectedChapterId = saved.id
           selectChapter(saved.id)
         }
+        primeStoryEditorPersistState()
         notice = if (wasUpdating) "章节更新成功" else "章节创建成功"
       }.onFailure {
         notice = "章节保存失败: ${it.message ?: "未知错误"}"
@@ -1498,6 +2278,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
           selectChapter(targetChapterId)
         }
+        primeStoryEditorPersistState()
       }.onFailure {
         notice = "章节切换失败: ${it.message ?: "未知错误"}"
       }
@@ -1714,8 +2495,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       val user = repository.getUser()
       userName = user.get("name")?.asString ?: ""
       userId = user.get("id")?.asLong ?: 0L
-      accountAvatarPath = settingsStore.getAvatarPath(userId)
-      accountAvatarBgPath = settingsStore.getAvatarBgPath(userId)
+      val remoteAvatarPath = user.get("avatarPath")?.asString?.trim().orEmpty()
+      val remoteAvatarBgPath = user.get("avatarBgPath")?.asString?.trim().orEmpty()
+      val storedAvatarPath = remoteAvatarPath.ifBlank { settingsStore.getAvatarPath(userId) }
+      val storedAvatarBgPath = remoteAvatarBgPath.ifBlank { settingsStore.getAvatarBgPath(userId) }
+      if (remoteAvatarPath.isNotBlank()) settingsStore.setAvatarPath(userId, remoteAvatarPath)
+      if (remoteAvatarBgPath.isNotBlank()) settingsStore.setAvatarBgPath(userId, remoteAvatarBgPath)
+      accountAvatarPath = resolveMediaPath(storedAvatarPath)
+      accountAvatarBgPath = resolveMediaPath(storedAvatarBgPath)
     }.onFailure {
       userName = ""
       userId = 0L
@@ -1993,7 +2780,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private fun parseChapterCondition(raw: String): JsonElement? {
-    val text = raw.trim()
+    val text = normalizeScalarEditorText(raw).trim()
     if (text.isEmpty()) return null
     return runCatching { JsonParser.parseString(text) }.getOrElse {
       JsonObject().apply {
@@ -2128,8 +2915,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     debugChapterSequence = emptyList()
     debugMessageSeed = 1L
     voiceModels.clear()
+    settingsTextConfigs.clear()
+    settingsImageConfigs.clear()
+    settingsVoiceConfigs.clear()
+    settingsAiModelMap.clear()
+    storyPrompts.clear()
     voicePresetsCache.clear()
     voiceLoading = false
+    settingsPanelLoaded = false
+    settingsPanelLoading = false
     aiGenerating = false
   }
 
@@ -2188,19 +2982,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun startNewStoryDraft() {
     beginNewStoryDraft()
+    primeStoryEditorPersistState()
     activeTab = "创建"
     notice = "已切换到新故事草稿"
   }
 
   private fun applyWorldToEditor(world: WorldItem) {
     worldId = world.id
-    worldName = world.name
-    worldIntro = world.intro
-    worldCoverPath = world.settings?.coverPath ?: ""
-    worldCoverBgPath = world.settings?.coverBgPath ?: ""
+    worldName = safeText(world.name)
+    worldIntro = safeText(world.intro)
+    worldCoverPath = resolveMediaPath(safeText(world.coverPath).ifBlank { safeText(world.settings?.coverPath) })
+    worldCoverBgPath = resolveMediaPath(safeText(world.coverBgPath).ifBlank { safeText(world.settings?.coverBgPath) })
     playerName = world.playerRole?.name ?: "用户"
-    userAvatarPath = world.playerRole?.avatarPath ?: ""
-    userAvatarBgPath = world.playerRole?.avatarBgPath ?: ""
+    userAvatarPath = resolveMediaPath(world.playerRole?.avatarPath)
+    userAvatarBgPath = resolveMediaPath(world.playerRole?.avatarBgPath)
     playerDesc = world.playerRole?.description ?: ""
     playerVoice = world.playerRole?.voice ?: ""
     playerVoiceMode = world.playerRole?.voiceMode ?: "text"
@@ -2224,11 +3019,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     globalBackground = world.settings?.globalBackground ?: ""
     allowRoleView = world.settings?.allowRoleView ?: true
     allowChatShare = world.settings?.allowChatShare ?: true
-    worldPublishStatus = world.settings?.publishStatus?.ifBlank { "draft" } ?: "draft"
+    worldPublishStatus = safeText(world.publishStatus).ifBlank {
+      safeText(world.settings?.publishStatus).ifBlank { "draft" }
+    }
     chapterExtras.clear()
     chapterExtras.addAll(world.settings?.chapterExtras ?: emptyList())
     npcRoles.clear()
-    npcRoles.addAll(world.settings?.roles?.filter { it.roleType == "npc" } ?: emptyList())
+    npcRoles.addAll((world.settings?.roles ?: emptyList()).filter { it.roleType == "npc" }.map(::resolveRoleMedia))
 
     val mini = world.settings?.miniGameState ?: MiniGameState()
     miniGameType = mini.gameType
@@ -2238,6 +3035,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     miniGameWinner = mini.winner
     miniGameRewards = mini.rewards.joinToString(",")
     miniGameNotes = mini.notes
+    primeStoryEditorPersistState()
   }
 
   private suspend fun loadWorldEditor(worldId: Long): WorldItem? {

@@ -19,12 +19,44 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return api().login(payload).data
   }
 
+  suspend fun register(username: String, password: String): JsonObject {
+    val payload = JsonObject().apply {
+      addProperty("username", username)
+      addProperty("password", password)
+    }
+    return api().register(payload).data
+  }
+
   suspend fun getProjects(): List<ProjectItem> {
     return api().getProjects().data
   }
 
   suspend fun getUser(): JsonObject {
     return api().getUser().data
+  }
+
+  suspend fun saveUser(
+    name: String? = null,
+    password: String? = null,
+    avatarPath: String? = null,
+    avatarBgPath: String? = null,
+  ) {
+    val payload = JsonObject().apply {
+      if (!name.isNullOrBlank()) addProperty("name", name)
+      if (!password.isNullOrBlank()) addProperty("password", password)
+      if (avatarPath != null) addProperty("avatarPath", avatarPath)
+      if (avatarBgPath != null) addProperty("avatarBgPath", avatarBgPath)
+    }
+    if (payload.size() == 0) return
+    api().saveUser(payload)
+  }
+
+  suspend fun changePassword(oldPassword: String, newPassword: String) {
+    val payload = JsonObject().apply {
+      addProperty("oldPassword", oldPassword)
+      addProperty("newPassword", newPassword)
+    }
+    api().changePassword(payload)
   }
 
   suspend fun getWorld(projectId: Long, autoCreate: Boolean): WorldItem? {
@@ -53,6 +85,13 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return api().saveWorld(payload).data
   }
 
+  suspend fun deleteWorld(worldId: Long) {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+    }
+    api().deleteWorld(payload)
+  }
+
   suspend fun generateImage(
     projectId: Long,
     type: String,
@@ -78,6 +117,21 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("size", size)
     }
     return api().generateImage(payload).data
+  }
+
+  suspend fun uploadImage(
+    projectId: Long? = null,
+    type: String,
+    base64Data: String,
+    fileName: String = "image.png",
+  ): GeneratedImageResult {
+    val payload = JsonObject().apply {
+      if (projectId != null && projectId > 0L) addProperty("projectId", projectId)
+      addProperty("type", type)
+      addProperty("base64Data", base64Data)
+      if (fileName.isNotBlank()) addProperty("fileName", fileName)
+    }
+    return api().uploadImage(payload).data
   }
 
   suspend fun getChapter(worldId: Long): List<ChapterItem> {
@@ -139,6 +193,67 @@ class GameRepository(private val settingsStore: SettingsStore) {
 
   suspend fun getVoiceModels(): List<VoiceModelConfig> {
     return runCatching { api().getVoiceModelList().data }.getOrElse { emptyList() }
+  }
+
+  suspend fun getModelConfigs(): List<ModelConfigItem> {
+    return runCatching { api().getModelConfigs().data }.getOrElse { emptyList() }
+  }
+
+  suspend fun addModelConfig(type: String, model: String, baseUrl: String, apiKey: String, modelType: String, manufacturer: String) {
+    val payload = JsonObject().apply {
+      addProperty("type", type)
+      addProperty("model", model)
+      addProperty("baseUrl", baseUrl)
+      addProperty("apiKey", apiKey)
+      addProperty("modelType", modelType)
+      addProperty("manufacturer", manufacturer)
+    }
+    api().addModelConfig(payload)
+  }
+
+  suspend fun updateModelConfig(id: Long, type: String, model: String, baseUrl: String, apiKey: String, modelType: String, manufacturer: String) {
+    val payload = JsonObject().apply {
+      addProperty("id", id)
+      addProperty("type", type)
+      addProperty("model", model)
+      addProperty("baseUrl", baseUrl)
+      addProperty("apiKey", apiKey)
+      addProperty("modelType", modelType)
+      addProperty("manufacturer", manufacturer)
+    }
+    api().updateModelConfig(payload)
+  }
+
+  suspend fun deleteModelConfig(id: Long) {
+    val payload = JsonObject().apply {
+      addProperty("id", id)
+    }
+    api().deleteModelConfig(payload)
+  }
+
+  suspend fun getAiModelMap(): List<AiModelMapItem> {
+    return runCatching { api().getAiModelMap().data }.getOrElse { emptyList() }
+  }
+
+  suspend fun bindModelConfig(id: Long, configId: Long) {
+    val payload = JsonObject().apply {
+      addProperty("id", id)
+      addProperty("configId", configId)
+    }
+    api().bindModelConfig(payload)
+  }
+
+  suspend fun getPrompts(): List<PromptItem> {
+    return runCatching { api().getPrompts().data }.getOrElse { emptyList() }
+  }
+
+  suspend fun updatePrompt(id: Long, code: String, customValue: String) {
+    val payload = JsonObject().apply {
+      addProperty("id", id)
+      addProperty("code", code)
+      addProperty("customValue", customValue)
+    }
+    api().updatePrompt(payload)
   }
 
   suspend fun getVoicePresets(configId: Long?): List<VoicePresetItem> {
@@ -220,6 +335,35 @@ class GameRepository(private val settingsStore: SettingsStore) {
     }
     val data = api().previewVoice(payload).data
     return data.get("audioUrl")?.asString?.trim().orEmpty()
+  }
+
+  suspend fun polishVoicePrompt(text: String, style: String = ""): String {
+    val payload = JsonObject().apply {
+      addProperty("text", text)
+      if (style.isNotBlank()) addProperty("style", style)
+    }
+    val data = api().polishVoicePrompt(payload).data
+    return data.get("prompt")?.asString?.trim().orEmpty()
+  }
+
+  suspend fun testTextModel(model: String, apiKey: String, baseUrl: String, manufacturer: String): String {
+    val payload = JsonObject().apply {
+      addProperty("modelName", model)
+      addProperty("apiKey", apiKey)
+      if (baseUrl.isNotBlank()) addProperty("baseURL", baseUrl)
+      addProperty("manufacturer", manufacturer)
+    }
+    return api().testTextModel(payload).data
+  }
+
+  suspend fun testImageModel(model: String, apiKey: String, baseUrl: String, manufacturer: String): String {
+    val payload = JsonObject().apply {
+      if (model.isNotBlank()) addProperty("modelName", model)
+      addProperty("apiKey", apiKey)
+      if (baseUrl.isNotBlank()) addProperty("baseURL", baseUrl)
+      addProperty("manufacturer", manufacturer)
+    }
+    return api().testImageModel(payload).data
   }
 
   suspend fun syncMiniGame(sessionId: String, miniGameJson: JsonObject) {

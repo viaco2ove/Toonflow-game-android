@@ -115,6 +115,10 @@ data class WorldItem(
   @SerializedName("projectId") val projectId: Long,
   @SerializedName("name") val name: String,
   @SerializedName("intro") val intro: String = "",
+  @SerializedName("coverPath") val coverPath: String = "",
+  @SerializedName("coverBgPath") val coverBgPath: String = "",
+  @SerializedName("publishStatus") val publishStatus: String = "",
+  @SerializedName("updateTime") val updateTime: Long = 0L,
   @SerializedName("chapterCount") val chapterCount: Int? = 0,
   @SerializedName("sessionCount") val sessionCount: Int? = 0,
   @SerializedName("settings") val settings: WorldSettings? = null,
@@ -130,6 +134,12 @@ data class ChapterItem(
   @SerializedName("sort") val sort: Int = 0,
   @SerializedName("status") val status: String = "draft",
   @SerializedName("completionCondition") val completionCondition: JsonElement? = null,
+  @SerializedName("chapterKey") val chapterKey: String = "",
+  @SerializedName("backgroundPath") val backgroundPath: String = "",
+  @SerializedName("openingRole") val openingRole: String = "",
+  @SerializedName("openingText") val openingText: String = "",
+  @SerializedName("bgmPath") val bgmPath: String = "",
+  @SerializedName("showCompletionCondition") val showCompletionCondition: Boolean = true,
 )
 
 data class MessageItem(
@@ -175,14 +185,51 @@ data class GeneratedImageResult(
 
 data class VoiceModelConfig(
   @SerializedName("id") val id: Long,
+  @SerializedName("type") val type: String = "",
   @SerializedName("model") val model: String = "",
+  @SerializedName("modelType") val modelType: String = "",
   @SerializedName("manufacturer") val manufacturer: String = "",
   @SerializedName("baseUrl") val baseUrl: String = "",
+  @SerializedName("apiKey") val apiKey: String = "",
+  @SerializedName("createTime") val createTime: Long = 0L,
+)
+
+data class ModelConfigItem(
+  @SerializedName("id") val id: Long,
+  @SerializedName("type") val type: String = "",
+  @SerializedName("model") val model: String = "",
+  @SerializedName("modelType") val modelType: String = "",
+  @SerializedName("manufacturer") val manufacturer: String = "",
+  @SerializedName("baseUrl") val baseUrl: String = "",
+  @SerializedName("apiKey") val apiKey: String = "",
+  @SerializedName("createTime") val createTime: Long = 0L,
+)
+
+data class AiModelMapItem(
+  @SerializedName("id") val id: Long,
+  @SerializedName("key") val key: String = "",
+  @SerializedName("name") val name: String = "",
+  @SerializedName("configId") val configId: Long? = null,
+  @SerializedName("model") val model: String? = null,
+  @SerializedName("manufacturer") val manufacturer: String? = null,
+)
+
+data class PromptItem(
+  @SerializedName("id") val id: Long,
+  @SerializedName("code") val code: String = "",
+  @SerializedName("name") val name: String? = null,
+  @SerializedName("type") val type: String? = null,
+  @SerializedName("parentCode") val parentCode: String? = null,
+  @SerializedName("defaultValue") val defaultValue: String? = null,
+  @SerializedName("customValue") val customValue: String? = null,
 )
 
 data class VoicePresetItem(
   @SerializedName("voiceId") val voiceId: String,
   @SerializedName("name") val name: String,
+  @SerializedName("provider") val provider: String? = null,
+  @SerializedName("modes") val modes: List<String> = emptyList(),
+  @SerializedName("description") val description: String? = null,
 )
 
 data class UploadedVoiceAudioResult(
