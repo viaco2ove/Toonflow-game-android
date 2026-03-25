@@ -178,6 +178,14 @@ data class SessionDetail(
   @SerializedName("messages") val messages: List<MessageItem> = emptyList(),
 )
 
+data class DebugStepResult(
+  @SerializedName("chapterId") val chapterId: Long? = null,
+  @SerializedName("chapterTitle") val chapterTitle: String = "",
+  @SerializedName("state") val state: JsonElement? = null,
+  @SerializedName("endDialog") val endDialog: String? = null,
+  @SerializedName("messages") val messages: List<MessageItem> = emptyList(),
+)
+
 data class GeneratedImageResult(
   @SerializedName("path") val path: String = "",
   @SerializedName("filePath") val filePath: String = "",

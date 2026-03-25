@@ -4,6 +4,7 @@ import com.google.gson.JsonObject
 import com.toonflow.game.data.ApiEnvelope
 import com.toonflow.game.data.AiModelMapItem
 import com.toonflow.game.data.ChapterItem
+import com.toonflow.game.data.DebugStepResult
 import com.toonflow.game.data.GeneratedImageResult
 import com.toonflow.game.data.MessageItem
 import com.toonflow.game.data.ModelConfigItem
@@ -76,6 +77,9 @@ interface GameApi {
 
   @POST("game/addMessage")
   suspend fun addMessage(@Body payload: JsonObject): ApiEnvelope<JsonObject>
+
+  @POST("game/debugStep")
+  suspend fun debugStep(@Body payload: JsonObject): ApiEnvelope<DebugStepResult>
 
   @POST("setting/getVoiceModelList")
   suspend fun getVoiceModelList(@Body payload: JsonObject = JsonObject()): ApiEnvelope<List<VoiceModelConfig>>

@@ -191,6 +191,25 @@ class GameRepository(private val settingsStore: SettingsStore) {
     api().addMessage(payload)
   }
 
+  suspend fun debugStep(
+    worldId: Long,
+    chapterId: Long?,
+    state: JsonElement?,
+    messages: List<MessageItem>,
+    playerContent: String? = null,
+  ): DebugStepResult {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+      if (chapterId != null && chapterId > 0L) addProperty("chapterId", chapterId)
+      if (playerContent != null) addProperty("playerContent", playerContent)
+      if (state != null && !state.isJsonNull) {
+        add("state", state)
+      }
+      add("messages", gson.toJsonTree(messages))
+    }
+    return api().debugStep(payload).data
+  }
+
   suspend fun getVoiceModels(): List<VoiceModelConfig> {
     return runCatching { api().getVoiceModelList().data }.getOrElse { emptyList() }
   }
@@ -281,7 +300,22 @@ class GameRepository(private val settingsStore: SettingsStore) {
       val name = listOf("name", "label", "voice_name").firstNotNullOfOrNull { key ->
         obj.get(key)?.takeIf { !it.isJsonNull }?.asString?.trim()?.takeIf { it.isNotBlank() }
       } ?: voiceId
-      VoicePresetItem(voiceId = voiceId, name = name)
+      val provider = listOf("provider", "provider_id").firstNotNullOfOrNull { key ->
+        obj.get(key)?.takeIf { !it.isJsonNull }?.asString?.trim()?.takeIf { it.isNotBlank() }
+      }
+      val modes = obj.getAsJsonArray("modes")
+        ?.mapNotNull { mode -> mode?.asString?.trim()?.takeIf { it.isNotBlank() } }
+        ?: emptyList()
+      val description = listOf("description", "desc").firstNotNullOfOrNull { key ->
+        obj.get(key)?.takeIf { !it.isJsonNull }?.asString?.trim()?.takeIf { it.isNotBlank() }
+      }
+      VoicePresetItem(
+        voiceId = voiceId,
+        name = name,
+        provider = provider,
+        modes = modes,
+        description = description,
+      )
     }
   }
 

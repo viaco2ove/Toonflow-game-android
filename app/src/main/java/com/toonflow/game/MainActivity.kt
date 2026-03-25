@@ -1730,6 +1730,7 @@ private fun PlayScene(
   var selectedMessage by remember(vm.currentSessionId) { mutableStateOf<MessageItem?>(null) }
   var textToSpeech by remember { mutableStateOf<TextToSpeech?>(null) }
   var ttsReady by remember { mutableStateOf(false) }
+  var lastAutoSpokenKey by remember(vm.currentSessionId) { mutableStateOf("") }
   DisposableEffect(context) {
     var engine: TextToSpeech? = null
     engine = TextToSpeech(context) { status ->
@@ -1762,6 +1763,20 @@ private fun PlayScene(
       selectedMessage = null
       onCloseDialogMenu()
     }
+  }
+  val latestSpeakableMessage = vm.messages.lastOrNull { it.roleType != "player" && it.content.trim().isNotBlank() }
+  LaunchedEffect(autoVoice) {
+    if (!autoVoice) {
+      textToSpeech?.stop()
+    }
+  }
+  LaunchedEffect(vm.currentSessionId, autoVoice, ttsReady, mode, latestSpeakableMessage?.id, latestSpeakableMessage?.createTime) {
+    if (!autoVoice || !ttsReady || textToSpeech == null || mode == "tips" || mode == "setting") return@LaunchedEffect
+    val message = latestSpeakableMessage ?: return@LaunchedEffect
+    val key = vm.messageUiKey(message)
+    if (lastAutoSpokenKey == key) return@LaunchedEffect
+    lastAutoSpokenKey = key
+    textToSpeech?.speak(message.content.trim(), TextToSpeech.QUEUE_FLUSH, null, key)
   }
 
   val tipOptions = vm.buildAiTipOptions()
@@ -1867,7 +1882,6 @@ private fun PlayScene(
             roles = vm.playStoryRoles(),
             allowRoleView = vm.playAllowRoleView(),
             statePreview = statePreview,
-            miniGameSummary = "类型:${vm.miniGameType.ifBlank { "-" }} 状态:${vm.miniGameStatus} 轮次:${vm.miniGameRound}",
             showStorySettingDetail = showStorySettingDetail,
             onToggleStorySettingDetail = onToggleStorySettingDetail,
             onClose = onCloseSetting,
@@ -1921,9 +1935,11 @@ private fun PlayScene(
         onOpenSetting = { onModeChange("setting") },
         onExitDebug = onExitDebug,
         onRefresh = { vm.refreshPlaySession() },
-        miniTags = vm.miniGameTags,
-        onMiniTag = { vm.triggerMiniGame(it) },
-        onSyncMiniGame = { vm.syncMiniGame() },
+        onShare = {
+          clipboardManager.setText(AnnotatedString("$sessionTitle $chapterTitle".trim()))
+          vm.notice = "已复制故事标题"
+        },
+        onComment = { vm.notice = "评论功能待接入" },
         sendText = vm.sendText,
         onSendTextChange = { vm.sendText = it },
         onSend = { vm.sendMessage() },
@@ -1935,7 +1951,15 @@ private fun PlayScene(
     AlertDialog(
       onDismissRequest = { vm.closeDebugDialog(false) },
       title = { Text("章节调试结束") },
-      text = { Text(vm.debugEndDialog ?: "") },
+      text = {
+        Text(
+          if (vm.debugEndDialog == "已完结") {
+            "已完结\n已没有下一个章节。可返回编辑继续补章节。"
+          } else {
+            "已失败\n当前调试已结束。"
+          },
+        )
+      },
       confirmButton = {
         TextButton(onClick = {
           vm.closeDebugDialog(true)
@@ -2173,7 +2197,6 @@ private fun StorySettingPanel(
   roles: List<com.toonflow.game.data.StoryRole>,
   allowRoleView: Boolean,
   statePreview: String,
-  miniGameSummary: String,
   showStorySettingDetail: Boolean,
   onToggleStorySettingDetail: () -> Unit,
   onClose: () -> Unit,
@@ -2264,7 +2287,6 @@ private fun StorySettingPanel(
           }
         }
       }
-      Text("小游戏：$miniGameSummary", color = Color(0xFFDCEEFF), style = MaterialTheme.typography.bodySmall)
       if (showStorySettingDetail) {
         Card(
           colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
@@ -2333,9 +2355,8 @@ private fun FooterBar(
   onOpenSetting: () -> Unit,
   onExitDebug: () -> Unit,
   onRefresh: () -> Unit,
-  miniTags: List<String>,
-  onMiniTag: (String) -> Unit,
-  onSyncMiniGame: () -> Unit,
+  onShare: () -> Unit,
+  onComment: () -> Unit,
   sendText: String,
   onSendTextChange: (String) -> Unit,
   onSend: () -> Unit,
@@ -2357,8 +2378,8 @@ private fun FooterBar(
       }
       Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Bottom) {
         StoryFooterAction(icon = "❤", label = "0", onClick = { })
-        StoryFooterAction(icon = "↗", label = "分享", onClick = onSyncMiniGame)
-        StoryFooterAction(icon = "💬", label = "评论", onClick = { })
+        StoryFooterAction(icon = "↗", label = "分享", onClick = onShare)
+        StoryFooterAction(icon = "💬", label = "评论", onClick = onComment)
         StoryFooterAction(
           icon = if (mode == "history") "↩" else "◷",
           label = if (mode == "history") "返回" else "历史",
@@ -2369,17 +2390,16 @@ private fun FooterBar(
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
       Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         MiniBtn(text = "提示", onClick = { onModeChange(if (mode == "tips") "live" else "tips") })
-        MiniBtn(text = if (debugMode) "状态" else "刷新", onClick = onRefresh)
-      }
-    }
-    if (miniTags.isNotEmpty()) {
-      Row(
-        modifier = Modifier.horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-      ) {
-        miniTags.forEach { tag ->
-          MiniBtn(text = tag, onClick = { onMiniTag(tag) })
-        }
+        MiniBtn(
+          text = if (debugMode) "状态" else "刷新",
+          onClick = {
+            if (debugMode) {
+              onModeChange(if (mode == "setting") "live" else "setting")
+            } else {
+              onRefresh()
+            }
+          },
+        )
       }
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3090,11 +3110,7 @@ private fun VoicePickerDialog(
       addAll(initialMixVoices.ifEmpty { listOf(VoiceMixItem(weight = 0.7)) })
     }
   }
-  var previewText by remember(initialLabel) {
-    mutableStateOf(
-      if (initialLabel.isNotBlank()) "你好，我是$initialLabel" else "你好，很高兴见到你。",
-    )
-  }
+  var previewText by remember(title) { mutableStateOf("你好啊，有什么可以帮到你") }
   var previewLoading by remember { mutableStateOf(false) }
   var promptPolishing by remember { mutableStateOf(false) }
   var audioUploading by remember { mutableStateOf(false) }
@@ -3371,9 +3387,10 @@ private fun VoicePickerDialog(
                   previewStatus = ""
                   scope.launch {
                     runCatching {
+                      val selectedPresetProvider = presets.firstOrNull { it.voiceId == selectedPresetId }?.provider?.trim()?.takeIf { it.isNotBlank() }
                       vm.polishVoicePrompt(
                         text = rawText,
-                        style = listOfNotNull(selectedModel?.model, selectedModel?.manufacturer).joinToString(" · "),
+                        style = listOfNotNull(selectedModel?.model, selectedModel?.manufacturer, selectedPresetProvider).joinToString(" · "),
                       )
                     }.onSuccess {
                       if (it.isNotBlank()) {

@@ -186,6 +186,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var debugWorldIntro by mutableStateOf("")
   var debugChapterId by mutableStateOf<Long?>(null)
   var debugChapterTitle by mutableStateOf("")
+  var debugRuntimeState by mutableStateOf<JsonElement?>(null)
   var debugStatePreview by mutableStateOf("{}")
   var debugEndDialog by mutableStateOf<String?>(null)
   private var debugChapterSequence: List<ChapterItem> = emptyList()
@@ -427,6 +428,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private fun applyStoryEditorSnapshot(snapshot: StoryEditorPersistSnapshot) {
+    val extractedOpening = extractOpeningContentParts(snapshot.chapterContent)
+    val snapshotOpeningRole = normalizeScalarEditorText(snapshot.chapterOpeningRole).trim().ifBlank {
+      extractedOpening?.role ?: snapshot.narratorName.ifBlank { "旁白" }
+    }
+    val snapshotOpeningLine = normalizeScalarEditorText(snapshot.chapterOpeningLine).trim().ifBlank {
+      extractedOpening?.line.orEmpty()
+    }
     worldId = snapshot.worldId
     worldName = snapshot.worldName
     worldIntro = snapshot.worldIntro
@@ -465,11 +473,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     chapterExtras.addAll(snapshot.chapterExtras.map { it.copy() })
     selectedChapterId = snapshot.selectedChapterId
     chapterTitle = snapshot.chapterTitle
-    chapterContent = snapshot.chapterContent
-    chapterEntryCondition = snapshot.chapterEntryCondition
-    chapterCondition = snapshot.chapterCondition
-    chapterOpeningRole = snapshot.chapterOpeningRole
-    chapterOpeningLine = snapshot.chapterOpeningLine
+    chapterContent = stripOpeningPrefix(snapshot.chapterContent, snapshotOpeningRole, snapshotOpeningLine)
+    chapterEntryCondition = normalizeConditionEditorText(snapshot.chapterEntryCondition)
+    chapterCondition = normalizeConditionEditorText(snapshot.chapterCondition)
+    chapterOpeningRole = snapshotOpeningRole
+    chapterOpeningLine = snapshotOpeningLine
     chapterBackground = snapshot.chapterBackground
     chapterMusic = snapshot.chapterMusic
     chapterConditionVisible = snapshot.chapterConditionVisible
@@ -902,6 +910,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     debugWorldIntro = ""
     debugChapterId = null
     debugChapterTitle = ""
+    debugRuntimeState = null
     debugStatePreview = "{}"
     debugEndDialog = null
     debugChapterSequence = emptyList()
@@ -1662,6 +1671,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return raw.toString()
   }
 
+  private fun normalizeConditionEditorText(raw: String): String {
+    val text = normalizeScalarEditorText(raw).trim()
+    if (text.isBlank()) return ""
+    return runCatching {
+      val parsed = JsonParser.parseString(text)
+      normalizeConditionEditorText(parsed)
+    }.getOrElse { text }
+  }
+
   private fun extractOpeningContentParts(content: String): OpeningContentParts? {
     val text = normalizeScalarEditorText(content)
     if (text.isBlank()) return null
@@ -1673,27 +1691,74 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return OpeningContentParts(role = role, line = line, body = body)
   }
 
-  private fun stripOpeningPrefix(content: String, openingRole: String, openingLine: String): String {
-    val text = normalizeScalarEditorText(content)
+  private fun stripLeadingOpeningBlocks(content: String): String {
+    var text = normalizeScalarEditorText(content)
     if (text.isBlank()) return ""
-    val extracted = extractOpeningContentParts(text) ?: return text
+    repeat(8) {
+      val extracted = extractOpeningContentParts(text) ?: return@repeat
+      text = extracted.body.replace(Regex("^[\\s\\r\\n]+"), "")
+    }
+    return text
+  }
+
+  private fun splitParagraphs(content: String): List<String> {
+    return content
+      .replace("\r\n", "\n")
+      .split(Regex("\n\\s*\n+"))
+      .map { it.trim() }
+      .filter { it.isNotBlank() }
+  }
+
+  private fun stripLeadingOpeningParagraphs(content: String, openingLine: String): String {
+    val openingParagraphs = splitParagraphs(openingLine)
+    if (openingParagraphs.isEmpty()) return content.trim()
+    val openingSet = openingParagraphs.toSet()
+    val contentParagraphs = splitParagraphs(content).toMutableList()
+    while (contentParagraphs.isNotEmpty() && openingSet.contains(contentParagraphs.first())) {
+      contentParagraphs.removeAt(0)
+    }
+    return contentParagraphs.joinToString("\n\n").trim()
+  }
+
+  private fun stripLeadingOpeningArtifacts(content: String, openingRole: String, openingLine: String): String {
+    var text = normalizeScalarEditorText(content)
+    if (text.isBlank()) return ""
     val role = normalizeScalarEditorText(openingRole).trim()
     val line = normalizeScalarEditorText(openingLine).trim()
-    val roleMatches = role.isBlank() || extracted.role.isBlank() || extracted.role == role
-    val lineMatches = line.isBlank() || extracted.line.isBlank() || extracted.line == line
-    return if (roleMatches && lineMatches) extracted.body else text
+    val openingParagraphs = splitParagraphs(line).sortedByDescending { it.length }
+    repeat(64) {
+      val before = text
+      val extracted = extractOpeningContentParts(text)
+      if (extracted != null) {
+        val roleMatches = role.isBlank() || extracted.role.isBlank() || extracted.role == role
+        val lineMatches = line.isBlank() || extracted.line.isBlank() || line.startsWith(extracted.line) || extracted.line == line
+        if (roleMatches && lineMatches) {
+          text = extracted.body.replace(Regex("^[\\s\\r\\n]+"), "")
+        }
+      }
+      if (line.isNotBlank() && text.startsWith(line)) {
+        text = text.removePrefix(line).replace(Regex("^[\\s\\r\\n]+"), "")
+      }
+      val paragraphMatch = openingParagraphs.firstOrNull { it.isNotBlank() && text.startsWith(it) }
+      if (paragraphMatch != null) {
+        text = text.removePrefix(paragraphMatch).replace(Regex("^[\\s\\r\\n]+"), "")
+      }
+      if (text == before) return@repeat
+    }
+    if (line.isNotBlank()) {
+      text = stripLeadingOpeningParagraphs(text, line)
+    }
+    return text.trim()
+  }
+
+  private fun stripOpeningPrefix(content: String, openingRole: String, openingLine: String): String {
+    return stripLeadingOpeningArtifacts(content, openingRole, openingLine)
   }
 
   private fun buildPersistedChapterContent(): String {
     val role = chapterOpeningRole.ifBlank { narratorName.ifBlank { "旁白" } }.trim()
     val opening = chapterOpeningLine.trim()
-    val body = stripOpeningPrefix(chapterContent.trim(), role, opening).trim()
-    if (opening.isBlank()) return body
-    return if (body.isBlank()) {
-      "开场白[$role]：$opening"
-    } else {
-      "开场白[$role]：$opening\n$body"
-    }
+    return stripLeadingOpeningArtifacts(chapterContent.trim(), role, opening)
   }
 
   private fun currentChapterDebugOpening(chapter: ChapterItem): Pair<String, String> {
@@ -1709,6 +1774,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       normalizeScalarEditorText(chapter.openingText).trim()
     }
     return role to line
+  }
+
+  private fun buildDebugChapterSummary(chapter: ChapterItem): String {
+    val (openingRole, openingLine) = currentChapterDebugOpening(chapter)
+    val chapterBody = stripLeadingOpeningArtifacts(chapter.content, openingRole, openingLine).trim()
+    val lines = mutableListOf<String>()
+    if (openingLine.isNotBlank()) {
+      lines += openingLine
+    }
+    if (chapterBody.isNotBlank()) {
+      lines += chapterBody.take(120)
+    }
+    return lines.joinToString("\n\n").trim()
   }
 
   private fun buildEditorChapterSnapshot(): ChapterItem? {
@@ -2290,58 +2368,71 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       notice = "请先选择项目"
       return
     }
-    val editorChapter = buildEditorChapterSnapshot()
-    val currentWorld = worlds.firstOrNull { it.id == worldId } ?: WorldItem(
-      id = worldId,
-      projectId = selectedProjectId,
-      name = worldName.ifBlank { "未命名故事" },
-      intro = worldIntro,
-      chapterCount = chapters.size,
-    )
-    val seq = chapters.toMutableList()
-    if (editorChapter != null) {
-      val idx = seq.indexOfFirst { it.id == editorChapter.id }
-      if (idx >= 0) {
-        seq[idx] = editorChapter
-      } else {
-        seq.add(editorChapter)
+    viewModelScope.launch {
+      runCatching {
+        saveWorldInternal(false)
+        val savedChapter = saveEditorChapterInternal(worldPublishStatus.ifBlank { "draft" })
+        if (savedChapter != null) {
+          saveWorldInternal(false)
+        }
+        if (worldId > 0L) {
+          loadChapters(worldId)
+        }
+        refreshStoryData()
+        primeStoryEditorPersistState()
+
+        val currentWorld = worlds.firstOrNull { it.id == worldId } ?: WorldItem(
+          id = worldId,
+          projectId = selectedProjectId,
+          name = worldName.ifBlank { "未命名故事" },
+          intro = worldIntro,
+          chapterCount = chapters.size,
+        )
+        val sorted = chapters.toList().sortedWith(compareBy<ChapterItem> { it.sort }.thenBy { it.id })
+        val preferredId = savedChapter?.id ?: selectedChapterId
+        val startChapter = when {
+          preferredId != null -> sorted.firstOrNull { it.id == preferredId }
+          else -> sorted.firstOrNull()
+        } ?: error("请先填写当前章节")
+
+        debugMode = true
+        debugChapterSequence = sorted
+        debugChapterId = startChapter.id
+        debugChapterTitle = startChapter.title
+        debugWorldName = currentWorld.name
+        debugWorldIntro = currentWorld.intro
+        debugSessionTitle = "调试：${currentWorld.name.ifBlank { "未命名故事" }}"
+        debugRuntimeState = JsonObject()
+        debugEndDialog = null
+        debugMessageSeed = 1L
+        currentSessionId = "debug_${System.currentTimeMillis()}"
+        sessionDetail = null
+        messages.clear()
+        sendText = ""
+
+        val result = repository.debugStep(
+          worldId = worldId,
+          chapterId = startChapter.id,
+          state = debugRuntimeState,
+          messages = emptyList(),
+          playerContent = null,
+        )
+        debugRuntimeState = result.state
+        debugChapterId = result.chapterId ?: startChapter.id
+        debugChapterTitle = result.chapterTitle.ifBlank { startChapter.title }
+        messages.clear()
+        if (result.messages.isNotEmpty()) {
+          messages.addAll(result.messages)
+          debugMessageSeed = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
+        }
+        updateDebugStatePreview()
+        activeTab = "游玩"
+        notice = "已进入章节调试模式（仅调试缓存，不会持久化）"
+      }.onFailure {
+        leaveDebugMode()
+        notice = "进入调试失败: ${it.message ?: "未知错误"}"
       }
     }
-    val sorted = seq.sortedWith(compareBy<ChapterItem> { it.sort }.thenBy { it.id })
-    val startChapter = when {
-      selectedChapterId != null -> sorted.firstOrNull { it.id == selectedChapterId } ?: editorChapter
-      else -> editorChapter
-    }
-    if (startChapter == null) {
-      notice = "请先填写当前章节"
-      return
-    }
-
-    debugMode = true
-    debugChapterSequence = sorted
-    debugChapterId = startChapter.id
-    debugChapterTitle = startChapter.title
-    debugWorldName = currentWorld.name
-    debugWorldIntro = currentWorld.intro
-    debugSessionTitle = "调试：${currentWorld.name.ifBlank { "未命名故事" }}"
-    debugEndDialog = null
-    debugMessageSeed = 1L
-    currentSessionId = "debug_${System.currentTimeMillis()}"
-    sessionDetail = null
-    messages.clear()
-    sendText = ""
-    appendDebugNarrator("进入章节《${startChapter.title.ifBlank { "未命名章节" }}》")
-    val (openingRole, openingLine) = currentChapterDebugOpening(startChapter)
-    if (openingLine.isNotBlank()) {
-      appendDebugNarrator("开场白[$openingRole]：$openingLine")
-    }
-    val chapterBody = stripOpeningPrefix(startChapter.content, openingRole, openingLine)
-    if (chapterBody.isNotBlank()) {
-      appendDebugNarrator("章节内容：${chapterBody.take(120)}")
-    }
-    updateDebugStatePreview()
-    activeTab = "游玩"
-    notice = "已进入章节调试模式（仅本地缓存，不会持久化）"
   }
 
   fun quickStart() {
@@ -2568,47 +2659,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private fun sendDebugMessage(text: String) {
-    appendDebugPlayer(text)
-    sendText = ""
     val chapter = playCurrentChapter()
     if (chapter == null) {
-      appendDebugNarrator("调试章节不存在，请返回重新选择。")
+      notice = "调试章节不存在，请返回重新选择。"
       updateDebugStatePreview()
       return
     }
-    val conditionResult = evaluateDebugChapterResult(chapter, text)
-    when (conditionResult.first) {
-      DebugChapterResult.Continue -> {
-        val hint = chapter.content.take(72).ifBlank { "继续推进剧情。" }
-        appendDebugNarrator("调试中：《${chapter.title.ifBlank { "当前章节" }}》继续。\n$hint")
-      }
-
-      DebugChapterResult.Success -> {
-        val nextChapter = resolveNextDebugChapter(chapter.id, conditionResult.second)
-        if (nextChapter != null) {
-          appendDebugNarrator("章节《${chapter.title.ifBlank { "当前章节" }}》完成，进入《${nextChapter.title.ifBlank { "下一章节" }}》。")
-          debugChapterId = nextChapter.id
-          debugChapterTitle = nextChapter.title
-          val (nextRole, nextLine) = currentChapterDebugOpening(nextChapter)
-          if (nextLine.isNotBlank()) {
-            appendDebugNarrator("开场白[$nextRole]：$nextLine")
-          }
-          val nextBody = stripOpeningPrefix(nextChapter.content, nextRole, nextLine)
-          if (nextBody.isNotBlank()) {
-            appendDebugNarrator("下一章提示：${nextBody.take(100)}")
-          }
-        } else {
-          appendDebugNarrator("章节《${chapter.title.ifBlank { "当前章节" }}》完成，故事已完结。")
-          debugEndDialog = "已完结"
+    viewModelScope.launch {
+      runCatching {
+        val now = System.currentTimeMillis()
+        messages.add(
+          MessageItem(
+            id = debugMessageSeed++,
+            role = playerName.ifBlank { "用户" },
+            roleType = "player",
+            eventType = "on_message",
+            content = text,
+            createTime = now,
+          ),
+        )
+        sendText = ""
+        val history = messages.dropLast(1)
+        val result = repository.debugStep(
+          worldId = worldId,
+          chapterId = debugChapterId,
+          state = debugRuntimeState,
+          messages = history,
+          playerContent = text,
+        )
+        debugRuntimeState = result.state
+        if (result.chapterId != null && result.chapterId > 0L) {
+          debugChapterId = result.chapterId
         }
-      }
-
-      DebugChapterResult.Failed -> {
-        appendDebugNarrator("章节《${chapter.title.ifBlank { "当前章节" }}》判定失败，调试结束。")
-        debugEndDialog = "已失败"
+        if (result.chapterTitle.isNotBlank()) {
+          debugChapterTitle = result.chapterTitle
+        }
+        if (result.messages.isNotEmpty()) {
+          messages.addAll(result.messages)
+          debugMessageSeed = (messages.maxOfOrNull { it.id } ?: debugMessageSeed) + 1L
+        }
+        debugEndDialog = result.endDialog
+        updateDebugStatePreview()
+      }.onFailure {
+        notice = "调试发送失败: ${it.message ?: "未知错误"}"
+        updateDebugStatePreview()
       }
     }
-    updateDebugStatePreview()
   }
 
   private fun appendDebugPlayer(content: String) {
@@ -2753,6 +2849,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private fun updateDebugStatePreview() {
+    val runtimePreview = debugRuntimeState?.takeIf { !it.isJsonNull }?.toString()?.trim()
+    if (!runtimePreview.isNullOrBlank() && runtimePreview != "null") {
+      debugStatePreview = runtimePreview
+      return
+    }
     val chapter = playCurrentChapter()
     debugStatePreview = JsonObject().apply {
       addProperty("mode", "debug")
@@ -2910,6 +3011,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     debugWorldIntro = ""
     debugChapterId = null
     debugChapterTitle = ""
+    debugRuntimeState = null
     debugStatePreview = "{}"
     debugEndDialog = null
     debugChapterSequence = emptyList()
