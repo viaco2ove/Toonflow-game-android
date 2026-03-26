@@ -1746,6 +1746,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return resolveMediaPath(matched?.avatarPath)
   }
 
+  fun avatarBgPathForMessage(message: MessageItem): String {
+    val roleName = message.role.trim()
+    if (message.roleType == "player") {
+      return resolveMediaPath(playStoryRoles().firstOrNull { it.roleType == "player" }?.avatarBgPath)
+    }
+    val matched = playStoryRoles().firstOrNull { role ->
+      (role.roleType == message.roleType && roleName.isNotBlank() && role.name == roleName) ||
+        (roleName.isNotBlank() && role.name == roleName)
+    } ?: playStoryRoles().firstOrNull { it.roleType == message.roleType }
+    return resolveMediaPath(matched?.avatarBgPath)
+  }
+
   fun displayNameForMessage(message: MessageItem): String {
     if (message.role.isNotBlank()) return message.role
     return when (message.roleType) {

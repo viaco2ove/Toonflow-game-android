@@ -293,7 +293,7 @@ private fun defaultSettingsModelName(manufacturer: String, type: String, modelTy
     return if (modelType == "asr") "fun-asr-realtime" else "cosyvoice-v3-flash"
   }
   if (type == "voice" && manufacturer == "aliyun_direct") {
-    return if (modelType == "asr") "qwen3-asr-flash" else "qwen3-tts-instruct-flash"
+    return if (modelType == "asr") "qwen3-asr-flash" else "cosyvoice-v3.5-flash"
   }
   return ""
 }
@@ -2102,7 +2102,7 @@ private fun PlayScene(
   val currentLiveMessage = if (mode == "history") null else displayMessages.lastOrNull()
   val currentLiveFigurePath = currentLiveMessage
     ?.takeIf { it.roleType != "player" }
-    ?.let { vm.avatarPathForMessage(it).trim().ifBlank { null } }
+    ?.let { vm.avatarBgPathForMessage(it).trim().ifBlank { vm.avatarPathForMessage(it).trim().ifBlank { null } } }
   val closeDialogMenu = {
     selectedMessage = null
     onCloseDialogMenu()
@@ -2131,10 +2131,10 @@ private fun PlayScene(
         model = currentLiveFigurePath,
         contentDescription = null,
         modifier = Modifier
-          .align(Alignment.BottomStart)
-          .width(188.dp)
-          .height(336.dp)
-          .alpha(0.22f),
+          .align(Alignment.BottomCenter)
+          .width(278.dp)
+          .height(428.dp)
+          .alpha(0.34f),
         contentScale = ContentScale.Fit,
       )
     }
@@ -2184,7 +2184,7 @@ private fun PlayScene(
                 selectedMessage = msg
                 onOpenDialogMenu()
               },
-              modifier = Modifier.padding(bottom = 116.dp),
+              modifier = Modifier.padding(bottom = 152.dp),
             )
           }
         } else {
@@ -3751,7 +3751,8 @@ private fun VoicePickerDialog(
   onDismiss: () -> Unit,
   onConfirm: (VoiceBindingDraft) -> Unit,
 ) {
-  var selectedConfigId by remember(initialConfigId, title) { mutableStateOf(initialConfigId) }
+  fun runtimeStoryVoiceConfigId(): Long? = vm.settingsModelBinding("storyVoiceModel")?.configId?.takeIf { it > 0L }
+  var selectedConfigId by remember(initialConfigId, title) { mutableStateOf(runtimeStoryVoiceConfigId() ?: initialConfigId) }
   var selectedPresetId by remember(initialPresetId, title) { mutableStateOf(initialPresetId) }
   var selectedMode by remember(initialMode, title) { mutableStateOf(initialMode.ifBlank { "text" }) }
   var referenceAudioPath by remember(initialReferenceAudioPath, title) { mutableStateOf(initialReferenceAudioPath) }
@@ -3773,7 +3774,6 @@ private fun VoicePickerDialog(
   val scrollState = rememberScrollState()
   val scope = rememberCoroutineScope()
   val context = LocalContext.current
-  fun runtimeStoryVoiceConfigId(): Long? = vm.settingsModelBinding("storyVoiceModel")?.configId?.takeIf { it > 0L }
   val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
     if (uri != null) {
       val displayName = displayNameForUri(context, uri)
@@ -3797,9 +3797,15 @@ private fun VoicePickerDialog(
   LaunchedEffect(Unit) {
     vm.ensureVoiceModels()
   }
-  LaunchedEffect(vm.voiceModels.size) {
-    if (selectedConfigId == null && vm.voiceModels.isNotEmpty()) {
-      selectedConfigId = runtimeStoryVoiceConfigId() ?: vm.voiceModels.first().id
+  LaunchedEffect(vm.voiceModels.size, initialConfigId) {
+    if (vm.voiceModels.isNotEmpty()) {
+      selectedConfigId = runtimeStoryVoiceConfigId() ?: initialConfigId ?: vm.voiceModels.first().id
+    }
+  }
+  LaunchedEffect(vm.settingsAiModelMap.size) {
+    val runtimeConfigId = runtimeStoryVoiceConfigId() ?: return@LaunchedEffect
+    if (selectedConfigId != runtimeConfigId) {
+      selectedConfigId = runtimeConfigId
     }
   }
   LaunchedEffect(selectedConfigId) {
@@ -4113,7 +4119,7 @@ private fun VoicePickerDialog(
               scope.launch {
                 runCatching {
                   val url = vm.previewVoice(
-                    configId = selectedConfigId,
+                    configId = runtimeStoryVoiceConfigId() ?: selectedConfigId,
                     text = previewText.trim(),
                     mode = selectedMode,
                     presetId = selectedPresetId,
@@ -4188,7 +4194,7 @@ private fun VoicePickerDialog(
           onConfirm(
             VoiceBindingDraft(
               label = buildSelectedLabel(),
-              configId = selectedConfigId,
+              configId = runtimeStoryVoiceConfigId() ?: selectedConfigId,
               presetId = selectedPresetId,
               mode = selectedMode,
               referenceAudioPath = referenceAudioPath,
