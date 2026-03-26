@@ -69,16 +69,6 @@ data class VoiceBindingDraft(
   val mixVoices: List<VoiceMixItem> = emptyList(),
 )
 
-data class MiniGameState(
-  @SerializedName("gameType") val gameType: String = "",
-  @SerializedName("status") val status: String = "idle",
-  @SerializedName("round") val round: Int = 0,
-  @SerializedName("stage") val stage: String = "",
-  @SerializedName("winner") val winner: String = "",
-  @SerializedName("rewards") val rewards: List<String> = emptyList(),
-  @SerializedName("notes") val notes: String = "",
-)
-
 data class ChapterExtra(
   @SerializedName("chapterId") val chapterId: Long? = null,
   @SerializedName("sort") val sort: Int = 0,
@@ -105,7 +95,6 @@ data class WorldSettings(
   @SerializedName("coverBgPath") val coverBgPath: String = "",
   @SerializedName("allowRoleView") val allowRoleView: Boolean = true,
   @SerializedName("allowChatShare") val allowChatShare: Boolean = true,
-  @SerializedName("miniGameState") val miniGameState: MiniGameState = MiniGameState(),
   @SerializedName("publishStatus") val publishStatus: String = "draft",
   @SerializedName("chapterExtras") val chapterExtras: List<ChapterExtra> = emptyList(),
 )

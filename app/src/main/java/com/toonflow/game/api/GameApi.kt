@@ -117,6 +117,9 @@ interface GameApi {
   @POST("voice/preview")
   suspend fun previewVoice(@Body payload: JsonObject): ApiEnvelope<JsonObject>
 
+  @POST("voice/transcribe")
+  suspend fun transcribeVoice(@Body payload: JsonObject): ApiEnvelope<JsonObject>
+
   @POST("voice/polishPrompt")
   suspend fun polishVoicePrompt(@Body payload: JsonObject): ApiEnvelope<JsonObject>
 

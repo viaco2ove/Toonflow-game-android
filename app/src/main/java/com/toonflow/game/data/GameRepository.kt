@@ -371,6 +371,23 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return data.get("audioUrl")?.asString?.trim().orEmpty()
   }
 
+  suspend fun transcribeVoice(
+    configId: Long?,
+    audioBase64: String,
+    lang: String = "zh",
+    sessionId: String = "",
+  ): String {
+    val payload = JsonObject().apply {
+      if (configId != null && configId > 0L) addProperty("configId", configId)
+      addProperty("audioBase64", audioBase64)
+      if (lang.isNotBlank()) addProperty("lang", lang)
+      if (sessionId.isNotBlank()) addProperty("sessionId", sessionId)
+      addProperty("withSegments", false)
+    }
+    val data = api().transcribeVoice(payload).data
+    return data.get("text")?.asString?.trim().orEmpty()
+  }
+
   suspend fun polishVoicePrompt(text: String, style: String = ""): String {
     val payload = JsonObject().apply {
       addProperty("text", text)
@@ -398,28 +415,6 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("manufacturer", manufacturer)
     }
     return api().testImageModel(payload).data
-  }
-
-  suspend fun syncMiniGame(sessionId: String, miniGameJson: JsonObject) {
-    val payload = JsonObject().apply {
-      addProperty("sessionId", sessionId)
-      addProperty("roleType", "system")
-      addProperty("role", "系统")
-      addProperty("content", "同步小游戏状态")
-      addProperty("eventType", "on_mini_game_sync")
-      add("meta", JsonObject().apply {
-        add("miniGame", miniGameJson)
-      })
-      add("attrChanges", JsonArray().apply {
-        add(JsonObject().apply {
-          addProperty("entityType", "state")
-          addProperty("field", "state.miniGame")
-          add("value", miniGameJson)
-          addProperty("source", "mini_game_sync")
-        })
-      })
-    }
-    api().addMessage(payload)
   }
 
   fun toJson(value: Any): JsonObject {
