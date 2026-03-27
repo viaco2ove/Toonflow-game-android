@@ -19,6 +19,7 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.google.gson.JsonPrimitive
 import com.toonflow.game.data.ChapterItem
 import com.toonflow.game.data.ChapterExtra
 import com.toonflow.game.data.GameRepository
@@ -96,6 +97,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     SettingsModelSlot("storyOrchestratorModel", "编排师", "text"),
     SettingsModelSlot("storyMemoryModel", "记忆管理", "text"),
     SettingsModelSlot("storyImageModel", "AI生图", "image"),
+    SettingsModelSlot("storyVoiceDesignModel", "语音设计", "voice_design"),
     SettingsModelSlot("storyVoiceModel", "语音生成", "voice"),
     SettingsModelSlot("storyAsrModel", "语音识别", "voice"),
   )
@@ -139,7 +141,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var playerName by mutableStateOf("用户")
   var playerDesc by mutableStateOf("")
   var playerVoice by mutableStateOf("")
-  var playerVoiceConfigId by mutableStateOf<Long?>(null)
   var playerVoicePresetId by mutableStateOf("")
   var playerVoiceMode by mutableStateOf("text")
   var playerVoiceReferenceAudioPath by mutableStateOf("")
@@ -149,7 +150,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var playerVoiceMixVoices by mutableStateOf(defaultMixVoices())
   var narratorName by mutableStateOf("旁白")
   var narratorVoice by mutableStateOf("默认旁白")
-  var narratorVoiceConfigId by mutableStateOf<Long?>(null)
   var narratorVoicePresetId by mutableStateOf("")
   var narratorVoiceMode by mutableStateOf("text")
   var narratorVoiceReferenceAudioPath by mutableStateOf("")
@@ -166,6 +166,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   val voiceModels = mutableStateListOf<VoiceModelConfig>()
   val settingsTextConfigs = mutableStateListOf<ModelConfigItem>()
   val settingsImageConfigs = mutableStateListOf<ModelConfigItem>()
+  val settingsVoiceDesignConfigs = mutableStateListOf<ModelConfigItem>()
   val settingsVoiceConfigs = mutableStateListOf<VoiceModelConfig>()
   val settingsAiModelMap = mutableStateListOf<AiModelMapItem>()
   val storyPrompts = mutableStateListOf<PromptItem>()
@@ -209,6 +210,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var debugLoadingStage by mutableStateOf("")
   private var debugChapterSequence: List<ChapterItem> = emptyList()
   private var debugMessageSeed: Long = 1L
+  private var runtimeRetryTask: (suspend () -> Unit)? = null
+  private var runtimeRetrying = false
   private data class StoryEditorPersistSnapshot(
     val worldId: Long,
     val worldName: String,
@@ -218,7 +221,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val playerName: String,
     val playerDesc: String,
     val playerVoice: String,
-    val playerVoiceConfigId: Long?,
     val playerVoicePresetId: String,
     val playerVoiceMode: String,
     val playerVoiceReferenceAudioPath: String,
@@ -228,7 +230,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val playerVoiceMixVoices: List<VoiceMixItem>,
     val narratorName: String,
     val narratorVoice: String,
-    val narratorVoiceConfigId: Long?,
     val narratorVoicePresetId: String,
     val narratorVoiceMode: String,
     val narratorVoiceReferenceAudioPath: String,
@@ -258,6 +259,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private var storyEditorPersistMuted = false
   private var lastPersistedStoryEditorSnapshot: StoryEditorPersistSnapshot? = null
   private var undoStoryEditorSnapshot: StoryEditorPersistSnapshot? = null
+
+  private fun StoryRole.withoutVoiceConfigId(): StoryRole {
+    return copy(
+      voiceConfigId = null,
+      voiceMixVoices = voiceMixVoices.map { it.copy() },
+    )
+  }
 
   init {
     if (token.isBlank()) {
@@ -304,6 +312,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return when (type) {
       "text" -> settingsTextConfigs.toList()
       "image" -> settingsImageConfigs.toList()
+      "voice_design" -> settingsVoiceDesignConfigs.toList()
       "voice" -> settingsVoiceConfigs.map {
         ModelConfigItem(
           id = it.id,
@@ -434,7 +443,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       playerName = playerName,
       playerDesc = playerDesc,
       playerVoice = playerVoice,
-      playerVoiceConfigId = playerVoiceConfigId,
       playerVoicePresetId = playerVoicePresetId,
       playerVoiceMode = playerVoiceMode,
       playerVoiceReferenceAudioPath = playerVoiceReferenceAudioPath,
@@ -444,7 +452,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       playerVoiceMixVoices = playerVoiceMixVoices.map { it.copy() },
       narratorName = narratorName,
       narratorVoice = narratorVoice,
-      narratorVoiceConfigId = narratorVoiceConfigId,
       narratorVoicePresetId = narratorVoicePresetId,
       narratorVoiceMode = narratorVoiceMode,
       narratorVoiceReferenceAudioPath = narratorVoiceReferenceAudioPath,
@@ -456,7 +463,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       allowRoleView = allowRoleView,
       allowChatShare = allowChatShare,
       worldPublishStatus = worldPublishStatus,
-      npcRoles = npcRoles.map { it.copy(voiceMixVoices = it.voiceMixVoices.map { voice -> voice.copy() }) },
+      npcRoles = npcRoles.map { it.withoutVoiceConfigId() },
       chapters = chapters.map { it.copy() },
       chapterExtras = chapterExtras.map { it.copy() },
       selectedChapterId = selectedChapterId,
@@ -488,7 +495,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     playerName = snapshot.playerName
     playerDesc = snapshot.playerDesc
     playerVoice = snapshot.playerVoice
-    playerVoiceConfigId = snapshot.playerVoiceConfigId
     playerVoicePresetId = snapshot.playerVoicePresetId
     playerVoiceMode = snapshot.playerVoiceMode
     playerVoiceReferenceAudioPath = snapshot.playerVoiceReferenceAudioPath
@@ -498,7 +504,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     playerVoiceMixVoices = snapshot.playerVoiceMixVoices.map { it.copy() }
     narratorName = snapshot.narratorName
     narratorVoice = snapshot.narratorVoice
-    narratorVoiceConfigId = snapshot.narratorVoiceConfigId
     narratorVoicePresetId = snapshot.narratorVoicePresetId
     narratorVoiceMode = snapshot.narratorVoiceMode
     narratorVoiceReferenceAudioPath = snapshot.narratorVoiceReferenceAudioPath
@@ -511,7 +516,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     allowChatShare = snapshot.allowChatShare
     worldPublishStatus = snapshot.worldPublishStatus
     npcRoles.clear()
-    npcRoles.addAll(snapshot.npcRoles.map { it.copy(voiceMixVoices = it.voiceMixVoices.map { voice -> voice.copy() }) })
+    npcRoles.addAll(snapshot.npcRoles.map { it.withoutVoiceConfigId() })
     chapters.clear()
     chapters.addAll(snapshot.chapters.map { it.copy() })
     chapterExtras.clear()
@@ -560,6 +565,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         settingsTextConfigs.addAll(configs.filter { it.type == "text" }.sortedBy { it.id })
         settingsImageConfigs.clear()
         settingsImageConfigs.addAll(configs.filter { it.type == "image" }.sortedBy { it.id })
+        settingsVoiceDesignConfigs.clear()
+        settingsVoiceDesignConfigs.addAll(configs.filter { it.type == "voice_design" }.sortedBy { it.id })
         settingsVoiceConfigs.clear()
         settingsVoiceConfigs.addAll(voiceConfigs.filter { (it.type.ifBlank { "voice" }) == "voice" }.sortedBy { it.id })
         settingsAiModelMap.clear()
@@ -624,6 +631,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   suspend fun testManagedModelConfig(config: ModelConfigItem): SettingsModelTestResult {
     return when (config.type.ifBlank { "text" }) {
+      "voice_design" -> SettingsModelTestResult(
+        kind = "audio",
+        content = resolveMediaPath(repository.testVoiceDesignModel(config.model, config.apiKey, config.baseUrl, config.manufacturer)),
+      )
       "text" -> SettingsModelTestResult(
         kind = "text",
         content = repository.testTextModel(config.model, config.apiKey, config.baseUrl, config.manufacturer),
@@ -684,6 +695,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   companion object {
+    private const val RUNTIME_RETRY_EVENT = "on_runtime_retry_error"
     private fun defaultMixVoices(): List<VoiceMixItem> = listOf(VoiceMixItem(weight = 0.7))
   }
 
@@ -853,6 +865,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     settingsPanelLoaded = false
     settingsTextConfigs.clear()
     settingsImageConfigs.clear()
+    settingsVoiceDesignConfigs.clear()
     settingsVoiceConfigs.clear()
     settingsAiModelMap.clear()
     storyPrompts.clear()
@@ -1007,7 +1020,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun playChapterConditionText(): String {
-    return playCurrentChapter()?.completionCondition?.toString()?.ifBlank { "无" } ?: "无"
+    return normalizeConditionEditorText(playCurrentChapter()?.completionCondition).ifBlank { "无" }
+  }
+
+  fun playVisibleChapterObjective(): String {
+    val chapter = playCurrentChapter() ?: return ""
+    if (chapter.showCompletionCondition == false) return ""
+    return normalizeConditionEditorText(chapter.completionCondition)
   }
 
   fun playGlobalBackground(): String {
@@ -1031,7 +1050,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         description = playerDesc,
         voice = playerVoice,
         voiceMode = playerVoiceMode,
-        voiceConfigId = playerVoiceConfigId,
         voicePresetId = playerVoicePresetId,
         voiceReferenceAudioPath = playerVoiceReferenceAudioPath,
         voiceReferenceAudioName = playerVoiceReferenceAudioName,
@@ -1049,7 +1067,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         description = "负责叙事推进",
         voice = narratorVoice,
         voiceMode = narratorVoiceMode,
-        voiceConfigId = narratorVoiceConfigId,
         voicePresetId = narratorVoicePresetId,
         voiceReferenceAudioPath = narratorVoiceReferenceAudioPath,
         voiceReferenceAudioName = narratorVoiceReferenceAudioName,
@@ -1077,6 +1094,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun leaveDebugMode() {
+    clearRuntimeRetryState()
     debugMode = false
     debugLoading = false
     debugLoadingStage = ""
@@ -1299,6 +1317,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val backgroundPath: String,
   )
 
+  private data class BinaryImageSource(
+    val bytes: ByteArray,
+    val mime: String,
+  )
+
   private fun importSceneImage(rawUri: String, storageKey: String, onSaved: (String, String) -> Unit) {
     val uri = runCatching { Uri.parse(rawUri) }.getOrNull()
     if (uri == null) {
@@ -1361,11 +1384,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           aspectRatio = aspectRatio,
         )
         val remotePath = result.filePath.ifBlank { result.path }.ifBlank { error("生成成功但未返回图片地址") }
-        val source = decodeBitmapFromUrl(resolveMediaPath(remotePath))
+        val resolvedRemotePath = resolveMediaPath(remotePath)
         val saved = if (wide) {
+          val source = decodeBitmapFromUrl(resolvedRemotePath)
           uploadBitmapPair(source, storageKey, coverStdWidth, coverStdHeight, coverBgWidth, coverBgHeight, "scene", true)
         } else {
-          uploadBitmapPair(source, storageKey, avatarStdSize, avatarStdSize, avatarBgSize, avatarBgSize, "role", true)
+          val imageSource = loadRemoteImageSource(resolvedRemotePath)
+          separateAvatarWithImageModel(imageSource, storageKey, true)
         }
         onSaved(saved.foregroundPath, saved.backgroundPath)
         notice = "AI 图片已生成并应用"
@@ -1377,8 +1402,65 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private suspend fun saveAvatarFiles(uri: Uri, storageKey: String, projectScoped: Boolean): SavedImagePaths {
-    val source = decodeBitmapFromUri(uri)
-    return uploadBitmapPair(source, storageKey, avatarStdSize, avatarStdSize, avatarBgSize, avatarBgSize, "role", projectScoped)
+    val imageSource = readImageSourceFromUri(uri)
+    return separateAvatarWithImageModel(imageSource, storageKey, projectScoped)
+  }
+
+  private suspend fun separateAvatarWithImageModel(
+    source: BinaryImageSource,
+    storageKey: String,
+    projectScoped: Boolean,
+  ): SavedImagePaths {
+    val safeKey = storageKey.replace(Regex("[^A-Za-z0-9._-]"), "_")
+    val result = repository.separateRoleAvatar(
+      projectId = if (projectScoped) selectedProjectId.takeIf { it > 0L } ?: error("请先选择项目后再上传图片") else null,
+      base64Data = bytesToBase64Payload(source.bytes, source.mime),
+      fileName = "${safeKey}.${imageMimeToExtension(source.mime)}",
+      name = safeKey,
+    )
+    val foregroundPath = resolveMediaPath(result.foregroundFilePath.ifBlank { result.foregroundPath })
+    val backgroundPath = resolveMediaPath(result.backgroundFilePath.ifBlank { result.backgroundPath })
+    if (foregroundPath.isBlank() || backgroundPath.isBlank()) {
+      error("图像模型分离失败，未返回主体或背景图片")
+    }
+    return SavedImagePaths(
+      foregroundPath = foregroundPath,
+      backgroundPath = backgroundPath,
+    )
+  }
+
+  private suspend fun uploadAnimatedAvatarPair(
+    source: BinaryImageSource,
+    storageKey: String,
+    projectScoped: Boolean,
+  ): SavedImagePaths {
+    val backgroundSource = decodeBitmapFromBytes(source.bytes)
+    val background = centerCropBitmap(backgroundSource, avatarBgSize, avatarBgSize)
+    backgroundSource.recycle()
+
+    val safeKey = storageKey.replace(Regex("[^A-Za-z0-9._-]"), "_")
+    val version = System.currentTimeMillis()
+    val targetProjectId = if (projectScoped) selectedProjectId.takeIf { it > 0L } ?: error("请先选择项目后再上传图片") else null
+    return try {
+      val fgResult = repository.uploadImage(
+        projectId = targetProjectId,
+        type = "role",
+        base64Data = bytesToBase64Payload(source.bytes, source.mime),
+        fileName = "${safeKey}_${version}_fg.${imageMimeToExtension(source.mime)}",
+      )
+      val bgResult = repository.uploadImage(
+        projectId = targetProjectId,
+        type = "role",
+        base64Data = bitmapToBase64Payload(background),
+        fileName = "${safeKey}_${version}_bg.png",
+      )
+      SavedImagePaths(
+        foregroundPath = resolveMediaPath(fgResult.filePath.ifBlank { fgResult.path }),
+        backgroundPath = resolveMediaPath(bgResult.filePath.ifBlank { bgResult.path }),
+      )
+    } finally {
+      background.recycle()
+    }
   }
 
   private suspend fun uploadBitmapPair(
@@ -1430,6 +1512,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  private fun decodeBitmapFromBytes(bytes: ByteArray): Bitmap {
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: error("图片解码失败")
+  }
+
   private fun decodeBitmapFromUrl(url: String): Bitmap {
     return URL(url).openStream().use { input ->
       BitmapFactory.decodeStream(input) ?: error("图片解码失败")
@@ -1451,7 +1537,63 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       "gif" -> "image/gif"
       else -> "image/png"
     }
-    return "data:$mime;base64,${Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)}"
+    return bytesToBase64Payload(file.readBytes(), mime)
+  }
+
+  private fun bytesToBase64Payload(bytes: ByteArray, mime: String): String {
+    return "data:$mime;base64,${Base64.encodeToString(bytes, Base64.NO_WRAP)}"
+  }
+
+  private fun imageMimeToExtension(mime: String): String {
+    return when (mime.trim().lowercase()) {
+      "image/jpeg" -> "jpg"
+      "image/webp" -> "webp"
+      "image/gif" -> "gif"
+      else -> "png"
+    }
+  }
+
+  private fun normalizeImageMime(displayName: String, rawMime: String): String {
+    val mime = rawMime.trim().lowercase()
+    if (mime.startsWith("image/")) {
+      return when (mime) {
+        "image/jpg" -> "image/jpeg"
+        "image/x-png" -> "image/png"
+        else -> mime
+      }
+    }
+    return when (displayName.substringAfterLast('.', "").trim().lowercase()) {
+      "jpg", "jpeg" -> "image/jpeg"
+      "webp" -> "image/webp"
+      "gif" -> "image/gif"
+      else -> "image/png"
+    }
+  }
+
+  private fun readImageSourceFromUri(uri: Uri): BinaryImageSource {
+    val app = getApplication<Application>()
+    val resolver = app.contentResolver
+    val displayName = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+      val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+      if (nameIdx >= 0 && cursor.moveToFirst()) cursor.getString(nameIdx) else null
+    }?.trim().orEmpty()
+    val mime = normalizeImageMime(displayName, resolver.getType(uri).orEmpty())
+    val bytes = resolver.openInputStream(uri).use { input ->
+      if (input == null) error("无法读取所选图片")
+      input.readBytes()
+    }
+    return BinaryImageSource(bytes = bytes, mime = mime)
+  }
+
+  private fun loadRemoteImageSource(url: String): BinaryImageSource {
+    val connection = URL(url).openConnection().apply {
+      connectTimeout = 10000
+      readTimeout = 10000
+    }
+    val displayName = url.substringAfterLast('/').substringBefore('?').substringBefore('#').trim()
+    val mime = normalizeImageMime(displayName, connection.contentType.orEmpty())
+    val bytes = connection.getInputStream().use { input -> input.readBytes() }
+    return BinaryImageSource(bytes = bytes, mime = mime)
   }
 
   private fun uriToBase64(uri: Uri): String {
@@ -1699,6 +1841,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return "${sessionId.trim()}_${message.id}_${message.createTime}"
   }
 
+  fun isRuntimeRetryMessage(message: MessageItem): Boolean {
+    return message.eventType == RUNTIME_RETRY_EVENT
+  }
+
   fun reactionForMessage(message: MessageItem, sessionId: String = currentSessionId): String {
     val key = messageUiKey(message, sessionId)
     val cached = messageReactions[key]
@@ -1761,9 +1907,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun displayNameForMessage(message: MessageItem): String {
     if (message.role.isNotBlank()) return message.role
     return when (message.roleType) {
+      "system" -> "系统"
       "player" -> playerName.ifBlank { "用户" }
       "narrator" -> narratorName.ifBlank { "旁白" }
       else -> "角色"
+    }
+  }
+
+  private fun conversationMessages(source: List<MessageItem> = messages): List<MessageItem> {
+    return source.filterNot(::isRuntimeRetryMessage)
+  }
+
+  private fun clearRuntimeRetryMessage() {
+    val nextMessages = conversationMessages()
+    if (nextMessages.size == messages.size) return
+    messages.clear()
+    messages.addAll(nextMessages)
+  }
+
+  private fun clearRuntimeRetryState() {
+    runtimeRetryTask = null
+    clearRuntimeRetryMessage()
+  }
+
+  private fun showRuntimeRetryMessage(message: String, task: suspend () -> Unit) {
+    val now = System.currentTimeMillis()
+    runtimeRetryTask = task
+    notice = ""
+    val nextMessages = conversationMessages(messages.toList())
+    messages.clear()
+    messages.addAll(nextMessages)
+    messages.add(
+      MessageItem(
+        id = -now,
+        role = "系统",
+        roleType = "system",
+        eventType = RUNTIME_RETRY_EVENT,
+        content = message,
+        createTime = now,
+      ),
+    )
+  }
+
+  fun retryRuntimeFailure() {
+    val task = runtimeRetryTask ?: return
+    if (runtimeRetrying) return
+    runtimeRetrying = true
+    clearRuntimeRetryState()
+    viewModelScope.launch {
+      try {
+        task()
+      } finally {
+        runtimeRetrying = false
+      }
     }
   }
 
@@ -1790,7 +1986,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       promptText = promptText.trim(),
       mixVoices = normalizedMixVoices(mixVoices),
     )
-    if (normalized.configId == null || normalized.configId <= 0L) return null
     return when (normalizedMode) {
       "clone" -> normalized.takeIf { it.referenceAudioPath.isNotBlank() }
       "mix" -> normalized.takeIf { it.mixVoices.any { item -> item.voiceId.isNotBlank() } }
@@ -1805,13 +2000,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (message.roleType == "narrator") {
       val settings = world?.settings
       val narratorRole = world?.narratorRole
-      val configId = settings?.narratorVoiceConfigId ?: narratorRole?.voiceConfigId ?: narratorVoiceConfigId ?: runtimeStoryVoiceConfigId()
-      val mode = settings?.narratorVoiceMode ?: narratorRole?.voiceMode ?: narratorVoiceMode
+      val debugConfigId = if (debugMode && world == null) runtimeStoryVoiceConfigId() else null
+      val configId = settings?.narratorVoiceConfigId ?: narratorRole?.voiceConfigId ?: debugConfigId
+      val mode = settings?.narratorVoiceMode ?: narratorRole?.voiceMode.orEmpty().ifBlank { narratorVoiceMode.ifBlank { "text" } }
       val presetId = settings?.narratorVoicePresetId ?: narratorRole?.voicePresetId.orEmpty().ifBlank { narratorVoicePresetId }
       return createPlayableVoiceBinding(
         label = settings?.narratorVoice ?: narratorRole?.voice ?: narratorVoice.ifBlank { narratorName.ifBlank { "旁白" } },
         configId = configId,
-        presetId = if (presetId.isBlank() && configId != null && (mode.ifBlank { "text" } == "text")) "story_narrator" else presetId,
+        presetId = if (presetId.isBlank() && (mode.ifBlank { "text" } == "text")) "story_narrator" else presetId,
         mode = mode,
         referenceAudioPath = settings?.narratorVoiceReferenceAudioPath ?: narratorRole?.voiceReferenceAudioPath.orEmpty().ifBlank { narratorVoiceReferenceAudioPath },
         referenceAudioName = settings?.narratorVoiceReferenceAudioName ?: narratorRole?.voiceReferenceAudioName.orEmpty().ifBlank { narratorVoiceReferenceAudioName },
@@ -1824,10 +2020,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val matchedRole = playStoryRoles().firstOrNull { role ->
       (roleName.isNotBlank() && (role.name == roleName || role.id == roleName)) || (roleName.isBlank() && role.roleType == message.roleType)
     } ?: playStoryRoles().firstOrNull { it.roleType == message.roleType }
-    val configId = matchedRole?.voiceConfigId ?: runtimeStoryVoiceConfigId()
+    val configId = matchedRole?.voiceConfigId ?: if (debugMode && world == null) runtimeStoryVoiceConfigId() else null
     val mode = matchedRole?.voiceMode.orEmpty().ifBlank { "text" }
     val presetId = matchedRole?.voicePresetId.orEmpty().ifBlank {
-      if (configId != null && mode == "text" && matchedRole != null) {
+      if (mode == "text" && matchedRole != null) {
         inferFallbackVoicePreset(matchedRole.roleType, matchedRole.name, matchedRole.description)
       } else {
         ""
@@ -1947,6 +2143,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       val primitive = raw.asJsonPrimitive
       if (primitive.isString) return normalizeScalarEditorText(primitive.asString).trim()
     }
+    extractSimpleConditionText(raw)?.let { return it }
     return raw.toString()
   }
 
@@ -1957,6 +2154,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       val parsed = JsonParser.parseString(text)
       normalizeConditionEditorText(parsed)
     }.getOrElse { text }
+  }
+
+  private fun extractSimpleConditionText(raw: JsonElement?): String? {
+    if (raw == null || raw.isJsonNull || !raw.isJsonObject) return null
+    val obj = raw.asJsonObject
+    val allowedKeys = setOf("type", "op", "field", "left", "value", "right")
+    if (obj.keySet().any { it !in allowedKeys }) return null
+    val op = (obj.get("type") ?: obj.get("op"))?.let { normalizeScalarEditorText(it.toString()).trim().trim('"').lowercase() }
+      ?: "contains"
+    val field = (obj.get("field") ?: obj.get("left"))?.let { normalizeScalarEditorText(it.toString()).trim().trim('"').lowercase() }
+      ?: "message"
+    val valueElement = obj.get("value") ?: obj.get("right")
+    val value = if (valueElement == null || valueElement.isJsonNull) "" else when {
+      valueElement.isJsonPrimitive && valueElement.asJsonPrimitive.isString -> normalizeScalarEditorText(valueElement.asString).trim()
+      else -> normalizeScalarEditorText(valueElement.toString()).trim().trim('"')
+    }
+    if (value.isBlank()) return null
+    if (op !in setOf("contains", "equals", "eq")) return null
+    if (field !in setOf("message", "message.content", "latest", "latest_message")) return null
+    return value
   }
 
   private fun extractOpeningContentParts(content: String): OpeningContentParts? {
@@ -2261,7 +2478,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun setPlayerVoiceBinding(binding: VoiceBindingDraft) {
     playerVoice = binding.label.trim()
-    playerVoiceConfigId = binding.configId
     playerVoicePresetId = binding.presetId.trim()
     playerVoiceMode = binding.mode.ifBlank { "text" }
     playerVoiceReferenceAudioPath = binding.referenceAudioPath.trim()
@@ -2283,7 +2499,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun setNarratorVoiceBinding(binding: VoiceBindingDraft) {
     narratorVoice = binding.label.trim()
-    narratorVoiceConfigId = binding.configId
     narratorVoicePresetId = binding.presetId.trim()
     narratorVoiceMode = binding.mode.ifBlank { "text" }
     narratorVoiceReferenceAudioPath = binding.referenceAudioPath.trim()
@@ -2309,7 +2524,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       npcRoles[index] = npcRoles[index].copy(
         voice = binding.label.trim(),
         voiceMode = binding.mode.ifBlank { "text" },
-        voiceConfigId = binding.configId,
         voicePresetId = binding.presetId.trim(),
         voiceReferenceAudioPath = binding.referenceAudioPath.trim(),
         voiceReferenceAudioName = binding.referenceAudioName.trim(),
@@ -2391,7 +2605,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       description = playerDesc,
       voice = playerVoice,
       voiceMode = playerVoiceMode,
-      voiceConfigId = playerVoiceConfigId,
       voicePresetId = playerVoicePresetId,
       voiceReferenceAudioPath = playerVoiceReferenceAudioPath,
       voiceReferenceAudioName = playerVoiceReferenceAudioName,
@@ -2409,7 +2622,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       description = "负责叙事推进",
       voice = narratorVoice,
       voiceMode = narratorVoiceMode,
-      voiceConfigId = narratorVoiceConfigId,
       voicePresetId = narratorVoicePresetId,
       voiceReferenceAudioPath = narratorVoiceReferenceAudioPath,
       voiceReferenceAudioName = narratorVoiceReferenceAudioName,
@@ -2430,7 +2642,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           description = role.description,
           voice = role.voice,
           voiceMode = role.voiceMode,
-          voiceConfigId = role.voiceConfigId,
           voicePresetId = role.voicePresetId,
           voiceReferenceAudioPath = role.voiceReferenceAudioPath,
           voiceReferenceAudioName = role.voiceReferenceAudioName,
@@ -2463,7 +2674,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       "roles" to (listOf(playerRole) + npc),
       "narratorVoice" to narratorVoice,
       "narratorVoiceMode" to narratorVoiceMode,
-      "narratorVoiceConfigId" to narratorVoiceConfigId,
       "narratorVoicePresetId" to narratorVoicePresetId,
       "narratorVoiceReferenceAudioPath" to narratorVoiceReferenceAudioPath,
       "narratorVoiceReferenceAudioName" to narratorVoiceReferenceAudioName,
@@ -2699,6 +2909,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       notice = "请先选择项目"
       return
     }
+    clearRuntimeRetryState()
+    viewModelScope.launch {
+      runCatching {
+        performDebugCurrentChapter()
+      }.onFailure {
+        debugLoading = false
+        debugLoadingStage = ""
+        leaveDebugMode()
+        showRuntimeRetryMessage("进入调试失败: ${it.message ?: "未知错误"}") {
+          performDebugCurrentChapter()
+        }
+      }
+    }
+  }
+
+  private suspend fun performDebugCurrentChapter() {
     debugMode = true
     debugLoading = true
     debugLoadingStage = "进入调试界面"
@@ -2713,77 +2939,72 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sendText = ""
     activeTab = "游玩"
     notice = "进入调试中..."
-    viewModelScope.launch {
-      runCatching {
-        debugLoadingStage = "保存草稿"
+    try {
+      debugLoadingStage = "保存草稿"
+      saveWorldInternal(false)
+      val savedChapter = saveEditorChapterInternal(worldPublishStatus.ifBlank { "draft" })
+      if (savedChapter != null) {
         saveWorldInternal(false)
-        val savedChapter = saveEditorChapterInternal(worldPublishStatus.ifBlank { "draft" })
-        if (savedChapter != null) {
-          saveWorldInternal(false)
-        }
-        debugLoadingStage = "创建这次会话环境"
-        if (worldId > 0L) {
-          loadChapters(worldId)
-        }
-        refreshStoryData()
-        primeStoryEditorPersistState()
-
-        val currentWorld = worlds.firstOrNull { it.id == worldId } ?: WorldItem(
-          id = worldId,
-          projectId = selectedProjectId,
-          name = worldName.ifBlank { "未命名故事" },
-          intro = worldIntro,
-          chapterCount = chapters.size,
-        )
-        val sorted = chapters.toList().sortedWith(compareBy<ChapterItem> { it.sort }.thenBy { it.id })
-        val preferredId = savedChapter?.id ?: selectedChapterId
-        val startChapter = when {
-          preferredId != null -> sorted.firstOrNull { it.id == preferredId }
-          else -> sorted.firstOrNull()
-        } ?: error("请先填写当前章节")
-
-        debugChapterSequence = sorted
-        debugChapterId = startChapter.id
-        debugChapterTitle = normalizeChapterTitleLabel(startChapter.title, startChapter.sort)
-        debugWorldName = currentWorld.name
-        debugWorldIntro = currentWorld.intro
-        debugSessionTitle = "调试：${currentWorld.name.ifBlank { "未命名故事" }}"
-        debugRuntimeState = JsonObject()
-        debugEndDialog = null
-        debugMessageSeed = 1L
-        currentSessionId = "debug_${System.currentTimeMillis()}"
-        sessionDetail = null
-        messages.clear()
-        sendText = ""
-
-        debugLoadingStage = "读取记忆"
-        val result = repository.debugStep(
-          worldId = worldId,
-          chapterId = startChapter.id,
-          state = debugRuntimeState,
-          messages = emptyList(),
-          playerContent = null,
-        )
-        debugLoadingStage = "准备剧情编排完毕"
-        debugRuntimeState = result.state
-        debugChapterId = result.chapterId ?: startChapter.id
-        debugChapterTitle = normalizeChapterTitleLabel(result.chapterTitle.ifBlank { startChapter.title }, startChapter.sort)
-        messages.clear()
-        if (result.messages.isNotEmpty()) {
-          messages.addAll(result.messages)
-          debugMessageSeed = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
-        }
-        updateDebugStatePreview()
-        activeTab = "游玩"
-        debugLoading = false
-        debugLoadingStage = ""
-        notice = "已进入章节调试模式（仅调试缓存，不会持久化）"
-      }.onFailure {
-        debugLoading = false
-        debugLoadingStage = ""
-        leaveDebugMode()
-        notice = "进入调试失败: ${it.message ?: "未知错误"}"
       }
+      debugLoadingStage = "创建这次会话环境"
+      if (worldId > 0L) {
+        loadChapters(worldId)
+      }
+      refreshStoryData()
+      primeStoryEditorPersistState()
+
+      val currentWorld = worlds.firstOrNull { it.id == worldId } ?: WorldItem(
+        id = worldId,
+        projectId = selectedProjectId,
+        name = worldName.ifBlank { "未命名故事" },
+        intro = worldIntro,
+        chapterCount = chapters.size,
+      )
+      val sorted = chapters.toList().sortedWith(compareBy<ChapterItem> { it.sort }.thenBy { it.id })
+      val preferredId = savedChapter?.id ?: selectedChapterId
+      val startChapter = when {
+        preferredId != null -> sorted.firstOrNull { it.id == preferredId }
+        else -> sorted.firstOrNull()
+      } ?: error("请先填写当前章节")
+
+      debugChapterSequence = sorted
+      debugChapterId = startChapter.id
+      debugChapterTitle = normalizeChapterTitleLabel(startChapter.title, startChapter.sort)
+      debugWorldName = currentWorld.name
+      debugWorldIntro = currentWorld.intro
+      debugSessionTitle = "调试：${currentWorld.name.ifBlank { "未命名故事" }}"
+      debugRuntimeState = JsonObject()
+      debugEndDialog = null
+      debugMessageSeed = 1L
+      currentSessionId = "debug_${System.currentTimeMillis()}"
+      sessionDetail = null
+      messages.clear()
+      sendText = ""
+
+      debugLoadingStage = "读取记忆"
+      val result = repository.debugStep(
+        worldId = worldId,
+        chapterId = startChapter.id,
+        state = debugRuntimeState,
+        messages = emptyList(),
+        playerContent = null,
+      )
+      debugLoadingStage = "准备剧情编排完毕"
+      clearRuntimeRetryState()
+      debugRuntimeState = result.state
+      debugChapterId = result.chapterId ?: startChapter.id
+      debugChapterTitle = normalizeChapterTitleLabel(result.chapterTitle.ifBlank { startChapter.title }, startChapter.sort)
+      messages.clear()
+      if (result.messages.isNotEmpty()) {
+        messages.addAll(result.messages)
+        debugMessageSeed = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
+      }
+      updateDebugStatePreview()
+      activeTab = "游玩"
+      notice = "已进入章节调试模式（仅调试缓存，不会持久化）"
+    } finally {
+      debugLoading = false
+      debugLoadingStage = ""
     }
   }
 
@@ -2836,6 +3057,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun openSession(sessionId: String) {
     if (debugMode) leaveDebugMode()
+    clearRuntimeRetryState()
     currentSessionId = sessionId
     viewModelScope.launch {
       runCatching {
@@ -2875,14 +3097,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       return
     }
 
+    clearRuntimeRetryState()
     viewModelScope.launch {
       runCatching {
-        repository.addPlayerMessage(sid, playerName.ifBlank { "用户" }, text)
-        sendText = ""
-        refreshCurrentSession()
-        loadSessions()
+        performSessionPlayerMessage(sid, text)
       }.onFailure {
-        notice = "发送失败: ${it.message ?: "未知错误"}"
+        showRuntimeRetryMessage("发送失败: ${it.message ?: "未知错误"}") {
+          performSessionPlayerMessage(sid, text)
+        }
       }
     }
   }
@@ -2952,6 +3174,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private suspend fun refreshCurrentSession() {
     if (currentSessionId.isBlank()) return
     val detail = repository.getSession(currentSessionId)
+    clearRuntimeRetryState()
     sessionDetail = detail
     messages.clear()
     if (detail.messages.isNotEmpty()) {
@@ -2967,6 +3190,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     Failed,
   }
 
+  private suspend fun performSessionPlayerMessage(sessionId: String, text: String) {
+    repository.addPlayerMessage(sessionId, playerName.ifBlank { "用户" }, text)
+    sendText = ""
+    clearRuntimeRetryState()
+    refreshCurrentSession()
+    loadSessions()
+  }
+
   private fun sendDebugMessage(text: String) {
     val chapter = playCurrentChapter()
     if (chapter == null) {
@@ -2974,87 +3205,108 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       updateDebugStatePreview()
       return
     }
+    clearRuntimeRetryState()
     viewModelScope.launch {
       runCatching {
-        val now = System.currentTimeMillis()
-        messages.add(
-          MessageItem(
-            id = debugMessageSeed++,
-            role = playerName.ifBlank { "用户" },
-            roleType = "player",
-            eventType = "on_message",
-            content = text,
-            createTime = now,
-          ),
-        )
-        sendText = ""
-        val history = messages.dropLast(1)
-        val result = repository.debugStep(
-          worldId = worldId,
-          chapterId = debugChapterId,
-          state = debugRuntimeState,
-          messages = history,
-          playerContent = text,
-        )
-        debugRuntimeState = result.state
-        if (result.chapterId != null && result.chapterId > 0L) {
-          debugChapterId = result.chapterId
-        }
-        if (result.chapterTitle.isNotBlank()) {
-          debugChapterTitle = result.chapterTitle
-        }
-        if (result.messages.isNotEmpty()) {
-          messages.addAll(result.messages)
-          debugMessageSeed = (messages.maxOfOrNull { it.id } ?: debugMessageSeed) + 1L
-        }
-        debugEndDialog = result.endDialog
-        updateDebugStatePreview()
+        performDebugPlayerMessage(text, appendPlayerMessage = true)
       }.onFailure {
-        notice = "调试发送失败: ${it.message ?: "未知错误"}"
+        showRuntimeRetryMessage("调试发送失败: ${it.message ?: "未知错误"}") {
+          performDebugPlayerMessage(text, appendPlayerMessage = false)
+        }
         updateDebugStatePreview()
       }
     }
   }
 
+  private suspend fun performDebugPlayerMessage(text: String, appendPlayerMessage: Boolean) {
+    if (appendPlayerMessage) {
+      messages.add(
+        MessageItem(
+          id = debugMessageSeed++,
+          role = playerName.ifBlank { "用户" },
+          roleType = "player",
+          eventType = "on_message",
+          content = text,
+          createTime = System.currentTimeMillis(),
+        ),
+      )
+      sendText = ""
+    }
+    val history = conversationMessages()
+      .let { list ->
+        val last = list.lastOrNull()
+        if (last?.roleType == "player" && last.content == text) list.dropLast(1) else list
+      }
+    val result = repository.debugStep(
+      worldId = worldId,
+      chapterId = debugChapterId,
+      state = debugRuntimeState,
+      messages = history,
+      playerContent = text,
+    )
+    clearRuntimeRetryState()
+    debugRuntimeState = result.state
+    if (result.chapterId != null && result.chapterId > 0L) {
+      debugChapterId = result.chapterId
+    }
+    if (result.chapterTitle.isNotBlank()) {
+      debugChapterTitle = result.chapterTitle
+    }
+    if (result.messages.isNotEmpty()) {
+      messages.addAll(result.messages)
+      debugMessageSeed = (messages.maxOfOrNull { it.id } ?: debugMessageSeed) + 1L
+    }
+    debugEndDialog = result.endDialog
+    updateDebugStatePreview()
+  }
+
   fun continueDebugNarrative() {
     if (!debugMode || worldId <= 0L) return
+    clearRuntimeRetryState()
     viewModelScope.launch {
       runCatching {
-        for (attempt in 0 until 3) {
-          val beforeCount = messages.size
-          val result = repository.debugStep(
-            worldId = worldId,
-            chapterId = debugChapterId,
-            state = debugRuntimeState,
-            messages = messages.toList(),
-            playerContent = null,
-          )
-          debugRuntimeState = result.state
-          if (result.chapterId != null && result.chapterId > 0L) {
-            debugChapterId = result.chapterId
-          }
-          if (result.chapterTitle.isNotBlank()) {
-            debugChapterTitle = result.chapterTitle
-          }
-          if (result.messages.isNotEmpty()) {
-            messages.addAll(result.messages)
-            debugMessageSeed = (messages.maxOfOrNull { it.id } ?: debugMessageSeed) + 1L
-          }
-          debugEndDialog = result.endDialog
-          updateDebugStatePreview()
-          val canSpeak = try {
-            val turnState = debugRuntimeState?.asJsonObject?.getAsJsonObject("turnState")
-            turnState?.get("canPlayerSpeak")?.asBoolean ?: true
-          } catch (_: Throwable) {
-            true
-          }
-          if (messages.size > beforeCount || debugEndDialog != null || canSpeak) {
-            break
-          }
-        }
+        performContinueDebugNarrative()
       }.onFailure {
-        notice = "调试推进失败: ${it.message ?: "未知错误"}"
+        showRuntimeRetryMessage("调试推进失败: ${it.message ?: "未知错误"}") {
+          performContinueDebugNarrative()
+        }
         updateDebugStatePreview()
+      }
+    }
+  }
+
+  private suspend fun performContinueDebugNarrative() {
+    for (attempt in 0 until 3) {
+      val beforeCount = conversationMessages().size
+      val result = repository.debugStep(
+        worldId = worldId,
+        chapterId = debugChapterId,
+        state = debugRuntimeState,
+        messages = conversationMessages(),
+        playerContent = null,
+      )
+      clearRuntimeRetryState()
+      debugRuntimeState = result.state
+      if (result.chapterId != null && result.chapterId > 0L) {
+        debugChapterId = result.chapterId
+      }
+      if (result.chapterTitle.isNotBlank()) {
+        debugChapterTitle = result.chapterTitle
+      }
+      if (result.messages.isNotEmpty()) {
+        messages.addAll(result.messages)
+        debugMessageSeed = (messages.maxOfOrNull { it.id } ?: debugMessageSeed) + 1L
+      }
+      debugEndDialog = result.endDialog
+      updateDebugStatePreview()
+      val canSpeak = try {
+        val turnState = debugRuntimeState?.asJsonObject?.getAsJsonObject("turnState")
+        turnState?.get("canPlayerSpeak")?.asBoolean ?: true
+      } catch (_: Throwable) {
+        true
+      }
+      if (conversationMessages().size > beforeCount || debugEndDialog != null || canSpeak) {
+        break
       }
     }
   }
@@ -3219,13 +3471,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private fun parseChapterCondition(raw: String): JsonElement? {
     val text = normalizeScalarEditorText(raw).trim()
     if (text.isEmpty()) return null
-    return runCatching { JsonParser.parseString(text) }.getOrElse {
-      JsonObject().apply {
-        addProperty("type", "contains")
-        addProperty("field", "message")
-        addProperty("value", text)
-      }
-    }
+    return runCatching { JsonParser.parseString(text) }.getOrElse { JsonPrimitive(text) }
   }
 
   private fun buildRole(
@@ -3237,7 +3483,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     description: String,
     voice: String,
     voiceMode: String,
-    voiceConfigId: Long?,
     voicePresetId: String,
     voiceReferenceAudioPath: String,
     voiceReferenceAudioName: String,
@@ -3260,7 +3505,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       description = description,
       voice = voice,
       voiceMode = voiceMode.ifBlank { "text" },
-      voiceConfigId = voiceConfigId,
       voicePresetId = voicePresetId,
       voiceReferenceAudioPath = voiceReferenceAudioPath,
       voiceReferenceAudioName = voiceReferenceAudioName,
@@ -3294,7 +3538,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     playerName = "用户"
     playerDesc = ""
     playerVoice = ""
-    playerVoiceConfigId = null
     playerVoicePresetId = ""
     playerVoiceMode = "text"
     playerVoiceReferenceAudioPath = ""
@@ -3304,7 +3547,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     playerVoiceMixVoices = defaultMixVoices()
     narratorName = "旁白"
     narratorVoice = "默认旁白"
-    narratorVoiceConfigId = null
     narratorVoicePresetId = ""
     narratorVoiceMode = "text"
     narratorVoiceReferenceAudioPath = ""
@@ -3348,6 +3590,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     voiceModels.clear()
     settingsTextConfigs.clear()
     settingsImageConfigs.clear()
+    settingsVoiceDesignConfigs.clear()
     settingsVoiceConfigs.clear()
     settingsAiModelMap.clear()
     storyPrompts.clear()
@@ -3367,7 +3610,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     playerName = "用户"
     playerDesc = ""
     playerVoice = ""
-    playerVoiceConfigId = null
     playerVoicePresetId = ""
     playerVoiceMode = "text"
     playerVoiceReferenceAudioPath = ""
@@ -3377,7 +3619,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     playerVoiceMixVoices = defaultMixVoices()
     narratorName = "旁白"
     narratorVoice = "默认旁白"
-    narratorVoiceConfigId = null
     narratorVoicePresetId = ""
     narratorVoiceMode = "text"
     narratorVoiceReferenceAudioPath = ""
@@ -3423,7 +3664,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     playerDesc = world.playerRole?.description ?: ""
     playerVoice = world.playerRole?.voice ?: ""
     playerVoiceMode = world.playerRole?.voiceMode ?: "text"
-    playerVoiceConfigId = world.playerRole?.voiceConfigId
     playerVoicePresetId = world.playerRole?.voicePresetId ?: ""
     playerVoiceReferenceAudioPath = world.playerRole?.voiceReferenceAudioPath.orEmpty()
     playerVoiceReferenceAudioName = world.playerRole?.voiceReferenceAudioName.orEmpty()
@@ -3433,7 +3673,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     narratorName = world.narratorRole?.name ?: "旁白"
     narratorVoice = world.settings?.narratorVoice ?: world.narratorRole?.voice ?: "默认旁白"
     narratorVoiceMode = world.settings?.narratorVoiceMode ?: world.narratorRole?.voiceMode ?: "text"
-    narratorVoiceConfigId = world.settings?.narratorVoiceConfigId ?: world.narratorRole?.voiceConfigId
     narratorVoicePresetId = world.settings?.narratorVoicePresetId ?: world.narratorRole?.voicePresetId.orEmpty()
     narratorVoiceReferenceAudioPath = world.settings?.narratorVoiceReferenceAudioPath ?: world.narratorRole?.voiceReferenceAudioPath.orEmpty()
     narratorVoiceReferenceAudioName = world.settings?.narratorVoiceReferenceAudioName ?: world.narratorRole?.voiceReferenceAudioName.orEmpty()
@@ -3449,7 +3688,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     chapterExtras.clear()
     chapterExtras.addAll(world.settings?.chapterExtras ?: emptyList())
     npcRoles.clear()
-    npcRoles.addAll((world.settings?.roles ?: emptyList()).filter { it.roleType == "npc" }.map(::resolveRoleMedia))
+    npcRoles.addAll((world.settings?.roles ?: emptyList()).filter { it.roleType == "npc" }.map(::resolveRoleMedia).map { it.withoutVoiceConfigId() })
 
     primeStoryEditorPersistState()
   }

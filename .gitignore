@@ -15,3 +15,5 @@ captures/
 
 *.keystore
 *.jks
+/tmp/
+/test/playwright/

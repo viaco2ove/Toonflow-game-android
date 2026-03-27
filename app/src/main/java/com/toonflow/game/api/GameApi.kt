@@ -10,6 +10,7 @@ import com.toonflow.game.data.MessageItem
 import com.toonflow.game.data.ModelConfigItem
 import com.toonflow.game.data.ProjectItem
 import com.toonflow.game.data.PromptItem
+import com.toonflow.game.data.SeparatedRoleImageResult
 import com.toonflow.game.data.SessionDetail
 import com.toonflow.game.data.SessionItem
 import com.toonflow.game.data.UploadedVoiceAudioResult
@@ -56,6 +57,9 @@ interface GameApi {
 
   @POST("game/uploadImage")
   suspend fun uploadImage(@Body payload: JsonObject): ApiEnvelope<GeneratedImageResult>
+
+  @POST("game/separateRoleAvatar")
+  suspend fun separateRoleAvatar(@Body payload: JsonObject): ApiEnvelope<SeparatedRoleImageResult>
 
   @POST("game/getChapter")
   suspend fun getChapter(@Body payload: JsonObject): ApiEnvelope<List<ChapterItem>>
@@ -128,4 +132,7 @@ interface GameApi {
 
   @POST("other/testImage")
   suspend fun testImageModel(@Body payload: JsonObject): ApiEnvelope<String>
+
+  @POST("other/testVoiceDesign")
+  suspend fun testVoiceDesignModel(@Body payload: JsonObject): ApiEnvelope<String>
 }

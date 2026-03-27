@@ -180,6 +180,13 @@ data class GeneratedImageResult(
   @SerializedName("filePath") val filePath: String = "",
 )
 
+data class SeparatedRoleImageResult(
+  @SerializedName("foregroundPath") val foregroundPath: String = "",
+  @SerializedName("foregroundFilePath") val foregroundFilePath: String = "",
+  @SerializedName("backgroundPath") val backgroundPath: String = "",
+  @SerializedName("backgroundFilePath") val backgroundFilePath: String = "",
+)
+
 data class VoiceModelConfig(
   @SerializedName("id") val id: Long,
   @SerializedName("type") val type: String = "",
@@ -188,6 +195,7 @@ data class VoiceModelConfig(
   @SerializedName("manufacturer") val manufacturer: String = "",
   @SerializedName("baseUrl") val baseUrl: String = "",
   @SerializedName("apiKey") val apiKey: String = "",
+  @SerializedName("modes") val modes: List<String> = emptyList(),
   @SerializedName("createTime") val createTime: Long = 0L,
 )
 

@@ -50,4 +50,7 @@
 - Keep network security settings explicit in `app/src/main/res/xml/network_security_config.xml`.
 
 
+# 系统环境配置
 [system.yml](system/system.yml)
+
+# web端和安卓端同步修改

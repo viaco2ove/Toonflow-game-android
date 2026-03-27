@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -74,6 +75,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -83,10 +85,13 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.content.ContextCompat
@@ -96,11 +101,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Replay
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material.icons.outlined.ArrowBack
@@ -125,6 +134,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import android.util.Base64
+import androidx.compose.ui.unit.min
 import kotlin.coroutines.resume
 
 private val bgDark = Color(0xFF081424)
@@ -243,7 +253,29 @@ private fun settingsManufacturerLabel(value: String): String {
   return settingsManufacturers.firstOrNull { it.value == value }?.label ?: value.ifBlank { "未知厂商" }
 }
 
+private fun isVoiceDesignSlot(slot: MainViewModel.SettingsModelSlot): Boolean {
+  return slot.configType == "voice_design" || slot.key == "storyVoiceDesignModel"
+}
+
+private fun isVoiceDesignManufacturer(value: String): Boolean {
+  return value.trim().equals("qwen", ignoreCase = true)
+}
+
+private fun isVoiceDesignModelName(model: String): Boolean {
+  val normalized = model.trim().lowercase(Locale.ROOT)
+  return normalized.isNotBlank() && (
+    normalized == "qwen-voice-design" ||
+      normalized.startsWith("qwen3-tts-vd") ||
+      normalized == "voice-enrollment" ||
+      normalized.startsWith("cosyvoice-v3") ||
+      normalized.startsWith("cosyvoice-v3.5")
+    )
+}
+
 private fun settingsManufacturersFor(type: String): List<SettingsManufacturerOption> {
+  if (type == "voice_design") {
+    return settingsManufacturers.filter { it.value == "qwen" }
+  }
   return settingsManufacturers.filter {
     if (type == "voice") {
       it.value != "qwen"
@@ -253,27 +285,47 @@ private fun settingsManufacturersFor(type: String): List<SettingsManufacturerOpt
   }
 }
 
+private fun settingsManufacturersForSlot(slot: MainViewModel.SettingsModelSlot): List<SettingsManufacturerOption> {
+  if (isVoiceDesignSlot(slot)) {
+    return settingsManufacturers.filter { it.value == "qwen" }
+  }
+  return settingsManufacturersFor(slot.configType)
+}
+
 private fun defaultSettingsModelType(type: String): String {
   return when (type) {
     "image" -> "t2i"
     "voice" -> "tts"
+    "voice_design" -> "voice_design"
     else -> "text"
   }
 }
 
 private fun defaultSettingsModelTypeForSlot(slot: MainViewModel.SettingsModelSlot): String {
-  return if (slot.configType == "voice" && slot.key == "storyAsrModel") "asr" else defaultSettingsModelType(slot.configType)
+  return when {
+    isVoiceDesignSlot(slot) -> "voice_design"
+    slot.configType == "voice" && slot.key == "storyAsrModel" -> "asr"
+    else -> defaultSettingsModelType(slot.configType)
+  }
 }
 
 private fun defaultSettingsManufacturer(type: String): String {
+  if (type == "voice_design") return "qwen"
   return if (type == "voice") "ai_voice_tts" else "volcengine"
 }
 
 private fun defaultSettingsManufacturerForSlot(slot: MainViewModel.SettingsModelSlot): String {
-  return if (slot.configType == "voice" && slot.key == "storyAsrModel") "aliyun_direct" else defaultSettingsManufacturer(slot.configType)
+  return when {
+    isVoiceDesignSlot(slot) -> "qwen"
+    slot.configType == "voice" && slot.key == "storyAsrModel" -> "aliyun_direct"
+    else -> defaultSettingsManufacturer(slot.configType)
+  }
 }
 
 private fun defaultSettingsBaseUrl(manufacturer: String, type: String, modelType: String = defaultSettingsModelType(type)): String {
+  if (type == "voice_design" && manufacturer == "qwen") {
+    return "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
+  }
   if (type == "voice" && manufacturer == "aliyun_direct") {
     return if (modelType == "asr") "https://dashscope.aliyuncs.com/compatible-mode" else "https://dashscope.aliyuncs.com"
   }
@@ -286,6 +338,9 @@ private fun defaultSettingsBaseUrl(manufacturer: String, type: String, modelType
 }
 
 private fun defaultSettingsModelName(manufacturer: String, type: String, modelType: String = defaultSettingsModelType(type)): String {
+  if (type == "voice_design" && manufacturer == "qwen") {
+    return "qwen3-tts-vd-2026-01-26"
+  }
   if (type == "voice" && manufacturer == "ai_voice_tts") {
     return if (modelType == "tts") "ai_voice_tts" else ""
   }
@@ -293,9 +348,20 @@ private fun defaultSettingsModelName(manufacturer: String, type: String, modelTy
     return if (modelType == "asr") "fun-asr-realtime" else "cosyvoice-v3-flash"
   }
   if (type == "voice" && manufacturer == "aliyun_direct") {
-    return if (modelType == "asr") "qwen3-asr-flash" else "cosyvoice-v3.5-flash"
+    return if (modelType == "asr") "qwen3-asr-flash" else "cosyvoice-v3-flash"
   }
   return ""
+}
+
+private fun defaultSettingsModelNameForSlot(
+  slot: MainViewModel.SettingsModelSlot,
+  manufacturer: String,
+  modelType: String = defaultSettingsModelType(slot.configType),
+): String {
+  if (isVoiceDesignSlot(slot) && manufacturer == "qwen") {
+    return "qwen3-tts-vd-2026-01-26"
+  }
+  return defaultSettingsModelName(manufacturer, slot.configType, modelType)
 }
 
 private fun settingsApiKeyRequired(manufacturer: String, type: String): Boolean {
@@ -303,16 +369,47 @@ private fun settingsApiKeyRequired(manufacturer: String, type: String): Boolean 
 }
 
 private fun settingsRowMatchesSlot(slot: MainViewModel.SettingsModelSlot, row: com.toonflow.game.data.ModelConfigItem): Boolean {
+  if (isVoiceDesignSlot(slot)) {
+    return isVoiceDesignManufacturer(row.manufacturer) && isVoiceDesignModelName(row.model)
+  }
   if (slot.configType != "voice") return true
   val modelType = row.modelType.ifBlank { "tts" }
   return if (slot.key == "storyAsrModel") modelType == "asr" else modelType != "asr"
 }
 
-private fun settingsModelKindLabel(type: String): String {
+private fun settingsModelKindLabel(type: String, slotKey: String = ""): String {
+  if (slotKey == "storyVoiceDesignModel" || type == "voice_design") return "语音设计模型"
   return when (type) {
     "image" -> "图像模型"
     "voice" -> "语音模型"
     else -> "文本模型"
+  }
+}
+
+private fun settingsModelTypeLabel(type: String, slotKey: String = ""): String {
+  if (slotKey == "storyVoiceDesignModel" || type == "voice_design") return "voice_design"
+  return type
+}
+
+private fun settingsModelTypeOptionsForSlot(slot: MainViewModel.SettingsModelSlot): List<Pair<String, String>> {
+  if (isVoiceDesignSlot(slot)) return listOf("voice_design" to "语音设计")
+  return when (slot.configType) {
+    "image" -> listOf("t2i" to "文生图", "i2i" to "图生图")
+    "voice" -> listOf("tts" to "语音tts", "asr" to "语音识别")
+    else -> listOf("text" to "通用文本", "deepThinkingText" to "深度思考")
+  }
+}
+
+private fun settingsModelTypeOptionLabel(slot: MainViewModel.SettingsModelSlot, modelType: String): String {
+  return when {
+    isVoiceDesignSlot(slot) -> "语音设计"
+    modelType == "voice_design" -> "语音设计"
+    modelType == "deepThinkingText" -> "深度思考"
+    modelType == "i2i" -> "图生图"
+    modelType == "asr" -> "语音识别"
+    modelType == "tts" -> "语音tts"
+    slot.configType == "image" -> "文生图"
+    else -> "通用文本"
   }
 }
 
@@ -729,7 +826,6 @@ private fun CreateScene(
   var npcDesc by remember { mutableStateOf("") }
   var npcVoice by remember { mutableStateOf("") }
   var npcVoiceMode by remember { mutableStateOf("text") }
-  var npcVoiceConfigId by remember { mutableStateOf<Long?>(null) }
   var npcVoicePresetId by remember { mutableStateOf("") }
   var npcVoiceReferenceAudioPath by remember { mutableStateOf("") }
   var npcVoiceReferenceAudioName by remember { mutableStateOf("") }
@@ -768,7 +864,6 @@ private fun CreateScene(
     append(vm.playerName).append('|')
     append(vm.playerDesc).append('|')
     append(vm.playerVoice).append('|')
-    append(vm.playerVoiceConfigId ?: "").append('|')
     append(vm.playerVoicePresetId).append('|')
     append(vm.playerVoiceMode).append('|')
     append(vm.playerVoiceReferenceAudioPath).append('|')
@@ -778,7 +873,6 @@ private fun CreateScene(
     append(vm.playerVoiceMixVoices.joinToString(";") { "${it.voiceId}:${it.weight}" }).append('|')
     append(vm.narratorName).append('|')
     append(vm.narratorVoice).append('|')
-    append(vm.narratorVoiceConfigId ?: "").append('|')
     append(vm.narratorVoicePresetId).append('|')
     append(vm.narratorVoiceMode).append('|')
     append(vm.narratorVoiceReferenceAudioPath).append('|')
@@ -806,7 +900,6 @@ private fun CreateScene(
       append(role.description).append(':')
       append(role.voice).append(':')
       append(role.voiceMode).append(':')
-      append(role.voiceConfigId ?: "").append(':')
       append(role.voicePresetId).append(':')
       append(role.voiceReferenceAudioPath).append(':')
       append(role.voiceReferenceAudioName).append(':')
@@ -1006,7 +1099,6 @@ private fun CreateScene(
             vm = vm,
             title = "选择用户音色",
             initialLabel = vm.playerVoice,
-            initialConfigId = vm.playerVoiceConfigId,
             initialPresetId = vm.playerVoicePresetId,
             initialMode = vm.playerVoiceMode,
             initialReferenceAudioPath = vm.playerVoiceReferenceAudioPath,
@@ -1043,7 +1135,6 @@ private fun CreateScene(
                 editingNpcIndex,
                 VoiceBindingDraft(
                   label = npcVoice,
-                  configId = npcVoiceConfigId,
                   presetId = npcVoicePresetId,
                   mode = npcVoiceMode,
                   referenceAudioPath = npcVoiceReferenceAudioPath,
@@ -1065,7 +1156,6 @@ private fun CreateScene(
                   idx,
                   VoiceBindingDraft(
                     label = npcVoice,
-                    configId = npcVoiceConfigId,
                     presetId = npcVoicePresetId,
                     mode = npcVoiceMode,
                     referenceAudioPath = npcVoiceReferenceAudioPath,
@@ -1083,7 +1173,6 @@ private fun CreateScene(
           npcDesc = ""
           npcVoice = ""
           npcVoiceMode = "text"
-          npcVoiceConfigId = null
           npcVoicePresetId = ""
           npcVoiceReferenceAudioPath = ""
           npcVoiceReferenceAudioName = ""
@@ -1180,7 +1269,6 @@ private fun CreateScene(
                   npcDesc = ""
                   npcVoice = ""
                   npcVoiceMode = "text"
-                  npcVoiceConfigId = null
                   npcVoicePresetId = ""
                   npcVoiceReferenceAudioPath = ""
                   npcVoiceReferenceAudioName = ""
@@ -1205,7 +1293,6 @@ private fun CreateScene(
             vm = vm,
             title = "选择角色音色",
             initialLabel = npcVoice,
-            initialConfigId = npcVoiceConfigId,
             initialPresetId = npcVoicePresetId,
             initialMode = npcVoiceMode,
             initialReferenceAudioPath = npcVoiceReferenceAudioPath,
@@ -1217,7 +1304,6 @@ private fun CreateScene(
             onConfirm = { binding ->
               npcVoice = binding.label
               npcVoiceMode = binding.mode
-              npcVoiceConfigId = binding.configId
               npcVoicePresetId = binding.presetId
               npcVoiceReferenceAudioPath = binding.referenceAudioPath
               npcVoiceReferenceAudioName = binding.referenceAudioName
@@ -1349,7 +1435,6 @@ private fun CreateScene(
                 npcDesc = role.description
                 npcVoice = role.voice
                 npcVoiceMode = role.voiceMode
-                npcVoiceConfigId = role.voiceConfigId
                 npcVoicePresetId = role.voicePresetId
                 npcVoiceReferenceAudioPath = role.voiceReferenceAudioPath
                 npcVoiceReferenceAudioName = role.voiceReferenceAudioName
@@ -1373,7 +1458,6 @@ private fun CreateScene(
               npcDesc = ""
               npcVoice = ""
               npcVoiceMode = "text"
-              npcVoiceConfigId = null
               npcVoicePresetId = ""
               npcVoiceReferenceAudioPath = ""
               npcVoiceReferenceAudioName = ""
@@ -1608,7 +1692,6 @@ private fun CreateScene(
             vm = vm,
             title = "选择旁白音色",
             initialLabel = vm.narratorVoice,
-            initialConfigId = vm.narratorVoiceConfigId,
             initialPresetId = vm.narratorVoicePresetId,
             initialMode = vm.narratorVoiceMode,
             initialReferenceAudioPath = vm.narratorVoiceReferenceAudioPath,
@@ -1812,6 +1895,9 @@ private fun PlayScene(
   val runtimeVoiceWarmCache = remember(vm.currentSessionId) { mutableSetOf<String>() }
   val revealedMessages = remember(vm.currentSessionId) { mutableStateListOf<MessageItem>() }
   var debugAutoAdvancing by remember(vm.currentSessionId) { mutableStateOf(false) }
+  var runtimeVoiceMessageKey by remember(vm.currentSessionId) { mutableStateOf("") }
+  var runtimeVoicePhase by remember(vm.currentSessionId) { mutableStateOf("") }
+  var runtimeVoiceIndicator by remember(vm.currentSessionId) { mutableStateOf(".") }
   val scope = rememberCoroutineScope()
   val recordPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
     if (granted) {
@@ -1841,6 +1927,28 @@ private fun PlayScene(
       player.release()
     }
     playbackPlayer = null
+    runtimeVoiceMessageKey = ""
+    runtimeVoicePhase = ""
+    runtimeVoiceIndicator = "."
+  }
+
+  fun setRuntimeVoiceIndicator(message: MessageItem?, phase: String) {
+    if (message == null || phase.isBlank()) {
+      runtimeVoiceMessageKey = ""
+      runtimeVoicePhase = ""
+      runtimeVoiceIndicator = "."
+      return
+    }
+    runtimeVoiceMessageKey = vm.messageUiKey(message)
+    runtimeVoicePhase = phase
+  }
+
+  fun messageVoiceTail(message: MessageItem): String {
+    return if (runtimeVoiceMessageKey == vm.messageUiKey(message) && runtimeVoicePhase.isNotBlank()) {
+      runtimeVoiceIndicator
+    } else {
+      ""
+    }
   }
 
   fun estimatePlaybackTimeoutMs(text: String): Long {
@@ -1855,9 +1963,25 @@ private fun PlayScene(
     return estimated.coerceIn(1400L, 4800L)
   }
 
+  LaunchedEffect(runtimeVoiceMessageKey, runtimeVoicePhase) {
+    if (runtimeVoiceMessageKey.isBlank() || runtimeVoicePhase.isBlank()) {
+      runtimeVoiceIndicator = "."
+      return@LaunchedEffect
+    }
+    val frames = if (runtimeVoicePhase == "playing") listOf(".", "。", ".") else listOf(".", "。")
+    var index = 0
+    runtimeVoiceIndicator = frames[index]
+    while (true) {
+      delay(260L)
+      index = (index + 1) % frames.size
+      runtimeVoiceIndicator = frames[index]
+    }
+  }
+
   fun runtimeVoiceBindingKey(binding: VoiceBindingDraft): String {
+    val runtimeContextKey = binding.configId ?: vm.sessionDetail?.world?.id ?: vm.currentSessionId.takeIf { it.isNotBlank() } ?: "runtime"
     return buildString {
-      append(binding.configId ?: "").append('|')
+      append(runtimeContextKey).append('|')
       append(binding.mode).append('|')
       append(binding.presetId).append('|')
       append(binding.referenceAudioPath).append('|')
@@ -1915,84 +2039,95 @@ private fun PlayScene(
     if (manual) {
       vm.notice = "正在生成语音"
     }
-    val segments = splitSpeakableSegments(speakable)
-    if (segments.isEmpty()) return false
-    for (segment in segments) {
-      var segmentPlayed = false
-      repeat(3) {
-        if (segmentPlayed) return@repeat
-        if (requestId != playbackRequestId) return false
-        val url = runCatching {
-          resolveRuntimeVoiceUrl(binding, segment)
-        }.getOrElse {
-          if (manual) {
-            vm.notice = "重听失败: ${it.message ?: "未知错误"}"
+    try {
+      val segments = splitSpeakableSegments(speakable)
+      if (segments.isEmpty()) return false
+      setRuntimeVoiceIndicator(message, "loading")
+      for (segment in segments) {
+        var segmentPlayed = false
+        repeat(3) {
+          if (segmentPlayed) return@repeat
+          if (requestId != playbackRequestId) return false
+          setRuntimeVoiceIndicator(message, "loading")
+          val url = runCatching {
+            resolveRuntimeVoiceUrl(binding, segment)
+          }.getOrElse {
+            if (manual) {
+              vm.notice = "重听失败: ${it.message ?: "未知错误"}"
+            }
+            ""
           }
-          ""
-        }
-        if (url.isBlank() || requestId != playbackRequestId) return@repeat
-        val played = withTimeoutOrNull(estimatePlaybackTimeoutMs(segment)) {
-          suspendCancellableCoroutine<Boolean> { continuation ->
-            val player = MediaPlayer()
-            playbackPlayer = player
-            fun finish(ok: Boolean, noticeText: String? = null) {
-              if (playbackPlayer === player) {
-                playbackPlayer = null
-              }
-              runCatching { player.stop() }
-              player.release()
-              if (manual && !noticeText.isNullOrBlank()) {
-                vm.notice = noticeText
-              }
-              if (continuation.isActive) {
-                continuation.resume(ok)
-              }
-            }
-            continuation.invokeOnCancellation {
-              if (playbackPlayer === player) {
-                playbackPlayer = null
-              }
-              runCatching { player.stop() }
-              player.release()
-            }
-            runCatching {
-              player.setDataSource(url)
-              player.setOnPreparedListener {
-                if (requestId != playbackRequestId) {
-                  finish(false)
-                  return@setOnPreparedListener
+          if (url.isBlank() || requestId != playbackRequestId) return@repeat
+          val played = withTimeoutOrNull(estimatePlaybackTimeoutMs(segment)) {
+            suspendCancellableCoroutine<Boolean> { continuation ->
+              val player = MediaPlayer()
+              playbackPlayer = player
+              fun finish(ok: Boolean, noticeText: String? = null) {
+                if (playbackPlayer === player) {
+                  playbackPlayer = null
                 }
-                if (manual) vm.notice = "正在播放重听"
-                it.start()
+                runCatching { player.stop() }
+                player.release()
+                if (manual && !noticeText.isNullOrBlank()) {
+                  vm.notice = noticeText
+                }
+                if (continuation.isActive) {
+                  continuation.resume(ok)
+                }
               }
-              player.setOnCompletionListener {
-                finish(true, "朗读完成")
+              continuation.invokeOnCancellation {
+                if (playbackPlayer === player) {
+                  playbackPlayer = null
+                }
+                runCatching { player.stop() }
+                player.release()
               }
-              player.setOnErrorListener { _, _, _ ->
-                finish(false, "语音播放失败")
-                true
+              runCatching {
+                player.setDataSource(url)
+                player.setOnPreparedListener {
+                  if (requestId != playbackRequestId) {
+                    finish(false)
+                    return@setOnPreparedListener
+                  }
+                  setRuntimeVoiceIndicator(message, "playing")
+                  if (manual) vm.notice = "正在播放重听"
+                  it.start()
+                }
+                player.setOnCompletionListener {
+                  finish(true, "朗读完成")
+                }
+                player.setOnErrorListener { _, _, _ ->
+                  finish(false, "语音播放失败")
+                  true
+                }
+                player.prepareAsync()
+              }.onFailure {
+                finish(false, if (manual) "重听失败: ${it.message ?: "未知错误"}" else null)
               }
-              player.prepareAsync()
-            }.onFailure {
-              finish(false, if (manual) "重听失败: ${it.message ?: "未知错误"}" else null)
             }
           }
-        }
-        if (played == null) {
-          stopRuntimePlayback(invalidate = false)
-          if (manual) {
-            vm.notice = "语音播放超时"
+          if (played == null) {
+            stopRuntimePlayback(invalidate = false)
+            if (manual) {
+              vm.notice = "语音播放超时"
+            }
+            return@repeat
           }
-          return@repeat
+          segmentPlayed = played
         }
-        segmentPlayed = played
+        if (!segmentPlayed) {
+          return false
+        }
+        delay(120)
       }
-      if (!segmentPlayed) {
-        return false
+      return true
+    } finally {
+      if (runtimeVoiceMessageKey == vm.messageUiKey(message)) {
+        runtimeVoiceMessageKey = ""
+        runtimeVoicePhase = ""
+        runtimeVoiceIndicator = "."
       }
-      delay(120)
     }
-    return true
   }
 
   DisposableEffect(context) {
@@ -2052,6 +2187,9 @@ private fun PlayScene(
       if (revealedMessages.isNotEmpty()) {
         listState.scrollToItem(revealedMessages.lastIndex)
       }
+      if (vm.isRuntimeRetryMessage(message)) {
+        continue
+      }
       if (message.roleType == "player") {
         delay(180)
         continue
@@ -2094,14 +2232,20 @@ private fun PlayScene(
 
   val tipOptions = vm.buildAiTipOptions()
   val statePreview = vm.playStatePreview()
+  val playTitle = vm.playWorldName()
   val chapterTitle = vm.playChapterTitle()
+  val chapterObjectiveText = vm.playVisibleChapterObjective()
+  val chapterObjectivePreview = remember(chapterObjectiveText) {
+    val normalized = chapterObjectiveText.replace("\\s+".toRegex(), " ").trim()
+    if (normalized.length > 20) "${normalized.take(20)}..." else normalized
+  }
   val activeMiniGame = vm.playRuntimeMiniGame()
   val playerAvatarPath = vm.userAvatarPath.trim().ifBlank { null }
   val playerAvatarBgPath = vm.userAvatarBgPath.trim().ifBlank { null }
   val chapterBackgroundPath = vm.playChapterBackgroundPath().trim().ifBlank { null }
   val currentLiveMessage = if (mode == "history") null else displayMessages.lastOrNull()
   val currentLiveFigurePath = currentLiveMessage
-    ?.takeIf { it.roleType != "player" }
+    ?.takeIf { it.roleType != "player" && !vm.isRuntimeRetryMessage(it) }
     ?.let { vm.avatarBgPathForMessage(it).trim().ifBlank { vm.avatarPathForMessage(it).trim().ifBlank { null } } }
   val closeDialogMenu = {
     selectedMessage = null
@@ -2127,38 +2271,96 @@ private fun PlayScene(
       )
     }
     if (currentLiveFigurePath != null) {
-      AsyncImage(
-        model = currentLiveFigurePath,
-        contentDescription = null,
+      Box(
         modifier = Modifier
           .align(Alignment.BottomCenter)
-          .width(278.dp)
-          .height(428.dp)
-          .alpha(0.34f),
-        contentScale = ContentScale.Fit,
-      )
+          .fillMaxWidth()
+          .height(470.dp),
+      ) {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(
+              brush = Brush.radialGradient(
+                colors = listOf(Color(0x507EB0F7), Color.Transparent),
+                radius = 520f,
+              ),
+            ),
+        )
+        AsyncImage(
+          model = currentLiveFigurePath,
+          contentDescription = null,
+          modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .offset(y = 10.dp)
+            .width(292.dp)
+            .height(444.dp)
+            .alpha(0.56f),
+          contentScale = ContentScale.Fit,
+        )
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(
+              brush = Brush.verticalGradient(
+                colors = listOf(Color.Transparent, Color(0x120C1828), Color(0xA80B1728)),
+              ),
+            ),
+        )
+      }
     }
     Column(modifier = Modifier.fillMaxSize()) {
       Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth(0.9f) // 90% 宽度
+          .then(
+            // 最大宽度限制 720.dp
+            Modifier.width(min(720.dp, androidx.compose.ui.unit.Dp.Infinity))
+          )
+          // 圆角
+          .clip(RoundedCornerShape(20.dp))
+          // 边框
+          .border(1.dp, Color(0xFF3A3F50), RoundedCornerShape(20.dp))
+          // 背景色
+          .background(Color(0xFF1E253A))
+          // 内边距
+          .padding(16.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        Column(modifier = Modifier.weight(1f)) {
-          Text(sessionTitle, color = textSoft, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-          Text(
-            text = if (vm.debugMode) "章节：$chapterTitle（调试）" else "章节：$chapterTitle",
-            color = Color(0xFFBED2F0),
-            style = MaterialTheme.typography.labelSmall,
-          )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-          CircleGhostBtn(icon = Icons.Outlined.Search, contentDescription = "进入故事大厅") { vm.setTab("故事大厅") }
+        Row(
+          modifier = Modifier.weight(0.9f),
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
           CircleGhostBtn(
-            icon = if (autoVoice) Icons.Outlined.VolumeUp else Icons.Outlined.VolumeOff,
-            contentDescription = "切换语音",
-          ) { onToggleVoice() }
+            icon = Icons.Outlined.ArrowBack,
+            contentDescription = if (vm.debugMode) "返回编辑" else "返回故事大厅",
+          ) {
+            if (vm.debugMode) {
+              onExitDebug()
+            } else {
+              vm.setTab("故事大厅")
+            }
+          }
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              playTitle,
+              color = textSoft,
+              fontWeight = FontWeight.Bold,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+              text = if (vm.debugMode) "章节：$chapterTitle（调试）" else "章节：$chapterTitle",
+              color = Color(0xFFBED2F0),
+              style = MaterialTheme.typography.labelSmall,
+            )
+          }
         }
+        CircleGhostBtn(
+          icon = if (autoVoice) Icons.Outlined.VolumeUp else Icons.Outlined.VolumeOff,
+          contentDescription = "切换语音",
+        ) { onToggleVoice() }
       }
 
       Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -2171,21 +2373,56 @@ private fun PlayScene(
           Box(
             modifier = Modifier
               .fillMaxSize()
-              .padding(horizontal = 10.dp),
-            contentAlignment = Alignment.BottomStart,
+              .padding(horizontal = 10.dp, vertical = 8.dp),
           ) {
-            Bubble(
-              title = vm.displayNameForMessage(msg),
-              content = msg.content.ifBlank { "（空消息）" },
-              roleType = msg.roleType,
-              avatarPath = vm.avatarPathForMessage(msg).trim().ifBlank { if (msg.roleType == "player") playerAvatarPath else null },
-              reaction = vm.reactionForMessage(msg),
-              onOpenMenu = {
-                selectedMessage = msg
-                onOpenDialogMenu()
-              },
-              modifier = Modifier.padding(bottom = 152.dp),
-            )
+            Box(
+              modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(bottom = 50.dp),
+            ) {
+              Column(
+                modifier = Modifier
+                  .align(Alignment.BottomCenter)
+                  .fillMaxWidth()
+                  .widthIn(max = 720.dp)
+                  .padding(end = 38.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+              ) {
+                if (vm.isRuntimeRetryMessage(msg)) {
+                  RuntimeRetryCard(
+                    title = vm.displayNameForMessage(msg),
+                    content = msg.content.ifBlank { "模型调用失败" },
+                    onRetry = { vm.retryRuntimeFailure() },
+                    modifier = Modifier.fillMaxWidth(),
+                  )
+                } else {
+                  LiveStoryCard(
+                    title = vm.displayNameForMessage(msg),
+                    content = msg.content.ifBlank { "（空消息）" },
+                    roleType = msg.roleType,
+                    reaction = vm.reactionForMessage(msg),
+                    voiceTail = messageVoiceTail(msg),
+                    voicePlaying = runtimeVoicePhase == "playing" && messageVoiceTail(msg).isNotBlank(),
+                    onOpenMenu = {
+                      selectedMessage = msg
+                      onOpenDialogMenu()
+                    },
+                    modifier = Modifier
+                      .fillMaxWidth(),
+                  )
+                }
+              }
+              if (mode != "setting" && mode != "tips" && tipOptions.isNotEmpty()) {
+                Box(
+                  modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 2.dp, bottom = 18.dp),
+                ) {
+                  TipFloatBtn(onClick = { onModeChange("tips") })
+                }
+              }
+            }
           }
         } else {
           LazyColumn(
@@ -2195,28 +2432,29 @@ private fun PlayScene(
             verticalArrangement = Arrangement.spacedBy(8.dp),
           ) {
             items(displayMessages, key = { "${it.id}_${it.createTime}" }) { msg ->
-              Bubble(
-                title = vm.displayNameForMessage(msg),
-                content = msg.content.ifBlank { "（空消息）" },
-                roleType = msg.roleType,
-                avatarPath = vm.avatarPathForMessage(msg).trim().ifBlank { if (msg.roleType == "player") playerAvatarPath else null },
-                reaction = vm.reactionForMessage(msg),
-                onOpenMenu = {
-                  selectedMessage = msg
-                  onOpenDialogMenu()
-                },
-              )
+              if (vm.isRuntimeRetryMessage(msg)) {
+                RuntimeRetryCard(
+                  title = vm.displayNameForMessage(msg),
+                  content = msg.content.ifBlank { "模型调用失败" },
+                  onRetry = { vm.retryRuntimeFailure() },
+                  modifier = Modifier.fillMaxWidth(),
+                )
+              } else {
+                Bubble(
+                  title = vm.displayNameForMessage(msg),
+                  content = msg.content.ifBlank { "（空消息）" },
+                  roleType = msg.roleType,
+                  avatarPath = vm.avatarPathForMessage(msg).trim().ifBlank { if (msg.roleType == "player") playerAvatarPath else null },
+                  reaction = vm.reactionForMessage(msg),
+                  voiceTail = messageVoiceTail(msg),
+                  voicePlaying = runtimeVoicePhase == "playing" && messageVoiceTail(msg).isNotBlank(),
+                  onOpenMenu = {
+                    selectedMessage = msg
+                    onOpenDialogMenu()
+                  },
+                )
+              }
             }
-          }
-        }
-
-        if (mode != "history" && mode != "setting" && mode != "tips" && tipOptions.isNotEmpty()) {
-          Box(
-            modifier = Modifier
-              .align(Alignment.BottomEnd)
-              .padding(end = 10.dp, bottom = 214.dp),
-          ) {
-            TipFloatBtn(onClick = { onModeChange("tips") })
           }
         }
 
@@ -2314,11 +2552,11 @@ private fun PlayScene(
       }
 
       FooterBar(
-        debugMode = vm.debugMode,
         mode = mode,
         miniGame = activeMiniGame,
-        storyTitle = sessionTitle,
+        storyTitle = playTitle,
         storySubtitle = "@${vm.playStoryRoles().firstOrNull { it.roleType != "player" }?.name ?: "旁白"}",
+        chapterObjectivePreview = chapterObjectivePreview,
         canPlayerSpeak = vm.playCanPlayerSpeak(),
         inputMode = inputMode,
         voiceListening = voiceListening,
@@ -2327,7 +2565,12 @@ private fun PlayScene(
         turnHint = vm.playTurnHint(),
         onModeChange = onModeChange,
         onOpenSetting = { onModeChange("setting") },
-        onExitDebug = onExitDebug,
+        onOpenObjective = {
+          if (!showStorySettingDetail) {
+            onToggleStorySettingDetail()
+          }
+          onModeChange("setting")
+        },
         onShare = {
           clipboardManager.setText(AnnotatedString("$sessionTitle $chapterTitle".trim()))
           vm.notice = "已复制故事标题"
@@ -2434,12 +2677,188 @@ private fun PlayScene(
 }
 
 @Composable
+private fun ObjectiveChip(
+  text: String,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  Card(
+    modifier = modifier.clickable { onClick() },
+    colors = CardDefaults.cardColors(containerColor = Color(0x8A091423)),
+    shape = RoundedCornerShape(999.dp),
+  ) {
+    Text(
+      text = text,
+      color = Color(0xFFF1F7FF),
+      style = MaterialTheme.typography.labelSmall,
+      fontWeight = FontWeight.ExtraBold,
+      maxLines = 1,
+      overflow = TextOverflow.Ellipsis,
+      modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+    )
+  }
+}
+
+@Composable
+private fun LiveStoryCard(
+  title: String,
+  content: String,
+  roleType: String = "npc",
+  reaction: String = "",
+  voiceTail: String = "",
+  voicePlaying: Boolean = false,
+  onOpenMenu: (() -> Unit)? = null,
+  modifier: Modifier = Modifier,
+) {
+  val isPlayer = roleType == "player"
+  val reactionLabel = when (reaction) {
+    "like" -> "已点赞"
+    "dislike" -> "已点踩"
+    else -> ""
+  }
+  Box(
+    modifier = modifier
+      .fillMaxWidth()
+      .pointerInput(onOpenMenu) {
+        detectTapGestures(
+          onDoubleTap = { onOpenMenu?.invoke() },
+          onLongPress = { onOpenMenu?.invoke() },
+        )
+      },
+  ) {
+    Card(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(top = 6.dp),
+      colors = CardDefaults.cardColors(
+        containerColor = if (isPlayer) Color(0xE2203657) else Color(0xF6F7FBFF),
+      ),
+      shape = RoundedCornerShape(22.dp),
+    ) {
+      Column(
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+      ) {
+        Text(
+          text = buildAnnotatedString {
+            append(content)
+            if (voiceTail.isNotBlank()) {
+              withStyle(
+                SpanStyle(
+                  color = if (voicePlaying) Color(0xFFF0A91E) else Color(0xFF4D75C7),
+                  fontWeight = FontWeight.ExtraBold,
+                ),
+              ) {
+                append(" ")
+                append(voiceTail)
+              }
+            }
+          },
+          color = if (isPlayer) Color(0xFFE8F2FF) else Color(0xFF20304A),
+          style = MaterialTheme.typography.bodyMedium,
+          fontWeight = FontWeight.SemiBold,
+        )
+        if (reactionLabel.isNotBlank()) {
+          Surface(
+            color = if (isPlayer) Color(0x223BA7FF) else Color(0xFFEAF2FF),
+            shape = RoundedCornerShape(999.dp),
+          ) {
+            Text(
+              text = reactionLabel,
+              color = if (isPlayer) Color(0xFFD7E7FF) else Color(0xFF5F7190),
+              style = MaterialTheme.typography.labelSmall,
+              modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+          }
+        }
+      }
+    }
+    Surface(
+      modifier = Modifier.padding(start = 12.dp),
+      color = if (isPlayer) Color(0x33FFFFFF) else Color(0xA9314966),
+      shape = RoundedCornerShape(10.dp),
+    ) {
+      Text(
+        text = title,
+        color = Color(0xFFF0F6FF),
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.ExtraBold,
+        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+      )
+    }
+  }
+}
+
+@Composable
+private fun RuntimeRetryCard(
+  title: String,
+  content: String,
+  onRetry: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  Box(
+    modifier = modifier.fillMaxWidth(),
+  ) {
+    Card(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(top = 6.dp),
+      colors = CardDefaults.cardColors(containerColor = Color(0xF22A1B0D)),
+      shape = RoundedCornerShape(22.dp),
+    ) {
+      Column(
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+      ) {
+        Text(
+          text = content,
+          color = Color(0xFFFFF2E0),
+          style = MaterialTheme.typography.bodyMedium,
+          fontWeight = FontWeight.SemiBold,
+        )
+        Button(
+          onClick = onRetry,
+          shape = RoundedCornerShape(999.dp),
+          colors = ButtonDefaults.buttonColors(
+            containerColor = Color(0xFFFFC874),
+            contentColor = Color(0xFF35220D),
+          ),
+        ) {
+          Icon(
+            imageVector = Icons.Outlined.Replay,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(modifier = Modifier.width(6.dp))
+          Text("重试", fontWeight = FontWeight.ExtraBold)
+        }
+      }
+    }
+    Surface(
+      modifier = Modifier.padding(start = 12.dp),
+      color = Color(0xCC5D3A12),
+      shape = RoundedCornerShape(10.dp),
+    ) {
+      Text(
+        text = title,
+        color = Color(0xFFFFE2B3),
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.ExtraBold,
+        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+      )
+    }
+  }
+}
+
+@Composable
 private fun Bubble(
   title: String,
   content: String,
   roleType: String = "npc",
   avatarPath: String? = null,
   reaction: String = "",
+  voiceTail: String = "",
+  voicePlaying: Boolean = false,
   onOpenMenu: (() -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
@@ -2484,7 +2903,20 @@ private fun Bubble(
       ) {
         Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
           Text(
-            content,
+            buildAnnotatedString {
+              append(content)
+              if (voiceTail.isNotBlank()) {
+                withStyle(
+                  SpanStyle(
+                    color = if (voicePlaying) Color(0xFFF0A91E) else Color(0xFF4D75C7),
+                    fontWeight = FontWeight.ExtraBold,
+                  ),
+                ) {
+                  append(" ")
+                  append(voiceTail)
+                }
+              }
+            },
             color = if (isPlayer) Color(0xFFE8F2FF) else Color(0xFF1F2B40),
             style = MaterialTheme.typography.bodySmall,
           )
@@ -2558,7 +2990,12 @@ private fun TipFloatBtn(onClick: () -> Unit) {
       .clickable { onClick() },
     contentAlignment = Alignment.Center,
   ) {
-    Text("提", color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+    Icon(
+      imageVector = Icons.Outlined.AutoAwesome,
+      contentDescription = null,
+      tint = Color.White,
+      modifier = Modifier.size(14.dp),
+    )
   }
 }
 
@@ -2827,11 +3264,11 @@ private fun StorySettingPanel(
 
 @Composable
 private fun FooterBar(
-  debugMode: Boolean,
   mode: String,
   miniGame: MainViewModel.RuntimeMiniGameView?,
   storyTitle: String,
   storySubtitle: String,
+  chapterObjectivePreview: String,
   canPlayerSpeak: Boolean,
   inputMode: String,
   voiceListening: Boolean,
@@ -2840,7 +3277,7 @@ private fun FooterBar(
   turnHint: String,
   onModeChange: (String) -> Unit,
   onOpenSetting: () -> Unit,
-  onExitDebug: () -> Unit,
+  onOpenObjective: () -> Unit,
   onShare: () -> Unit,
   onComment: () -> Unit,
   sendText: String,
@@ -2854,26 +3291,51 @@ private fun FooterBar(
     if (miniGame != null && mode != "tips" && mode != "setting") {
       MiniGamePanel(miniGame = miniGame, onAction = onMiniGameAction)
     }
+    if (chapterObjectivePreview.isNotBlank() && mode != "history" && mode != "tips" && mode != "setting") {
+      ObjectiveChip(
+        text = "当前目标：$chapterObjectivePreview",
+        onClick = onOpenObjective,
+        modifier = Modifier
+          .padding(bottom = 2.dp)
+          .widthIn(max = 220.dp),
+      )
+    }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
-      Column(modifier = Modifier.weight(1f)) {
-        Text(
-          text = if (debugMode) "返回编辑" else "$storyTitle >",
-          color = Color.White,
-          fontWeight = FontWeight.Bold,
-          modifier = Modifier.clickable { if (debugMode) onExitDebug() else onOpenSetting() },
-        )
+      Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpenSetting() },
+          horizontalArrangement = Arrangement.spacedBy(4.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(
+            text = storyTitle,
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+          )
+          Icon(
+            imageVector = Icons.Outlined.ArrowBack,
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(14.dp).rotate(180f),
+          )
+        }
         Text(
           text = storySubtitle,
           color = Color(0xFFD7E7FF),
           style = MaterialTheme.typography.labelSmall,
         )
       }
-      Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Bottom) {
-        StoryFooterAction(icon = "❤", label = "0", onClick = { })
-        StoryFooterAction(icon = "↗", label = "分享", onClick = onShare)
-        StoryFooterAction(icon = "💬", label = "评论", onClick = onComment)
+      Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
+        StoryFooterAction(icon = Icons.Outlined.FavoriteBorder, label = "0", onClick = { })
+        StoryFooterAction(icon = Icons.Outlined.Share, label = "分享", onClick = onShare)
+        StoryFooterAction(icon = Icons.Outlined.ChatBubbleOutline, label = "评论", onClick = onComment)
         StoryFooterAction(
-          icon = if (mode == "history") "↩" else "◷",
+          icon = if (mode == "history") Icons.Outlined.ArrowBack else Icons.Outlined.History,
           label = if (mode == "history") "返回" else "历史",
           onClick = { onModeChange(if (mode == "history") "live" else "history") },
         )
@@ -3072,16 +3534,16 @@ private fun MiniGamePanel(
 }
 
 @Composable
-private fun StoryFooterAction(icon: String, label: String, onClick: () -> Unit) {
+private fun StoryFooterAction(icon: ImageVector, label: String, onClick: () -> Unit) {
   Column(
     modifier = Modifier
       .clip(RoundedCornerShape(8.dp))
       .clickable { onClick() }
       .padding(horizontal = 2.dp, vertical = 2.dp),
     horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.spacedBy(2.dp),
+    verticalArrangement = Arrangement.spacedBy(1.dp),
   ) {
-    Text(icon, color = Color.White, style = MaterialTheme.typography.bodySmall)
+    Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(14.dp))
     Text(label, color = Color.White, style = MaterialTheme.typography.labelSmall)
   }
 }
@@ -3740,7 +4202,6 @@ private fun VoicePickerDialog(
   vm: MainViewModel,
   title: String,
   initialLabel: String,
-  initialConfigId: Long?,
   initialPresetId: String,
   initialMode: String,
   initialReferenceAudioPath: String,
@@ -3752,9 +4213,17 @@ private fun VoicePickerDialog(
   onConfirm: (VoiceBindingDraft) -> Unit,
 ) {
   fun runtimeStoryVoiceConfigId(): Long? = vm.settingsModelBinding("storyVoiceModel")?.configId?.takeIf { it > 0L }
-  var selectedConfigId by remember(initialConfigId, title) { mutableStateOf(runtimeStoryVoiceConfigId() ?: initialConfigId) }
+  fun runtimeVoiceDesignConfigId(): Long? = vm.settingsModelBinding("storyVoiceDesignModel")?.configId?.takeIf { it > 0L }
+  val availableModes = listOf(
+    "text" to "预设音色",
+    "clone" to "克隆音色",
+    "mix" to "混合音色",
+    "prompt_voice" to "提示词音色",
+  )
   var selectedPresetId by remember(initialPresetId, title) { mutableStateOf(initialPresetId) }
-  var selectedMode by remember(initialMode, title) { mutableStateOf(initialMode.ifBlank { "text" }) }
+  var selectedMode by remember(initialMode, title) {
+    mutableStateOf(initialMode.takeIf { mode -> availableModes.any { it.first == mode } } ?: "text")
+  }
   var referenceAudioPath by remember(initialReferenceAudioPath, title) { mutableStateOf(initialReferenceAudioPath) }
   var referenceAudioName by remember(initialReferenceAudioName, title) { mutableStateOf(initialReferenceAudioName) }
   var referenceText by remember(initialReferenceText, title) { mutableStateOf(initialReferenceText) }
@@ -3795,47 +4264,100 @@ private fun VoicePickerDialog(
   }
 
   LaunchedEffect(Unit) {
+    vm.ensureSettingsPanelData()
     vm.ensureVoiceModels()
   }
-  LaunchedEffect(vm.voiceModels.size, initialConfigId) {
-    if (vm.voiceModels.isNotEmpty()) {
-      selectedConfigId = runtimeStoryVoiceConfigId() ?: initialConfigId ?: vm.voiceModels.first().id
-    }
-  }
-  LaunchedEffect(vm.settingsAiModelMap.size) {
-    val runtimeConfigId = runtimeStoryVoiceConfigId() ?: return@LaunchedEffect
-    if (selectedConfigId != runtimeConfigId) {
-      selectedConfigId = runtimeConfigId
-    }
-  }
-  LaunchedEffect(selectedConfigId) {
-    vm.ensureVoicePresets(selectedConfigId)
+  LaunchedEffect(vm.settingsAiModelMap.size, vm.voiceModels.size) {
+    vm.ensureVoicePresets(runtimeStoryVoiceConfigId())
   }
 
-  val presets = vm.voicePresets(selectedConfigId)
-  val selectedModel = vm.voiceModels.firstOrNull { it.id == selectedConfigId }
-  val availableModes = remember(selectedModel?.manufacturer) {
-    if (selectedModel?.manufacturer == "aliyun" || selectedModel?.manufacturer == "aliyun_direct") {
-      listOf("text" to "预设音色", "prompt_voice" to "提示词音色")
+  val effectiveConfigId = runtimeStoryVoiceConfigId()
+  val presets = vm.voicePresets(effectiveConfigId)
+  val selectedModel = vm.voiceModels.firstOrNull { it.id == effectiveConfigId }
+  val hasVoiceDesignModel = runtimeVoiceDesignConfigId() != null
+
+  fun isAliyunDirectCosyVoiceModel(model: String?): Boolean {
+    return model?.trim()?.lowercase() in setOf(
+      "cosyvoice-v3-flash",
+      "cosyvoice-v3-plus",
+      "cosyvoice-v3.5-flash",
+      "cosyvoice-v3.5-plus",
+    )
+  }
+
+  fun modelSupportedModeKeys(): Set<String> {
+    val declaredModes = selectedModel
+      ?.modes
+      ?.map { it.trim() }
+      ?.filter { it.isNotBlank() }
+      ?.toSet()
+      .orEmpty()
+    if (declaredModes.isNotEmpty()) {
+      return declaredModes
+    }
+    return if (selectedModel?.manufacturer?.trim() == "aliyun_direct" && isAliyunDirectCosyVoiceModel(selectedModel.model)) {
+      setOf("text", "clone", "mix")
     } else {
-      listOf(
-        "text" to "预设音色",
-        "clone" to "克隆音色",
-        "mix" to "混合音色",
-        "prompt_voice" to "提示词音色",
-      )
+      availableModes.map { it.first }.toSet()
     }
   }
 
-  LaunchedEffect(availableModes.map { it.first }.joinToString(",")) {
-    if (availableModes.none { it.first == selectedMode }) {
-      selectedMode = availableModes.firstOrNull()?.first ?: "text"
+  fun supportedModeKeys(): Set<String> {
+    val modes = modelSupportedModeKeys().toMutableSet()
+    if (hasVoiceDesignModel) {
+      modes.add("prompt_voice")
+    } else {
+      modes.remove("prompt_voice")
+    }
+    return modes
+  }
+
+  fun unsupportedModeReason(mode: String): String? {
+    val normalizedMode = mode.trim()
+    if (normalizedMode == "prompt_voice") {
+      return if (hasVoiceDesignModel) null else "请先在设置里配置语音设计模型"
+    }
+    if (normalizedMode.isBlank() || supportedModeKeys().contains(normalizedMode)) {
+      return null
+    }
+    return "当前语音模型不支持该绑定模式"
+  }
+
+  fun fallbackSupportedMode(): String {
+    val modes = supportedModeKeys()
+    return when {
+      modes.contains("text") -> "text"
+      modes.isNotEmpty() -> modes.first()
+      else -> "text"
     }
   }
+
+  val supportedModeKeys = supportedModeKeys()
+  val modeSupportNotes = buildList {
+    val supportedModelLabels = availableModes
+      .filter { it.first != "prompt_voice" && modelSupportedModeKeys().contains(it.first) }
+      .map { it.second }
+    val unsupportedModelModes = availableModes.filter { it.first != "prompt_voice" && !modelSupportedModeKeys().contains(it.first) }
+    if (unsupportedModelModes.isNotEmpty() && supportedModelLabels.isNotEmpty()) {
+      add("当前模型仅支持：${supportedModelLabels.joinToString("、")}")
+    }
+    if (!hasVoiceDesignModel) {
+      add("提示词音色需要先在设置里配置语音设计模型")
+    }
+  }
+  val modeSupportNote = modeSupportNotes.joinToString("；")
 
   LaunchedEffect(presets.size, selectedMode) {
     if (selectedMode == "text" && presets.isNotEmpty() && (selectedPresetId.isBlank() || presets.none { it.voiceId == selectedPresetId })) {
       selectedPresetId = presets.first().voiceId
+    }
+  }
+
+  LaunchedEffect(selectedModel?.id, effectiveConfigId, title) {
+    val reason = unsupportedModeReason(selectedMode)
+    if (reason != null) {
+      selectedMode = fallbackSupportedMode()
+      previewStatus = reason
     }
   }
 
@@ -3867,7 +4389,9 @@ private fun VoicePickerDialog(
   }
 
   fun validateBinding(): String? {
-    if (selectedConfigId == null) return "请先在设置里配置语音生成模型"
+    if (selectedMode == "prompt_voice" && !hasVoiceDesignModel) return "请先在设置里配置语音设计模型"
+    if (effectiveConfigId == null) return "请先在设置里配置语音生成模型"
+    unsupportedModeReason(selectedMode)?.let { return it }
     return when (selectedMode) {
       "text" -> if (selectedPresetId.isBlank()) "请先选择音色预设" else null
       "clone" -> if (referenceAudioPath.isBlank()) "克隆模式需要上传参考音频" else null
@@ -3915,10 +4439,22 @@ private fun VoicePickerDialog(
         Text("绑定模式", fontWeight = FontWeight.Bold, color = Color(0xFF25324A))
         availableModes.forEach { (modeKey, modeLabel) ->
           SelectableRow(
-            text = modeLabel,
+            text = if (supportedModeKeys.contains(modeKey)) modeLabel else "${modeLabel}（当前模型不支持）",
             selected = selectedMode == modeKey,
-            onClick = { selectedMode = modeKey },
+            muted = !supportedModeKeys.contains(modeKey),
+            onClick = {
+              val reason = unsupportedModeReason(modeKey)
+              if (reason != null) {
+                previewStatus = reason
+              } else {
+                selectedMode = modeKey
+                previewStatus = ""
+              }
+            },
           )
+        }
+        if (modeSupportNote.isNotBlank()) {
+          Text(modeSupportNote, color = Color(0xFF9B6A22), style = MaterialTheme.typography.bodySmall)
         }
 
         when (selectedMode) {
@@ -4075,7 +4611,7 @@ private fun VoicePickerDialog(
           else -> {
             Text("音色预设", fontWeight = FontWeight.Bold, color = Color(0xFF25324A))
             when {
-              selectedConfigId == null -> {
+              effectiveConfigId == null -> {
                 Text("请先在设置里配置语音生成模型。", color = Color(0xFF6A7F9F), style = MaterialTheme.typography.bodySmall)
               }
               presets.isEmpty() -> {
@@ -4119,7 +4655,7 @@ private fun VoicePickerDialog(
               scope.launch {
                 runCatching {
                   val url = vm.previewVoice(
-                    configId = runtimeStoryVoiceConfigId() ?: selectedConfigId,
+                    configId = effectiveConfigId,
                     text = previewText.trim(),
                     mode = selectedMode,
                     presetId = selectedPresetId,
@@ -4194,7 +4730,6 @@ private fun VoicePickerDialog(
           onConfirm(
             VoiceBindingDraft(
               label = buildSelectedLabel(),
-              configId = runtimeStoryVoiceConfigId() ?: selectedConfigId,
               presetId = selectedPresetId,
               mode = selectedMode,
               referenceAudioPath = referenceAudioPath,
@@ -4267,17 +4802,32 @@ private fun buildStyledImagePrompt(styleKey: String?, prompt: String): String {
 }
 
 @Composable
-private fun SelectableRow(text: String, selected: Boolean, onClick: () -> Unit) {
+private fun SelectableRow(text: String, selected: Boolean, muted: Boolean = false, onClick: () -> Unit) {
+  val backgroundColor = when {
+    selected -> Color(0xFFE8F0FF)
+    muted -> Color(0xFFF5F7FB)
+    else -> Color(0xFFF8FBFF)
+  }
+  val borderColor = when {
+    selected -> Color(0xFF9EB5DE)
+    muted -> Color(0xFFE1E8F2)
+    else -> Color(0xFFD8E3F3)
+  }
+  val textColor = when {
+    selected -> Color(0xFF294A79)
+    muted -> Color(0xFF97A6BC)
+    else -> Color(0xFF5E7395)
+  }
   Box(
     modifier = Modifier
       .fillMaxWidth()
       .clip(RoundedCornerShape(10.dp))
-      .background(if (selected) Color(0xFFE8F0FF) else Color(0xFFF8FBFF))
-      .border(1.dp, if (selected) Color(0xFF9EB5DE) else Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+      .background(backgroundColor)
+      .border(1.dp, borderColor, RoundedCornerShape(10.dp))
       .clickable { onClick() }
       .padding(horizontal = 12.dp, vertical = 10.dp),
   ) {
-    Text(text, color = if (selected) Color(0xFF294A79) else Color(0xFF5E7395))
+    Text(text, color = textColor)
   }
 }
 
@@ -4949,16 +5499,26 @@ private fun SettingsModelManagerDialog(
     }
   }
 
-  val filteredOptions = remember(options, keyword) {
-    val query = keyword.trim().lowercase(Locale.getDefault())
+  val slotOptions = remember(options, slot.key, slot.configType) {
     options
       .filter { row -> settingsRowMatchesSlot(slot, row) }
+      .sortedWith(compareByDescending<com.toonflow.game.data.ModelConfigItem> { it.createTime }.thenByDescending { it.id })
+  }
+
+  val filteredOptions = remember(slotOptions, keyword) {
+    val query = keyword.trim().lowercase(Locale.getDefault())
+    slotOptions
       .filter { row ->
         if (query.isBlank()) return@filter true
         listOf(row.manufacturer, row.model, row.baseUrl, row.modelType)
           .any { it.lowercase(Locale.getDefault()).contains(query) }
       }
-      .sortedWith(compareByDescending<com.toonflow.game.data.ModelConfigItem> { it.createTime }.thenByDescending { it.id })
+  }
+
+  LaunchedEffect(slotOptions, selectedId) {
+    if (selectedId != null && slotOptions.none { it.id == selectedId }) {
+      selectedId = null
+    }
   }
 
   Dialog(
@@ -4979,7 +5539,7 @@ private fun SettingsModelManagerDialog(
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
           Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text("模型数据管理", fontWeight = FontWeight.ExtraBold, color = Color(0xFF213958))
-            Text("${slot.label} · ${settingsModelKindLabel(slot.configType)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7E98))
+            Text("${slot.label} · ${settingsModelKindLabel(slot.configType, slot.key)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7E98))
           }
           TextButton(onClick = onDismiss) {
             Text("关闭")
@@ -5039,8 +5599,8 @@ private fun SettingsModelManagerDialog(
                     onClick = { selectedId = row.id },
                   )
                   Text(settingsManufacturerLabel(row.manufacturer), fontWeight = FontWeight.Bold, color = Color(0xFF3559A6))
-                  Text(settingsModelKindLabel(row.type.ifBlank { slot.configType }), color = Color(0xFFC57A16), style = MaterialTheme.typography.bodySmall)
-                  Text(row.modelType.ifBlank { defaultSettingsModelType(slot.configType) }, color = Color(0xFF6E819B), style = MaterialTheme.typography.bodySmall)
+                  Text(settingsModelKindLabel(row.type.ifBlank { slot.configType }, slot.key), color = Color(0xFFC57A16), style = MaterialTheme.typography.bodySmall)
+                  Text(settingsModelTypeLabel(row.modelType.ifBlank { defaultSettingsModelTypeForSlot(slot) }, slot.key), color = Color(0xFF6E819B), style = MaterialTheme.typography.bodySmall)
                 }
                 Text(row.model.ifBlank { "配置${row.id}" }, fontWeight = FontWeight.ExtraBold, color = Color(0xFF213958))
                 Text(row.baseUrl.ifBlank { "默认 Base URL" }, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6E819B))
@@ -5091,7 +5651,7 @@ private fun SettingsModelManagerDialog(
             full = true,
             onClick = {
               val configId = selectedId
-              if (configId == null) {
+              if (configId == null || slotOptions.none { it.id == configId }) {
                 vm.notice = "请先选择模型配置"
               } else {
                 vm.bindGameModel(slot.key, configId)
@@ -5221,13 +5781,35 @@ private fun SettingsModelEditorDialog(
   onDismiss: () -> Unit,
   onSubmit: (Long?, String, String, String, String, String) -> Unit,
 ) {
-  var manufacturer by remember(initial?.id, slot.key) { mutableStateOf(initial?.manufacturer?.ifBlank { defaultSettingsManufacturerForSlot(slot) } ?: defaultSettingsManufacturerForSlot(slot)) }
-  var modelType by remember(initial?.id, slot.key) { mutableStateOf(initial?.modelType?.ifBlank { defaultSettingsModelTypeForSlot(slot) } ?: defaultSettingsModelTypeForSlot(slot)) }
-  var model by remember(initial?.id, slot.key) { mutableStateOf(initial?.model?.ifBlank { defaultSettingsModelName(manufacturer, slot.configType, modelType) } ?: defaultSettingsModelName(manufacturer, slot.configType, modelType)) }
-  var baseUrl by remember(initial?.id, slot.key) { mutableStateOf(initial?.baseUrl ?: defaultSettingsBaseUrl(manufacturer, slot.configType, modelType)) }
+  val normalizedInitialManufacturer = remember(initial?.id, slot.key) {
+    val raw = initial?.manufacturer?.ifBlank { defaultSettingsManufacturerForSlot(slot) } ?: defaultSettingsManufacturerForSlot(slot)
+    if (isVoiceDesignSlot(slot) && !isVoiceDesignManufacturer(raw)) defaultSettingsManufacturerForSlot(slot) else raw
+  }
+  val normalizedInitialModelType = remember(initial?.id, slot.key) {
+    if (isVoiceDesignSlot(slot)) defaultSettingsModelTypeForSlot(slot)
+    else initial?.modelType?.ifBlank { defaultSettingsModelTypeForSlot(slot) } ?: defaultSettingsModelTypeForSlot(slot)
+  }
+  val normalizedInitialModel = remember(initial?.id, slot.key, normalizedInitialManufacturer, normalizedInitialModelType) {
+    val raw = initial?.model?.ifBlank { defaultSettingsModelNameForSlot(slot, normalizedInitialManufacturer, normalizedInitialModelType) }
+      ?: defaultSettingsModelNameForSlot(slot, normalizedInitialManufacturer, normalizedInitialModelType)
+    if (isVoiceDesignSlot(slot) && !isVoiceDesignModelName(raw)) {
+      defaultSettingsModelNameForSlot(slot, normalizedInitialManufacturer, normalizedInitialModelType)
+    } else {
+      raw
+    }
+  }
+  var manufacturer by remember(initial?.id, slot.key) { mutableStateOf(normalizedInitialManufacturer) }
+  var modelType by remember(initial?.id, slot.key) { mutableStateOf(normalizedInitialModelType) }
+  var model by remember(initial?.id, slot.key) {
+    mutableStateOf(normalizedInitialModel)
+  }
+  var baseUrl by remember(initial?.id, slot.key) {
+    mutableStateOf(initial?.baseUrl?.ifBlank { defaultSettingsBaseUrl(manufacturer, slot.configType, modelType) } ?: defaultSettingsBaseUrl(manufacturer, slot.configType, modelType))
+  }
   var apiKey by remember(initial?.id) { mutableStateOf(initial?.apiKey.orEmpty()) }
   var manufacturerExpanded by remember { mutableStateOf(false) }
   var modelTypeExpanded by remember { mutableStateOf(false) }
+  val modelTypeOptions = remember(slot.key, slot.configType) { settingsModelTypeOptionsForSlot(slot) }
 
   AlertDialog(
     onDismissRequest = onDismiss,
@@ -5238,7 +5820,7 @@ private fun SettingsModelEditorDialog(
         Box {
           MiniBtn(text = settingsManufacturerLabel(manufacturer), primary = true, full = true, onClick = { manufacturerExpanded = true })
           DropdownMenu(expanded = manufacturerExpanded, onDismissRequest = { manufacturerExpanded = false }) {
-            settingsManufacturersFor(slot.configType).forEach { item ->
+            settingsManufacturersForSlot(slot).forEach { item ->
               DropdownMenuItem(
                 text = { Text(item.label) },
                 onClick = {
@@ -5247,7 +5829,7 @@ private fun SettingsModelEditorDialog(
                     baseUrl = defaultSettingsBaseUrl(item.value, slot.configType, modelType)
                   }
                   if (initial == null || model.isBlank()) {
-                    model = defaultSettingsModelName(item.value, slot.configType, modelType)
+                    model = defaultSettingsModelNameForSlot(slot, item.value, modelType)
                   }
                   manufacturerExpanded = false
                 },
@@ -5259,23 +5841,12 @@ private fun SettingsModelEditorDialog(
         Text("类型", fontWeight = FontWeight.Bold, color = Color(0xFF25324A))
         Box {
           MiniBtn(
-            text = when (modelType) {
-              "deepThinkingText" -> "深度思考"
-              "i2i" -> "图生图"
-              "asr" -> "语音识别"
-              "tts" -> "语音tts"
-              else -> if (slot.configType == "image") "文生图" else "通用文本"
-            },
+            text = settingsModelTypeOptionLabel(slot, modelType),
             full = true,
             onClick = { modelTypeExpanded = true },
           )
           DropdownMenu(expanded = modelTypeExpanded, onDismissRequest = { modelTypeExpanded = false }) {
-            val types = when (slot.configType) {
-              "image" -> listOf("t2i" to "文生图", "i2i" to "图生图")
-              "voice" -> listOf("tts" to "语音tts", "asr" to "语音识别")
-              else -> listOf("text" to "通用文本", "deepThinkingText" to "深度思考")
-            }
-            types.forEach { item ->
+            modelTypeOptions.forEach { item ->
               DropdownMenuItem(
                 text = { Text(item.second) },
                 onClick = {
@@ -5284,7 +5855,7 @@ private fun SettingsModelEditorDialog(
                     baseUrl = defaultSettingsBaseUrl(manufacturer, slot.configType, item.first)
                   }
                   if (initial == null || model.isBlank()) {
-                    model = defaultSettingsModelName(manufacturer, slot.configType, item.first)
+                    model = defaultSettingsModelNameForSlot(slot, manufacturer, item.first)
                   }
                   modelTypeExpanded = false
                 },
@@ -5307,9 +5878,11 @@ private fun SettingsModelEditorDialog(
     },
     confirmButton = {
       TextButton(onClick = {
+        val submitManufacturer = if (isVoiceDesignSlot(slot)) defaultSettingsManufacturerForSlot(slot) else manufacturer
+        val submitModelType = if (isVoiceDesignSlot(slot)) defaultSettingsModelTypeForSlot(slot) else modelType
         if (model.trim().isBlank()) return@TextButton
-        if (settingsApiKeyRequired(manufacturer, slot.configType) && apiKey.trim().isBlank()) return@TextButton
-        onSubmit(initial?.id, manufacturer, modelType, model.trim(), baseUrl.trim(), apiKey.trim())
+        if (settingsApiKeyRequired(submitManufacturer, slot.configType) && apiKey.trim().isBlank()) return@TextButton
+        onSubmit(initial?.id, submitManufacturer, submitModelType, model.trim(), baseUrl.trim(), apiKey.trim())
       }) {
         Text("保存")
       }

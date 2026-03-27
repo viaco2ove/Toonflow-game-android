@@ -134,6 +134,21 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return api().uploadImage(payload).data
   }
 
+  suspend fun separateRoleAvatar(
+    projectId: Long? = null,
+    base64Data: String,
+    fileName: String = "avatar.png",
+    name: String = "角色",
+  ): SeparatedRoleImageResult {
+    val payload = JsonObject().apply {
+      if (projectId != null && projectId > 0L) addProperty("projectId", projectId)
+      addProperty("base64Data", base64Data)
+      if (fileName.isNotBlank()) addProperty("fileName", fileName)
+      if (name.isNotBlank()) addProperty("name", name)
+    }
+    return api().separateRoleAvatar(payload).data
+  }
+
   suspend fun getChapter(worldId: Long): List<ChapterItem> {
     val payload = JsonObject().apply {
       addProperty("worldId", worldId)
@@ -415,6 +430,16 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("manufacturer", manufacturer)
     }
     return api().testImageModel(payload).data
+  }
+
+  suspend fun testVoiceDesignModel(model: String, apiKey: String, baseUrl: String, manufacturer: String): String {
+    val payload = JsonObject().apply {
+      addProperty("modelName", model)
+      addProperty("apiKey", apiKey)
+      if (baseUrl.isNotBlank()) addProperty("baseURL", baseUrl)
+      addProperty("manufacturer", manufacturer)
+    }
+    return api().testVoiceDesignModel(payload).data
   }
 
   fun toJson(value: Any): JsonObject {
