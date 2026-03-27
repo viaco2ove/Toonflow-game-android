@@ -45,6 +45,7 @@ import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.URL
+import java.util.Locale
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
   private val settingsStore = SettingsStore(application)
@@ -95,6 +96,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   val baseTabs = listOf("主页", "创建", "聊过", "我的")
   val settingsModelSlots = listOf(
     SettingsModelSlot("storyOrchestratorModel", "编排师", "text"),
+    SettingsModelSlot("storySpeakerModel", "角色发言", "text"),
     SettingsModelSlot("storyMemoryModel", "记忆管理", "text"),
     SettingsModelSlot("storyImageModel", "AI生图", "image"),
     SettingsModelSlot("storyVoiceDesignModel", "语音设计", "voice_design"),
@@ -104,6 +106,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   val storyPromptCodes = listOf(
     "story-main",
     "story-orchestrator",
+    "story-speaker",
     "story-memory",
     "story-chapter",
     "story-mini-game",
@@ -124,6 +127,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var accountAvatarBgPath by mutableStateOf("")
   var userAvatarPath by mutableStateOf("")
   var userAvatarBgPath by mutableStateOf("")
+  var accountAvatarProcessing by mutableStateOf(false)
+  var storyPlayerAvatarProcessing by mutableStateOf(false)
+  var roleAvatarProcessing by mutableStateOf(false)
 
   val projects = mutableStateListOf<ProjectItem>()
   var selectedProjectId by mutableStateOf(-1L)
@@ -211,6 +217,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private var debugChapterSequence: List<ChapterItem> = emptyList()
   private var debugMessageSeed: Long = 1L
   private var runtimeRetryTask: (suspend () -> Unit)? = null
+  private var runtimeRetryMessageText: String = ""
   private var runtimeRetrying = false
   private data class StoryEditorPersistSnapshot(
     val worldId: Long,
@@ -331,6 +338,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun settingsModelBinding(key: String): AiModelMapItem? {
     return settingsAiModelMap.firstOrNull { it.key == key }
+  }
+
+  private fun normalizeSettingsModelHint(value: String?): String {
+    return value.orEmpty().trim().lowercase(Locale.getDefault())
+  }
+
+  private fun storySpeakerRecommendationScore(item: ModelConfigItem, orchestratorConfigId: Long?): Double {
+    if (item.id <= 0L) return Double.NEGATIVE_INFINITY
+    if (orchestratorConfigId != null && item.id == orchestratorConfigId) return Double.NEGATIVE_INFINITY
+    val model = normalizeSettingsModelHint(item.model)
+    val modelType = normalizeSettingsModelHint(item.modelType)
+    var score = 0.0
+    if (modelType.isBlank() || modelType == "text") score += 180.0
+    if (modelType == "deepthinkingtext") score -= 420.0
+    if (model.contains("flash")) score += 320.0
+    if (model.contains("lite")) score += 220.0
+    if (model.contains("mini")) score += 180.0
+    if (model.contains("turbo") || model.contains("instant") || model.contains("speed")) score += 120.0
+    if (model.contains("reason") || model.contains("think") || model.contains("deep")) score -= 260.0
+    if (model.contains("pro") || model.contains("max") || model.contains("ultra")) score -= 120.0
+    score += minOf((item.createTime / 1_000_000_000_000.0), 50.0)
+    return score
+  }
+
+  fun settingsRecommendedModel(key: String): ModelConfigItem? {
+    if (key != "storySpeakerModel") return null
+    val orchestratorConfigId = settingsModelBinding("storyOrchestratorModel")?.configId
+    return settingsTextConfigs
+      .asSequence()
+      .map { item -> item to storySpeakerRecommendationScore(item, orchestratorConfigId) }
+      .filter { (_, score) -> score.isFinite() }
+      .sortedWith(compareByDescending<Pair<ModelConfigItem, Double>> { it.second }.thenByDescending { it.first.id })
+      .map { it.first }
+      .firstOrNull()
+  }
+
+  fun settingsModelAdvisory(key: String): String? {
+    if (key != "storySpeakerModel") return null
+    val speaker = settingsModelBinding("storySpeakerModel")
+    val orchestrator = settingsModelBinding("storyOrchestratorModel")
+    val recommendation = settingsRecommendedModel("storySpeakerModel")
+    val recommendationText = recommendation?.let {
+      listOf(it.manufacturer.takeIf { value -> value.isNotBlank() }, it.model.takeIf { value -> value.isNotBlank() })
+        .filterNotNull()
+        .joinToString(" / ")
+    }.orEmpty()
+    if (speaker?.configId == null || speaker.configId <= 0L) {
+      return if (recommendation != null) {
+        "未单独配置。建议绑定：$recommendationText。未配置时运行时会直接提示缺少角色发言模型。"
+      } else {
+        "未单独配置，且当前没有可直接推荐的独立文本模型。建议先新增一个更快的文本模型后再绑定。"
+      }
+    }
+    if (orchestrator?.configId != null && orchestrator.configId > 0L && orchestrator.configId == speaker.configId) {
+      return if (recommendation != null && recommendation.id != speaker.configId) {
+        "当前与编排师共用同一模型，单次调试会串行调用两次。建议改绑：$recommendationText。"
+      } else {
+        "当前与编排师共用同一模型，单次调试会串行调用两次，容易明显变慢。"
+      }
+    }
+    return null
   }
 
   private suspend fun runtimeVoiceConfigId(key: String): Long? {
@@ -599,6 +667,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  fun bindRecommendedGameModel(key: String) {
+    val recommendation = settingsRecommendedModel(key)
+    if (recommendation == null) {
+      notice = if (key == "storySpeakerModel") {
+        "当前没有可直接推荐的独立角色发言模型，请先新增一个文本模型"
+      } else {
+        "当前没有可直接推荐的模型"
+      }
+      return
+    }
+    bindGameModel(key, recommendation.id)
+  }
+
   suspend fun addManagedModelConfig(
     type: String,
     model: String,
@@ -825,6 +906,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     referenceText: String = "",
     promptText: String = "",
     mixVoices: List<VoiceMixItem> = emptyList(),
+    format: String = "",
+    sampleRate: Int? = null,
   ): String {
     return repository.previewVoice(
       configId = configId,
@@ -835,6 +918,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       referenceText = referenceText,
       promptText = promptText,
       mixVoices = normalizedMixVoices(mixVoices),
+      format = format,
+      sampleRate = sampleRate,
     )
   }
 
@@ -1126,21 +1211,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     viewModelScope.launch {
-      runCatching {
-        val saved = saveAvatarFiles(uri, "user_${userId}", projectScoped = false)
-        accountAvatarPath = saved.foregroundPath
-        accountAvatarBgPath = saved.backgroundPath
-        val storedAvatarPath = normalizeStoredMediaPath(accountAvatarPath)
-        val storedAvatarBgPath = normalizeStoredMediaPath(accountAvatarBgPath)
-        settingsStore.setAvatarPath(userId, storedAvatarPath)
-        settingsStore.setAvatarBgPath(userId, storedAvatarBgPath)
-        repository.saveUser(
-          avatarPath = storedAvatarPath,
-          avatarBgPath = storedAvatarBgPath,
-        )
-        notice = "账号头像已更新"
-      }.onFailure {
-        notice = "账号头像更新失败: ${it.message ?: "未知错误"}"
+      accountAvatarProcessing = true
+      try {
+        runCatching {
+          val saved = saveAvatarFiles(uri, "user_${userId}", projectScoped = false)
+          accountAvatarPath = saved.foregroundPath
+          accountAvatarBgPath = saved.backgroundPath
+          val storedAvatarPath = normalizeStoredMediaPath(accountAvatarPath)
+          val storedAvatarBgPath = normalizeStoredMediaPath(accountAvatarBgPath)
+          settingsStore.setAvatarPath(userId, storedAvatarPath)
+          settingsStore.setAvatarBgPath(userId, storedAvatarBgPath)
+          repository.saveUser(
+            avatarPath = storedAvatarPath,
+            avatarBgPath = storedAvatarBgPath,
+          )
+          notice = "账号头像已更新"
+        }.onFailure {
+          notice = "账号头像更新失败: ${it.message ?: "未知错误"}"
+        }
+      } finally {
+        accountAvatarProcessing = false
       }
     }
   }
@@ -1153,14 +1243,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     viewModelScope.launch {
-      runCatching {
-        val key = if (worldId > 0L) "world_${worldId}_player" else "project_${selectedProjectId}_player"
-        val saved = saveAvatarFiles(uri, key, projectScoped = true)
-        userAvatarPath = saved.foregroundPath
-        userAvatarBgPath = saved.backgroundPath
-        notice = "头像已更新"
-      }.onFailure {
-        notice = "头像更新失败: ${it.message ?: "未知错误"}"
+      storyPlayerAvatarProcessing = true
+      try {
+        runCatching {
+          val key = if (worldId > 0L) "world_${worldId}_player" else "project_${selectedProjectId}_player"
+          val saved = saveAvatarFiles(uri, key, projectScoped = true)
+          userAvatarPath = saved.foregroundPath
+          userAvatarBgPath = saved.backgroundPath
+          notice = "头像已更新"
+        }.onFailure {
+          notice = "头像更新失败: ${it.message ?: "未知错误"}"
+        }
+      } finally {
+        storyPlayerAvatarProcessing = false
       }
     }
   }
@@ -1172,12 +1267,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       return
     }
     viewModelScope.launch {
-      runCatching {
-        val saved = saveAvatarFiles(uri, storageKey, projectScoped = true)
-        onSaved(saved.foregroundPath, saved.backgroundPath)
-        notice = "头像已更新"
-      }.onFailure {
-        notice = "头像更新失败: ${it.message ?: "未知错误"}"
+      roleAvatarProcessing = true
+      try {
+        runCatching {
+          val saved = saveAvatarFiles(uri, storageKey, projectScoped = true)
+          onSaved(saved.foregroundPath, saved.backgroundPath)
+          notice = "头像已更新"
+        }.onFailure {
+          notice = "头像更新失败: ${it.message ?: "未知错误"}"
+        }
+      } finally {
+        roleAvatarProcessing = false
       }
     }
   }
@@ -1927,12 +2027,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private fun clearRuntimeRetryState() {
     runtimeRetryTask = null
+    runtimeRetryMessageText = ""
     clearRuntimeRetryMessage()
   }
 
   private fun showRuntimeRetryMessage(message: String, task: suspend () -> Unit) {
     val now = System.currentTimeMillis()
     runtimeRetryTask = task
+    runtimeRetryMessageText = message
     notice = ""
     val nextMessages = conversationMessages(messages.toList())
     messages.clear()
@@ -1951,12 +2053,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun retryRuntimeFailure() {
     val task = runtimeRetryTask ?: return
+    val retryMessage = runtimeRetryMessageText
     if (runtimeRetrying) return
     runtimeRetrying = true
     clearRuntimeRetryState()
     viewModelScope.launch {
       try {
         task()
+      } catch (err: Throwable) {
+        val nextMessage = retryMessage.ifBlank {
+          "重试失败: ${err.message ?: "未知错误"}"
+        }
+        showRuntimeRetryMessage(nextMessage) {
+          task()
+        }
       } finally {
         runtimeRetrying = false
       }
@@ -2916,7 +3026,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       }.onFailure {
         debugLoading = false
         debugLoadingStage = ""
-        leaveDebugMode()
+        activeTab = "游玩"
         showRuntimeRetryMessage("进入调试失败: ${it.message ?: "未知错误"}") {
           performDebugCurrentChapter()
         }

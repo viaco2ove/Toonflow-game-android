@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -428,6 +429,7 @@ private fun storyPromptUiMeta(code: String): StoryPromptUiMeta {
   return when (code) {
     "story-main" -> StoryPromptUiMeta("story_main", "src/agents/story/main.ts")
     "story-orchestrator" -> StoryPromptUiMeta("story_orchestrator", "src/agents/story/orchestrator/index.ts")
+    "story-speaker" -> StoryPromptUiMeta("story_speaker", "src/agents/story/speaker/index.ts")
     "story-memory" -> StoryPromptUiMeta("memory_manager", "src/agents/story/memory_manager/index.ts")
     "story-chapter" -> StoryPromptUiMeta("chapter_judge", "src/agents/story/chapter_judge/index.ts")
     "story-mini-game" -> StoryPromptUiMeta("mini_game_agent", "src/agents/story/mini_game/index.ts")
@@ -1043,10 +1045,11 @@ private fun CreateScene(
             MediumEditableAvatar(
               path = vm.userAvatarPath.trim().ifBlank { null },
               fallbackName = vm.playerName.ifBlank { vm.userName.ifBlank { "用户" } },
+              loading = vm.storyPlayerAvatarProcessing,
               onClick = { showAvatarActionDialog = true },
             )
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-              Text("点击头像更换", color = Color(0xFF3F5476), fontWeight = FontWeight.SemiBold)
+              Text(if (vm.storyPlayerAvatarProcessing) "头像处理中..." else "点击头像更换", color = Color(0xFF3F5476), fontWeight = FontWeight.SemiBold)
               Text("支持 PNG / GIF，保存时会自动标准化。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
               Text("可选：上传、AI 文生图、AI 图生图。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
             }
@@ -1195,10 +1198,11 @@ private fun CreateScene(
             MediumEditableAvatar(
               path = npcAvatarPath.trim().ifBlank { null },
               fallbackName = npcName.ifBlank { "角色" },
+              loading = vm.roleAvatarProcessing,
               onClick = { showNpcAvatarActionDialog = true },
             )
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-              Text("点击头像更换", color = Color(0xFF3F5476), fontWeight = FontWeight.SemiBold)
+              Text(if (vm.roleAvatarProcessing) "头像处理中..." else "点击头像更换", color = Color(0xFF3F5476), fontWeight = FontWeight.SemiBold)
               Text("支持 PNG / GIF，保存时会自动标准化。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
               Text("可选：上传、AI 文生图、AI 图生图。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
             }
@@ -1995,6 +1999,22 @@ private fun PlayScene(
     return runtimeVoiceBindingKey(binding) + "|" + text
   }
 
+  fun isDeterministicRuntimeVoiceError(error: Throwable): Boolean {
+    val message = (error.message ?: error.toString()).lowercase()
+    return listOf(
+      "detect audio failed",
+      "当前语音设计模型与所选故事语音模型不兼容",
+      "请先在设置里配置语音设计模型",
+      "当前语音模型不支持该绑定模式",
+      "克隆模式需要参考音频",
+      "提示词模式需要填写提示词",
+      "参考音频无法被阿里云解码",
+      "语音模型配置不存在",
+      "未返回试听音频",
+      "http 400",
+    ).any { message.contains(it.lowercase()) }
+  }
+
   suspend fun resolveRuntimeVoiceUrl(binding: VoiceBindingDraft, text: String): String {
     val cacheKey = runtimeVoicePreviewKey(binding, text)
     runtimeVoicePreviewCache[cacheKey]?.takeIf { it.isNotBlank() }?.let { return it }
@@ -2008,6 +2028,8 @@ private fun PlayScene(
         referenceText = binding.referenceText,
         promptText = binding.promptText,
         mixVoices = binding.mixVoices,
+        format = "mp3",
+        sampleRate = 16000,
       )
     } ?: throw IllegalStateException("语音生成超时")
     if (url.isBlank()) throw IllegalStateException("未返回试听音频")
@@ -2016,6 +2038,7 @@ private fun PlayScene(
   }
 
   suspend fun warmVoiceBinding(binding: VoiceBindingDraft) {
+    if (binding.mode != "text") return
     val bindingKey = runtimeVoiceBindingKey(binding)
     if (!runtimeVoiceWarmCache.add(bindingKey)) return
     runCatching {
@@ -2046,17 +2069,20 @@ private fun PlayScene(
       for (segment in segments) {
         var segmentPlayed = false
         repeat(3) {
+          var shouldRetry = true
           if (segmentPlayed) return@repeat
           if (requestId != playbackRequestId) return false
           setRuntimeVoiceIndicator(message, "loading")
           val url = runCatching {
             resolveRuntimeVoiceUrl(binding, segment)
           }.getOrElse {
+            shouldRetry = !isDeterministicRuntimeVoiceError(it)
             if (manual) {
               vm.notice = "重听失败: ${it.message ?: "未知错误"}"
             }
             ""
           }
+          if (!shouldRetry) return@repeat
           if (url.isBlank() || requestId != playbackRequestId) return@repeat
           val played = withTimeoutOrNull(estimatePlaybackTimeoutMs(segment)) {
             suspendCancellableCoroutine<Boolean> { continuation ->
@@ -2147,7 +2173,10 @@ private fun PlayScene(
   val currentChapter = vm.playCurrentChapter()
   val allMessages = vm.messages.toList()
   val displayMessages = if (mode == "history") allMessages else revealedMessages.takeLast(1).toList()
+  val latestRevealedMessage = revealedMessages.lastOrNull()
+  val canPlayerSpeak = vm.playCanPlayerSpeak()
   val listState = rememberLazyListState()
+  var lastAutoAdvanceMessageKey by remember(vm.currentSessionId) { mutableStateOf<String?>(null) }
   LaunchedEffect(mode, displayMessages.size) {
     if (displayMessages.isNotEmpty()) {
       listState.scrollToItem(displayMessages.lastIndex)
@@ -2157,6 +2186,7 @@ private fun PlayScene(
     revealedMessages.clear()
     stopRuntimePlayback()
     debugAutoAdvancing = false
+    lastAutoAdvanceMessageKey = null
   }
   LaunchedEffect(vm.currentSessionId, autoVoice, mode) {
     if (!autoVoice || mode == "history" || mode == "tips" || mode == "setting") return@LaunchedEffect
@@ -2196,25 +2226,38 @@ private fun PlayScene(
       }
       if (!autoVoice) {
         delay(estimateRevealDelayMs(message.content))
-        continue
+      } else {
+        val played = playMessageVoice(message, manual = false)
+        delay(if (played) 260 else estimateRevealDelayMs(message.content))
       }
-      val played = playMessageVoice(message, manual = false)
-      delay(if (played) 260 else estimateRevealDelayMs(message.content))
-      if (
-        vm.debugMode &&
-        mode == "live" &&
-        !vm.debugLoading &&
-        vm.debugEndDialog == null &&
-        !vm.playCanPlayerSpeak() &&
-        !debugAutoAdvancing
-      ) {
-        debugAutoAdvancing = true
-        try {
-          vm.continueDebugNarrative()
-        } finally {
-          debugAutoAdvancing = false
-        }
-      }
+    }
+  }
+  LaunchedEffect(
+    vm.currentSessionId,
+    mode,
+    vm.debugMode,
+    vm.debugLoading,
+    vm.debugEndDialog,
+    canPlayerSpeak,
+    latestRevealedMessage?.let { vm.messageUiKey(it) } ?: "",
+  ) {
+    if (!vm.debugMode || mode != "live" || vm.debugLoading || vm.debugEndDialog != null || canPlayerSpeak) {
+      return@LaunchedEffect
+    }
+    val latest = latestRevealedMessage ?: return@LaunchedEffect
+    if (latest.roleType == "player" || vm.isRuntimeRetryMessage(latest)) {
+      return@LaunchedEffect
+    }
+    val messageKey = vm.messageUiKey(latest)
+    if (messageKey == lastAutoAdvanceMessageKey || debugAutoAdvancing) {
+      return@LaunchedEffect
+    }
+    lastAutoAdvanceMessageKey = messageKey
+    debugAutoAdvancing = true
+    try {
+      vm.continueDebugNarrative()
+    } finally {
+      debugAutoAdvancing = false
     }
   }
   LaunchedEffect(mode) {
@@ -2373,20 +2416,20 @@ private fun PlayScene(
           Box(
             modifier = Modifier
               .fillMaxSize()
-              .padding(horizontal = 10.dp, vertical = 8.dp),
+              .padding(horizontal = 12.dp),
           ) {
             Box(
               modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(bottom = 50.dp),
+                .heightIn(min = 206.dp),
             ) {
               Column(
                 modifier = Modifier
                   .align(Alignment.BottomCenter)
                   .fillMaxWidth()
-                  .widthIn(max = 720.dp)
-                  .padding(end = 38.dp),
+                  .widthIn(max = 640.dp)
+                  .padding(end = 34.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
               ) {
                 if (vm.isRuntimeRetryMessage(msg)) {
@@ -2729,7 +2772,7 @@ private fun LiveStoryCard(
     Card(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(top = 6.dp),
+        .padding(top = 10.dp),
       colors = CardDefaults.cardColors(
         containerColor = if (isPlayer) Color(0xE2203657) else Color(0xF6F7FBFF),
       ),
@@ -2774,7 +2817,7 @@ private fun LiveStoryCard(
       }
     }
     Surface(
-      modifier = Modifier.padding(start = 12.dp),
+      modifier = Modifier.offset(x = 11.dp, y = (-12).dp),
       color = if (isPlayer) Color(0x33FFFFFF) else Color(0xA9314966),
       shape = RoundedCornerShape(10.dp),
     ) {
@@ -2802,7 +2845,7 @@ private fun RuntimeRetryCard(
     Card(
       modifier = Modifier
         .fillMaxWidth()
-        .padding(top = 6.dp),
+        .padding(top = 10.dp),
       colors = CardDefaults.cardColors(containerColor = Color(0xF22A1B0D)),
       shape = RoundedCornerShape(22.dp),
     ) {
@@ -2835,7 +2878,7 @@ private fun RuntimeRetryCard(
       }
     }
     Surface(
-      modifier = Modifier.padding(start = 12.dp),
+      modifier = Modifier.offset(x = 11.dp, y = (-12).dp),
       color = Color(0xCC5D3A12),
       shape = RoundedCornerShape(10.dp),
     ) {
@@ -3631,7 +3674,7 @@ private fun ProfileScene(vm: MainViewModel, onPickAvatar: () -> Unit) {
             .clip(CircleShape)
             .border(1.dp, Color(0xFFCCD8EA), CircleShape)
             .background(Color(0xFFE5EAF3))
-            .clickable { showAvatarActionDialog = true },
+            .clickable(enabled = !vm.accountAvatarProcessing) { showAvatarActionDialog = true },
         ) {
           if (vm.accountAvatarPath.isNotBlank()) {
             AsyncImage(
@@ -3651,6 +3694,20 @@ private fun ProfileScene(vm: MainViewModel, onPickAvatar: () -> Unit) {
                 text = vm.userName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
                 color = Color(0xFF7D8CA5),
                 fontWeight = FontWeight.Bold,
+              )
+            }
+          }
+          if (vm.accountAvatarProcessing) {
+            Box(
+              modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0x66132134)),
+              contentAlignment = Alignment.Center,
+            ) {
+              CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                color = Color(0xFFFFD071),
+                strokeWidth = 2.2.dp,
               )
             }
           }
@@ -5207,11 +5264,24 @@ private fun SettingsScene(vm: MainViewModel) {
       if (vm.token.isNotBlank()) {
         SettingsSectionCard(title = "模型配置") {
           vm.settingsModelSlots.forEach { slot ->
+            val binding = vm.settingsModelBinding(slot.key)
+            val recommendation = vm.settingsRecommendedModel(slot.key)
+            val advisoryText = vm.settingsModelAdvisory(slot.key).orEmpty()
+            val recommendationText = recommendation?.let {
+              listOfNotNull(it.manufacturer.takeIf { value -> value.isNotBlank() }, it.model.takeIf { value -> value.isNotBlank() }).joinToString(" / ")
+            }.orEmpty()
             SettingsModelPickerRow(
               title = slot.label,
-              currentText = vm.settingsModelBinding(slot.key)?.let { binding ->
+              currentText = binding?.let {
                 listOfNotNull(binding.manufacturer?.takeIf { it.isNotBlank() }, binding.model?.takeIf { it.isNotBlank() }).joinToString(" / ")
               }.orEmpty().ifBlank { "未绑定" },
+              advisoryText = advisoryText,
+              recommendationText = recommendationText,
+              onUseRecommendation = if (recommendation != null && binding?.configId != recommendation.id) {
+                { vm.bindRecommendedGameModel(slot.key) }
+              } else {
+                null
+              },
               onManage = { openModelManager(slot) },
             )
           }
@@ -5444,12 +5514,34 @@ private fun SettingsSectionCard(title: String, content: @Composable ColumnScope.
 private fun SettingsModelPickerRow(
   title: String,
   currentText: String,
+  advisoryText: String = "",
+  recommendationText: String = "",
+  onUseRecommendation: (() -> Unit)? = null,
   onManage: () -> Unit,
 ) {
   Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
     Text(title, fontWeight = FontWeight.SemiBold, color = Color(0xFF31445E))
     Text(currentText, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6E819B))
-    MiniBtn(text = "配置接口", primary = true, full = true, onClick = onManage)
+    if (recommendationText.isNotBlank()) {
+      Text("推荐：$recommendationText", style = MaterialTheme.typography.bodySmall, color = Color(0xFF3559A6))
+    }
+    if (advisoryText.isNotBlank()) {
+      Box(
+        modifier = Modifier
+          .clip(RoundedCornerShape(10.dp))
+          .background(Color(0xFFFFF8EA))
+          .border(1.dp, Color(0xFFF0D7A6), RoundedCornerShape(10.dp))
+          .padding(horizontal = 10.dp, vertical = 8.dp),
+      ) {
+        Text(advisoryText, style = MaterialTheme.typography.bodySmall, color = Color(0xFF8A5B0B))
+      }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+      if (onUseRecommendation != null) {
+        MiniBtn(text = "用推荐", onClick = onUseRecommendation)
+      }
+      MiniBtn(text = "配置接口", primary = true, full = onUseRecommendation == null, onClick = onManage)
+    }
   }
 }
 
@@ -5504,6 +5596,14 @@ private fun SettingsModelManagerDialog(
       .filter { row -> settingsRowMatchesSlot(slot, row) }
       .sortedWith(compareByDescending<com.toonflow.game.data.ModelConfigItem> { it.createTime }.thenByDescending { it.id })
   }
+  val recommendation = vm.settingsRecommendedModel(slot.key)
+  val advisoryText = vm.settingsModelAdvisory(slot.key).orEmpty()
+  val recommendationText = recommendation?.let {
+    listOfNotNull(
+      settingsManufacturerLabel(it.manufacturer).takeIf { value -> value.isNotBlank() },
+      it.model.takeIf { value -> value.isNotBlank() },
+    ).joinToString(" / ")
+  }.orEmpty()
 
   val filteredOptions = remember(slotOptions, keyword) {
     val query = keyword.trim().lowercase(Locale.getDefault())
@@ -5543,6 +5643,32 @@ private fun SettingsModelManagerDialog(
           }
           TextButton(onClick = onDismiss) {
             Text("关闭")
+          }
+        }
+
+        if (advisoryText.isNotBlank() || recommendationText.isNotBlank()) {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(14.dp))
+              .background(Color(0xFFFFF8EA))
+              .border(1.dp, Color(0xFFF0D7A6), RoundedCornerShape(14.dp))
+              .padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.Top,
+          ) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+              Text("当前建议", fontWeight = FontWeight.Bold, color = Color(0xFF7C5410))
+              if (advisoryText.isNotBlank()) {
+                Text(advisoryText, style = MaterialTheme.typography.bodySmall, color = Color(0xFF8A5B0B))
+              }
+              if (recommendationText.isNotBlank()) {
+                Text("推荐模型：$recommendationText", style = MaterialTheme.typography.bodySmall, color = Color(0xFF8A5B0B))
+              }
+            }
+            if (recommendation != null && selectedId != recommendation.id) {
+              MiniBtn(text = "选中推荐", onClick = { selectedId = recommendation.id })
+            }
           }
         }
 
@@ -6132,14 +6258,14 @@ private fun AvatarItem(
 }
 
 @Composable
-private fun MediumEditableAvatar(path: String?, fallbackName: String, onClick: () -> Unit) {
+private fun MediumEditableAvatar(path: String?, fallbackName: String, loading: Boolean = false, onClick: () -> Unit) {
   Box(
     modifier = Modifier
       .size(82.dp)
       .clip(CircleShape)
       .border(1.dp, Color(0xFFCCD8EA), CircleShape)
       .background(Color(0xFFE5EAF3))
-      .clickable { onClick() },
+      .clickable(enabled = !loading) { onClick() },
   ) {
     if (!path.isNullOrBlank()) {
       AsyncImage(
@@ -6163,21 +6289,38 @@ private fun MediumEditableAvatar(path: String?, fallbackName: String, onClick: (
       }
     }
 
-    Box(
-      modifier = Modifier
-        .align(Alignment.BottomEnd)
-        .size(24.dp)
-        .clip(CircleShape)
-        .background(Color.White)
-        .border(1.dp, Color(0xFFC7D4E8), CircleShape),
-      contentAlignment = Alignment.Center,
-    ) {
-      Icon(
-        imageVector = Icons.Outlined.Add,
-        contentDescription = "更换头像",
-        tint = Color(0xFF6B7F9F),
-        modifier = Modifier.size(14.dp),
-      )
+    if (loading) {
+      Box(
+        modifier = Modifier
+          .fillMaxSize()
+          .background(Color(0x66132134)),
+        contentAlignment = Alignment.Center,
+      ) {
+        CircularProgressIndicator(
+          modifier = Modifier.size(24.dp),
+          color = Color(0xFFFFD071),
+          strokeWidth = 2.2.dp,
+        )
+      }
+    }
+
+    if (!loading) {
+      Box(
+        modifier = Modifier
+          .align(Alignment.BottomEnd)
+          .size(24.dp)
+          .clip(CircleShape)
+          .background(Color.White)
+          .border(1.dp, Color(0xFFC7D4E8), CircleShape),
+        contentAlignment = Alignment.Center,
+      ) {
+        Icon(
+          imageVector = Icons.Outlined.Add,
+          contentDescription = "更换头像",
+          tint = Color(0xFF6B7F9F),
+          modifier = Modifier.size(14.dp),
+        )
+      }
     }
   }
 }

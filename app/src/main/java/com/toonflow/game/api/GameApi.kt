@@ -10,6 +10,7 @@ import com.toonflow.game.data.MessageItem
 import com.toonflow.game.data.ModelConfigItem
 import com.toonflow.game.data.ProjectItem
 import com.toonflow.game.data.PromptItem
+import com.toonflow.game.data.RoleAvatarTaskResult
 import com.toonflow.game.data.SeparatedRoleImageResult
 import com.toonflow.game.data.SessionDetail
 import com.toonflow.game.data.SessionItem
@@ -59,7 +60,10 @@ interface GameApi {
   suspend fun uploadImage(@Body payload: JsonObject): ApiEnvelope<GeneratedImageResult>
 
   @POST("game/separateRoleAvatar")
-  suspend fun separateRoleAvatar(@Body payload: JsonObject): ApiEnvelope<SeparatedRoleImageResult>
+  suspend fun separateRoleAvatar(@Body payload: JsonObject): ApiEnvelope<RoleAvatarTaskResult>
+
+  @POST("game/separateRoleAvatar/status")
+  suspend fun separateRoleAvatarStatus(@Body payload: JsonObject): ApiEnvelope<RoleAvatarTaskResult>
 
   @POST("game/getChapter")
   suspend fun getChapter(@Body payload: JsonObject): ApiEnvelope<List<ChapterItem>>

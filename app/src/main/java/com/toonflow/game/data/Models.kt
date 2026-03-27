@@ -187,6 +187,18 @@ data class SeparatedRoleImageResult(
   @SerializedName("backgroundFilePath") val backgroundFilePath: String = "",
 )
 
+data class RoleAvatarTaskResult(
+  @SerializedName("taskId") val taskId: Long = 0L,
+  @SerializedName("status") val status: String = "",
+  @SerializedName("progress") val progress: Int? = null,
+  @SerializedName("message") val message: String = "",
+  @SerializedName("errorMessage") val errorMessage: String = "",
+  @SerializedName("foregroundPath") val foregroundPath: String = "",
+  @SerializedName("foregroundFilePath") val foregroundFilePath: String = "",
+  @SerializedName("backgroundPath") val backgroundPath: String = "",
+  @SerializedName("backgroundFilePath") val backgroundFilePath: String = "",
+)
+
 data class VoiceModelConfig(
   @SerializedName("id") val id: Long,
   @SerializedName("type") val type: String = "",

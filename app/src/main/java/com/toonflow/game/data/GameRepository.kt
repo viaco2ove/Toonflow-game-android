@@ -5,11 +5,28 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.toonflow.game.api.ApiClient
+import kotlinx.coroutines.delay
 
 class GameRepository(private val settingsStore: SettingsStore) {
   private val gson = Gson()
+  private val roleAvatarTaskPollIntervalMs = 1000L
+  private val roleAvatarTaskTimeoutMs = 180000L
 
   private fun api() = ApiClient.create(settingsStore)
+
+  private fun resolveRoleAvatarResult(task: RoleAvatarTaskResult): SeparatedRoleImageResult {
+    val foregroundPath = task.foregroundFilePath.ifBlank { task.foregroundPath }
+    val backgroundPath = task.backgroundFilePath.ifBlank { task.backgroundPath }
+    if (foregroundPath.isBlank() || backgroundPath.isBlank()) {
+      error("图像模型分离失败，未返回主体或背景图片")
+    }
+    return SeparatedRoleImageResult(
+      foregroundPath = task.foregroundPath,
+      foregroundFilePath = task.foregroundFilePath,
+      backgroundPath = task.backgroundPath,
+      backgroundFilePath = task.backgroundFilePath,
+    )
+  }
 
   suspend fun login(username: String, password: String): JsonObject {
     val payload = JsonObject().apply {
@@ -145,8 +162,25 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("base64Data", base64Data)
       if (fileName.isNotBlank()) addProperty("fileName", fileName)
       if (name.isNotBlank()) addProperty("name", name)
+      addProperty("asyncTask", true)
     }
-    return api().separateRoleAvatar(payload).data
+    val task = api().separateRoleAvatar(payload).data
+    val taskId = task.taskId
+    if (taskId <= 0L) {
+      error("头像分离任务创建失败")
+    }
+    val startedAt = System.currentTimeMillis()
+    while (System.currentTimeMillis() - startedAt < roleAvatarTaskTimeoutMs) {
+      val status = api().separateRoleAvatarStatus(JsonObject().apply {
+        addProperty("taskId", taskId)
+      }).data
+      when (status.status.trim().lowercase()) {
+        "success" -> return resolveRoleAvatarResult(status)
+        "failed" -> error(status.errorMessage.ifBlank { status.message.ifBlank { "头像分离失败" } })
+      }
+      delay(roleAvatarTaskPollIntervalMs)
+    }
+    error("头像分离处理超时，请稍后重试")
   }
 
   suspend fun getChapter(worldId: Long): List<ChapterItem> {
@@ -352,11 +386,15 @@ class GameRepository(private val settingsStore: SettingsStore) {
     referenceText: String = "",
     promptText: String = "",
     mixVoices: List<VoiceMixItem> = emptyList(),
+    format: String = "",
+    sampleRate: Int? = null,
   ): String {
     val payload = JsonObject().apply {
       if (configId != null && configId > 0L) addProperty("configId", configId)
       addProperty("text", text)
       addProperty("mode", mode)
+      if (format.isNotBlank()) addProperty("format", format)
+      if (sampleRate != null && sampleRate > 0) addProperty("sampleRate", sampleRate)
       when (mode) {
         "text" -> if (voiceId.isNotBlank()) {
           addProperty("voiceId", voiceId)
