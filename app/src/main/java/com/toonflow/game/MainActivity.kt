@@ -3,6 +3,7 @@ package com.toonflow.game
 import android.Manifest
 import android.app.DownloadManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
 import android.media.MediaRecorder
@@ -126,11 +127,16 @@ import com.toonflow.game.data.VoiceBindingDraft
 import com.toonflow.game.data.VoiceMixItem
 import com.toonflow.game.data.WorldItem
 import com.toonflow.game.viewmodel.MainViewModel
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
+import java.net.URL
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -144,6 +150,7 @@ private val pageGray = Color(0xFFF1F3F7)
 private val lightLine = Color(0xFFD3DEEF)
 private val warnYellow = Color(0xFFFFE600)
 private val activeOrange = Color(0xFFFF8E2B)
+private const val RUNTIME_VOICE_CACHE_LIMIT = 60
 
 private fun sanitizeSpeakableText(input: String): String {
   return input
@@ -181,9 +188,55 @@ private fun splitSpeakableSegments(input: String): List<String> {
   return result
 }
 
+private fun inferRuntimeFallbackPreset(roleType: String, name: String = "", description: String = ""): String {
+  if (roleType == "narrator") return "story_narrator"
+  val text = "$name $description".lowercase()
+  return if (Regex("[女姐妈妹娘妃后妻她]|female|woman|girl|lady").containsMatchIn(text)) {
+    "story_std_female"
+  } else {
+    "story_std_male"
+  }
+}
+
+private fun inferRuntimeAudioExt(url: String): String {
+  val raw = url.substringBefore('?').lowercase()
+  return when {
+    raw.endsWith(".wav") -> "wav"
+    raw.endsWith(".ogg") -> "ogg"
+    raw.endsWith(".webm") -> "webm"
+    raw.endsWith(".m4a") || raw.endsWith(".mp4") -> "m4a"
+    raw.endsWith(".aac") -> "aac"
+    else -> "mp3"
+  }
+}
+
+private fun sha1(input: String): String {
+  return MessageDigest.getInstance("SHA-1")
+    .digest(input.toByteArray())
+    .joinToString("") { byte -> "%02x".format(byte) }
+}
+
+private fun <T> setLimitedCacheValue(
+  cache: MutableMap<String, T>,
+  key: String,
+  value: T,
+  onEvict: ((T) -> Unit)? = null,
+) {
+  cache.remove(key)
+  cache[key] = value
+  while (cache.size > RUNTIME_VOICE_CACHE_LIMIT) {
+    val oldestKey = cache.entries.firstOrNull()?.key ?: break
+    val removed = cache.remove(oldestKey)
+    if (removed != null) {
+      onEvict?.invoke(removed)
+    }
+  }
+}
+
 private data class SettingsManufacturerOption(
   val value: String,
   val label: String,
+  val website: String = "",
   val textBaseUrl: String = "",
   val imageBaseUrl: String = "",
   val voiceBaseUrl: String = "",
@@ -193,28 +246,33 @@ private val settingsManufacturers = listOf(
   SettingsManufacturerOption(
     value = "ai_voice_tts",
     label = "ai_voice_tts",
+    website = "https://github.com/viaco2ove/ai_voice_tts",
     voiceBaseUrl = "http://127.0.0.1:8000",
   ),
   SettingsManufacturerOption(
     value = "volcengine",
     label = "火山引擎",
+    website = "https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey",
     textBaseUrl = "https://ark.cn-beijing.volces.com/api/v3",
     imageBaseUrl = "https://ark.cn-beijing.volces.com/api/v3/images/generations",
   ),
   SettingsManufacturerOption(
     value = "deepseek",
     label = "DeepSeek",
+    website = "https://platform.deepseek.com",
     textBaseUrl = "https://api.deepseek.com/v1",
   ),
   SettingsManufacturerOption(
     value = "openai",
     label = "OpenAI",
+    website = "https://platform.openai.com/api-keys",
     textBaseUrl = "https://api.openai.com/v1",
     imageBaseUrl = "https://api.openai.com/v1/images/generations",
   ),
   SettingsManufacturerOption(
     value = "gemini",
     label = "Gemini",
+    website = "https://ai.google.dev/gemini-api/docs/api-key?hl=zh-cn",
     textBaseUrl = "https://generativelanguage.googleapis.com/v1beta",
     imageBaseUrl = "https://generativelanguage.googleapis.com/v1beta",
   ),
@@ -227,21 +285,25 @@ private val settingsManufacturers = listOf(
   SettingsManufacturerOption(
     value = "zhipu",
     label = "智谱",
+    website = "https://bigmodel.cn/usercenter/proj-mgmt/apikeys",
     textBaseUrl = "https://open.bigmodel.cn/api/paas/v4",
   ),
   SettingsManufacturerOption(
     value = "qwen",
     label = "阿里千问",
+    website = "https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key",
     textBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1",
   ),
   SettingsManufacturerOption(
     value = "aliyun",
     label = "local阿里云",
+    website = "https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key",
     voiceBaseUrl = "http://127.0.0.1:8000",
   ),
   SettingsManufacturerOption(
     value = "aliyun_direct",
     label = "阿里云直连",
+    website = "https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key",
     voiceBaseUrl = "https://dashscope.aliyuncs.com",
   ),
   SettingsManufacturerOption(
@@ -252,6 +314,10 @@ private val settingsManufacturers = listOf(
 
 private fun settingsManufacturerLabel(value: String): String {
   return settingsManufacturers.firstOrNull { it.value == value }?.label ?: value.ifBlank { "未知厂商" }
+}
+
+private fun settingsManufacturerWebsite(value: String): String {
+  return settingsManufacturers.firstOrNull { it.value == value }?.website.orEmpty()
 }
 
 private fun isVoiceDesignSlot(slot: MainViewModel.SettingsModelSlot): Boolean {
@@ -1896,6 +1962,10 @@ private fun PlayScene(
   var playbackPlayer by remember(vm.currentSessionId) { mutableStateOf<MediaPlayer?>(null) }
   var playbackRequestId by remember(vm.currentSessionId) { mutableStateOf(0) }
   val runtimeVoicePreviewCache = remember(vm.currentSessionId) { mutableMapOf<String, String>() }
+  val runtimeVoicePreviewInflight = remember(vm.currentSessionId) { mutableMapOf<String, CompletableDeferred<String>>() }
+  val runtimeVoiceAudioPathCache = remember(vm.currentSessionId) { mutableMapOf<String, String>() }
+  val runtimeVoiceAudioInflight = remember(vm.currentSessionId) { mutableMapOf<String, CompletableDeferred<String>>() }
+  val runtimeVoiceFallbackBindingCache = remember(vm.currentSessionId) { mutableMapOf<String, VoiceBindingDraft>() }
   val runtimeVoiceWarmCache = remember(vm.currentSessionId) { mutableSetOf<String>() }
   val revealedMessages = remember(vm.currentSessionId) { mutableStateListOf<MessageItem>() }
   var debugAutoAdvancing by remember(vm.currentSessionId) { mutableStateOf(false) }
@@ -2015,26 +2085,115 @@ private fun PlayScene(
     ).any { message.contains(it.lowercase()) }
   }
 
+  fun findMessageRole(message: MessageItem) = vm.playStoryRoles().firstOrNull { role ->
+    val roleName = message.role.trim()
+    (roleName.isNotBlank() && (role.name == roleName || role.id == roleName)) || (roleName.isBlank() && role.roleType == message.roleType)
+  } ?: vm.playStoryRoles().firstOrNull { it.roleType == message.roleType }
+
+  fun resolveFallbackVoiceBinding(message: MessageItem, originalBinding: VoiceBindingDraft?): VoiceBindingDraft? {
+    if (message.roleType == "player") return null
+    if (message.roleType == "narrator") {
+      return VoiceBindingDraft(
+        label = originalBinding?.label?.ifBlank { "旁白" } ?: "旁白",
+        configId = originalBinding?.configId,
+        presetId = "story_narrator",
+        mode = "text",
+        referenceAudioPath = "",
+        referenceAudioName = "",
+        referenceText = "",
+        promptText = "",
+        mixVoices = emptyList(),
+      )
+    }
+    val role = findMessageRole(message)
+    val roleName = role?.name ?: message.role.trim()
+    return VoiceBindingDraft(
+      label = originalBinding?.label?.ifBlank { role?.voice ?: roleName } ?: (role?.voice ?: roleName),
+      configId = originalBinding?.configId ?: role?.voiceConfigId,
+      presetId = inferRuntimeFallbackPreset(
+        roleType = role?.roleType ?: message.roleType,
+        name = roleName,
+        description = role?.description.orEmpty(),
+      ),
+      mode = "text",
+      referenceAudioPath = "",
+      referenceAudioName = "",
+      referenceText = "",
+      promptText = "",
+      mixVoices = emptyList(),
+    )
+  }
+
+  fun shouldDowngradeRuntimeVoiceBinding(binding: VoiceBindingDraft?, error: Throwable): Boolean {
+    if (binding == null || binding.mode == "text") return false
+    return isDeterministicRuntimeVoiceError(error)
+  }
+
   suspend fun resolveRuntimeVoiceUrl(binding: VoiceBindingDraft, text: String): String {
     val cacheKey = runtimeVoicePreviewKey(binding, text)
     runtimeVoicePreviewCache[cacheKey]?.takeIf { it.isNotBlank() }?.let { return it }
-    val url = withTimeoutOrNull(15000L) {
-      vm.previewVoice(
-        configId = binding.configId,
-        text = text,
-        mode = binding.mode,
-        presetId = binding.presetId,
-        referenceAudioPath = binding.referenceAudioPath,
-        referenceText = binding.referenceText,
-        promptText = binding.promptText,
-        mixVoices = binding.mixVoices,
-        format = "mp3",
-        sampleRate = 16000,
-      )
-    } ?: throw IllegalStateException("语音生成超时")
-    if (url.isBlank()) throw IllegalStateException("未返回试听音频")
-    runtimeVoicePreviewCache[cacheKey] = url
-    return url
+    runtimeVoicePreviewInflight[cacheKey]?.let { return it.await() }
+    val deferred = CompletableDeferred<String>()
+    runtimeVoicePreviewInflight[cacheKey] = deferred
+    try {
+      val url = withTimeoutOrNull(15000L) {
+        vm.previewVoice(
+          configId = binding.configId,
+          text = text,
+          mode = binding.mode,
+          presetId = binding.presetId,
+          referenceAudioPath = binding.referenceAudioPath,
+          referenceText = binding.referenceText,
+          promptText = binding.promptText,
+          mixVoices = binding.mixVoices,
+          format = "mp3",
+          sampleRate = 16000,
+        )
+      } ?: throw IllegalStateException("语音生成超时")
+      if (url.isBlank()) throw IllegalStateException("未返回试听音频")
+      setLimitedCacheValue(runtimeVoicePreviewCache, cacheKey, url)
+      deferred.complete(url)
+      return url
+    } catch (err: Throwable) {
+      deferred.completeExceptionally(err)
+      throw err
+    } finally {
+      runtimeVoicePreviewInflight.remove(cacheKey)
+    }
+  }
+
+  suspend fun resolveRuntimeVoicePlaybackPath(audioUrl: String): String {
+    runtimeVoiceAudioPathCache[audioUrl]?.takeIf { it.isNotBlank() && File(it).exists() }?.let { return it }
+    runtimeVoiceAudioInflight[audioUrl]?.let { return it.await() }
+    val deferred = CompletableDeferred<String>()
+    runtimeVoiceAudioInflight[audioUrl] = deferred
+    try {
+      val localPath = withTimeoutOrNull(10000L) {
+        withContext(Dispatchers.IO) {
+          val targetDir = File(context.cacheDir, "runtime_voice_preview").apply { mkdirs() }
+          val targetFile = File(targetDir, "${sha1(audioUrl)}.${inferRuntimeAudioExt(audioUrl)}")
+          if (!targetFile.exists() || targetFile.length() <= 0L) {
+            URL(audioUrl).openStream().use { input ->
+              targetFile.outputStream().use { output ->
+                input.copyTo(output)
+              }
+            }
+          }
+          targetFile.absolutePath
+        }
+      } ?: throw IllegalStateException("音频下载超时")
+      if (localPath.isBlank()) throw IllegalStateException("音频下载失败")
+      setLimitedCacheValue(runtimeVoiceAudioPathCache, audioUrl, localPath) { cachedPath ->
+        runCatching { File(cachedPath).delete() }
+      }
+      deferred.complete(localPath)
+      return localPath
+    } catch (err: Throwable) {
+      deferred.completeExceptionally(err)
+      throw err
+    } finally {
+      runtimeVoiceAudioInflight.remove(audioUrl)
+    }
   }
 
   suspend fun warmVoiceBinding(binding: VoiceBindingDraft) {
@@ -2046,107 +2205,165 @@ private fun PlayScene(
     }
   }
 
-  suspend fun playMessageVoice(message: MessageItem, manual: Boolean): Boolean {
-    val binding = vm.playVoiceBindingForMessage(message)
-    val speakable = sanitizeSpeakableText(message.content)
-    if (speakable.isBlank()) {
-      if (manual) vm.notice = "这条对话没有可重听内容"
-      return false
-    }
-    if (binding == null) {
-      if (manual) vm.notice = "当前角色未绑定可用音色"
-      return false
-    }
+  suspend fun playMessageVoiceWithBinding(
+    message: MessageItem,
+    binding: VoiceBindingDraft,
+    speakable: String,
+    manual: Boolean,
+    waitForCompletion: Boolean,
+  ): Boolean {
     stopRuntimePlayback()
     val requestId = playbackRequestId
     if (manual) {
       vm.notice = "正在生成语音"
     }
-    try {
-      val segments = splitSpeakableSegments(speakable)
-      if (segments.isEmpty()) return false
-      setRuntimeVoiceIndicator(message, "loading")
-      for (segment in segments) {
-        var segmentPlayed = false
-        repeat(3) {
-          var shouldRetry = true
-          if (segmentPlayed) return@repeat
-          if (requestId != playbackRequestId) return false
-          setRuntimeVoiceIndicator(message, "loading")
-          val url = runCatching {
-            resolveRuntimeVoiceUrl(binding, segment)
-          }.getOrElse {
-            shouldRetry = !isDeterministicRuntimeVoiceError(it)
-            if (manual) {
-              vm.notice = "重听失败: ${it.message ?: "未知错误"}"
-            }
-            ""
-          }
+    val segments = splitSpeakableSegments(speakable)
+    if (segments.isEmpty()) return false
+    setRuntimeVoiceIndicator(message, "loading")
+    for (segment in segments) {
+      var segmentPlayed = false
+      var lastError: Throwable? = null
+      val previewKey = runtimeVoicePreviewKey(binding, segment)
+      repeat(3) {
+        var shouldRetry = true
+        if (segmentPlayed) return@repeat
+        if (requestId != playbackRequestId) return false
+        setRuntimeVoiceIndicator(message, "loading")
+        val audioUrl = runCatching {
+          resolveRuntimeVoiceUrl(binding, segment)
+        }.getOrElse {
+          lastError = it
+          shouldRetry = !isDeterministicRuntimeVoiceError(it)
+          ""
+        }
+        if (audioUrl.isBlank()) {
           if (!shouldRetry) return@repeat
-          if (url.isBlank() || requestId != playbackRequestId) return@repeat
-          val played = withTimeoutOrNull(estimatePlaybackTimeoutMs(segment)) {
-            suspendCancellableCoroutine<Boolean> { continuation ->
-              val player = MediaPlayer()
-              playbackPlayer = player
-              fun finish(ok: Boolean, noticeText: String? = null) {
-                if (playbackPlayer === player) {
-                  playbackPlayer = null
-                }
-                runCatching { player.stop() }
-                player.release()
-                if (manual && !noticeText.isNullOrBlank()) {
-                  vm.notice = noticeText
-                }
-                if (continuation.isActive) {
-                  continuation.resume(ok)
-                }
-              }
-              continuation.invokeOnCancellation {
-                if (playbackPlayer === player) {
-                  playbackPlayer = null
-                }
-                runCatching { player.stop() }
-                player.release()
-              }
-              runCatching {
-                player.setDataSource(url)
-                player.setOnPreparedListener {
-                  if (requestId != playbackRequestId) {
-                    finish(false)
-                    return@setOnPreparedListener
-                  }
-                  setRuntimeVoiceIndicator(message, "playing")
-                  if (manual) vm.notice = "正在播放重听"
-                  it.start()
-                }
-                player.setOnCompletionListener {
-                  finish(true, "朗读完成")
-                }
-                player.setOnErrorListener { _, _, _ ->
-                  finish(false, "语音播放失败")
-                  true
-                }
-                player.prepareAsync()
-              }.onFailure {
-                finish(false, if (manual) "重听失败: ${it.message ?: "未知错误"}" else null)
-              }
+          delay(220L)
+          return@repeat
+        }
+        val playbackPath = runCatching {
+          resolveRuntimeVoicePlaybackPath(audioUrl)
+        }.getOrElse {
+          lastError = it
+          val messageText = it.message.orEmpty()
+          if (messageText.contains("HTTP ", ignoreCase = true) || messageText.contains("音频下载超时")) {
+            runtimeVoicePreviewCache.remove(previewKey)
+            runtimeVoicePreviewInflight.remove(previewKey)?.cancel()
+            runtimeVoiceAudioPathCache.remove(audioUrl)?.let { cachedPath ->
+              runCatching { File(cachedPath).delete() }
             }
           }
-          if (played == null) {
-            stopRuntimePlayback(invalidate = false)
-            if (manual) {
-              vm.notice = "语音播放超时"
+          ""
+        }
+        if (playbackPath.isBlank()) {
+          delay(220L)
+          return@repeat
+        }
+        if (requestId != playbackRequestId) return false
+        val played = withTimeoutOrNull(if (waitForCompletion) estimatePlaybackTimeoutMs(segment) else 8000L) {
+          suspendCancellableCoroutine<Boolean> { continuation ->
+            val player = MediaPlayer()
+            playbackPlayer = player
+            fun finish(ok: Boolean, noticeText: String? = null) {
+              if (playbackPlayer === player) {
+                playbackPlayer = null
+              }
+              runCatching { player.stop() }
+              player.release()
+              if (manual && !noticeText.isNullOrBlank()) {
+                vm.notice = noticeText
+              }
+              if (continuation.isActive) {
+                continuation.resume(ok)
+              }
             }
-            return@repeat
+            continuation.invokeOnCancellation {
+              if (playbackPlayer === player) {
+                playbackPlayer = null
+              }
+              runCatching { player.stop() }
+              player.release()
+            }
+            runCatching {
+              player.setDataSource(playbackPath)
+              player.setOnPreparedListener {
+                if (requestId != playbackRequestId) {
+                  finish(false)
+                  return@setOnPreparedListener
+                }
+                setRuntimeVoiceIndicator(message, "playing")
+                if (manual) vm.notice = "正在播放重听"
+                it.start()
+                if (!waitForCompletion && continuation.isActive) {
+                  continuation.resume(true)
+                }
+              }
+              player.setOnCompletionListener {
+                finish(true, "朗读完成")
+              }
+              player.setOnErrorListener { _, _, _ ->
+                finish(false, "语音播放失败")
+                true
+              }
+              player.prepareAsync()
+            }.onFailure {
+              lastError = it
+              finish(false, if (manual) "重听失败: ${it.message ?: "未知错误"}" else null)
+            }
           }
-          segmentPlayed = played
         }
-        if (!segmentPlayed) {
-          return false
+        if (played == null) {
+          stopRuntimePlayback(invalidate = false)
+          if (manual) {
+            vm.notice = "语音播放超时"
+          }
+          return@repeat
         }
-        delay(120)
+        segmentPlayed = played
       }
-      return true
+      if (!segmentPlayed) {
+        throw (lastError ?: IllegalStateException("重听失败"))
+      }
+      delay(120L)
+    }
+    return true
+  }
+
+  suspend fun playMessageVoice(message: MessageItem, manual: Boolean, waitForCompletion: Boolean = manual): Boolean {
+    val speakable = sanitizeSpeakableText(message.content)
+    if (speakable.isBlank()) {
+      if (manual) vm.notice = "这条对话没有可重听内容"
+      return false
+    }
+    val binding = vm.playVoiceBindingForMessage(message)
+    if (binding == null) {
+      if (manual) vm.notice = "当前角色未绑定可用音色"
+      return false
+    }
+    val bindingKey = runtimeVoiceBindingKey(binding)
+    val preferredBinding = runtimeVoiceFallbackBindingCache[bindingKey] ?: binding
+    try {
+      return playMessageVoiceWithBinding(message, preferredBinding, speakable, manual, waitForCompletion)
+    } catch (err: Throwable) {
+      var finalError = err
+      if (runtimeVoiceBindingKey(preferredBinding) == bindingKey && shouldDowngradeRuntimeVoiceBinding(preferredBinding, err)) {
+        val fallbackBinding = resolveFallbackVoiceBinding(message, binding)
+        if (fallbackBinding != null && runtimeVoiceBindingKey(fallbackBinding) != bindingKey) {
+          setLimitedCacheValue(runtimeVoiceFallbackBindingCache, bindingKey, fallbackBinding)
+          try {
+            if (manual) {
+              vm.notice = "当前绑定音色不可用，正在切换兼容音色"
+            }
+            return playMessageVoiceWithBinding(message, fallbackBinding, speakable, manual, waitForCompletion)
+          } catch (fallbackError: Throwable) {
+            finalError = fallbackError
+          }
+        }
+      }
+      if (manual) {
+        vm.notice = "重听失败: ${finalError.message ?: "未知错误"}"
+      }
+      return false
     } finally {
       if (runtimeVoiceMessageKey == vm.messageUiKey(message)) {
         runtimeVoiceMessageKey = ""
@@ -2227,7 +2444,7 @@ private fun PlayScene(
       if (!autoVoice) {
         delay(estimateRevealDelayMs(message.content))
       } else {
-        val played = playMessageVoice(message, manual = false)
+        val played = playMessageVoice(message, manual = false, waitForCompletion = false)
         delay(if (played) 260 else estimateRevealDelayMs(message.content))
       }
     }
@@ -2287,9 +2504,12 @@ private fun PlayScene(
   val playerAvatarBgPath = vm.userAvatarBgPath.trim().ifBlank { null }
   val chapterBackgroundPath = vm.playChapterBackgroundPath().trim().ifBlank { null }
   val currentLiveMessage = if (mode == "history") null else displayMessages.lastOrNull()
-  val currentLiveFigurePath = currentLiveMessage
+  val currentLiveFigureBgPath = currentLiveMessage
     ?.takeIf { it.roleType != "player" && !vm.isRuntimeRetryMessage(it) }
     ?.let { vm.avatarBgPathForMessage(it).trim().ifBlank { vm.avatarPathForMessage(it).trim().ifBlank { null } } }
+  val currentLiveFigureFgPath = currentLiveMessage
+    ?.takeIf { it.roleType != "player" && !vm.isRuntimeRetryMessage(it) }
+    ?.let { vm.avatarPathForMessage(it).trim().ifBlank { null } }
   val closeDialogMenu = {
     selectedMessage = null
     onCloseDialogMenu()
@@ -2313,7 +2533,7 @@ private fun PlayScene(
         contentScale = ContentScale.Crop,
       )
     }
-    if (currentLiveFigurePath != null) {
+    if (currentLiveFigureBgPath != null || currentLiveFigureFgPath != null) {
       Box(
         modifier = Modifier
           .align(Alignment.BottomCenter)
@@ -2330,17 +2550,32 @@ private fun PlayScene(
               ),
             ),
         )
-        AsyncImage(
-          model = currentLiveFigurePath,
-          contentDescription = null,
-          modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .offset(y = 10.dp)
-            .width(292.dp)
-            .height(444.dp)
-            .alpha(0.56f),
-          contentScale = ContentScale.Fit,
-        )
+        if (currentLiveFigureBgPath != null) {
+          AsyncImage(
+            model = currentLiveFigureBgPath,
+            contentDescription = null,
+            modifier = Modifier
+              .align(Alignment.BottomCenter)
+              .offset(y = 10.dp)
+              .width(292.dp)
+              .height(444.dp)
+              .alpha(0.36f),
+            contentScale = ContentScale.Crop,
+          )
+        }
+        if (currentLiveFigureFgPath != null) {
+          AsyncImage(
+            model = currentLiveFigureFgPath,
+            contentDescription = null,
+            modifier = Modifier
+              .align(Alignment.BottomCenter)
+              .offset(y = 4.dp)
+              .width(306.dp)
+              .height(454.dp)
+              .alpha(0.96f),
+            contentScale = ContentScale.Fit,
+          )
+        }
         Box(
           modifier = Modifier
             .fillMaxSize()
@@ -2488,6 +2723,7 @@ private fun PlayScene(
                   content = msg.content.ifBlank { "（空消息）" },
                   roleType = msg.roleType,
                   avatarPath = vm.avatarPathForMessage(msg).trim().ifBlank { if (msg.roleType == "player") playerAvatarPath else null },
+                  avatarBgPath = vm.avatarBgPathForMessage(msg).trim().ifBlank { if (msg.roleType == "player") playerAvatarBgPath else null },
                   reaction = vm.reactionForMessage(msg),
                   voiceTail = messageVoiceTail(msg),
                   voicePlaying = runtimeVoicePhase == "playing" && messageVoiceTail(msg).isNotBlank(),
@@ -2899,6 +3135,7 @@ private fun Bubble(
   content: String,
   roleType: String = "npc",
   avatarPath: String? = null,
+  avatarBgPath: String? = null,
   reaction: String = "",
   voiceTail: String = "",
   voicePlaying: Boolean = false,
@@ -2929,7 +3166,12 @@ private fun Bubble(
       verticalAlignment = Alignment.Top,
     ) {
       if (!isPlayer) {
-        SmallAvatar(path = avatarPath, title = title, size = 42.dp)
+        SmallAvatar(
+          foregroundPath = avatarPath,
+          backgroundPath = avatarBgPath,
+          title = title,
+          size = 42.dp,
+        )
         Spacer(modifier = Modifier.width(6.dp))
       }
       Card(
@@ -2989,14 +3231,24 @@ private fun Bubble(
       }
       if (isPlayer) {
         Spacer(modifier = Modifier.width(6.dp))
-        SmallAvatar(path = avatarPath, title = title, size = 42.dp)
+        SmallAvatar(
+          foregroundPath = avatarPath,
+          backgroundPath = avatarBgPath,
+          title = title,
+          size = 42.dp,
+        )
       }
     }
   }
 }
 
 @Composable
-private fun SmallAvatar(path: String?, title: String, size: androidx.compose.ui.unit.Dp = 24.dp) {
+private fun SmallAvatar(
+  foregroundPath: String?,
+  backgroundPath: String?,
+  title: String,
+  size: androidx.compose.ui.unit.Dp = 24.dp,
+) {
   Box(
     modifier = Modifier
       .size(size)
@@ -3005,12 +3257,20 @@ private fun SmallAvatar(path: String?, title: String, size: androidx.compose.ui.
       .border(1.dp, Color(0xFFC7D4E8), CircleShape),
     contentAlignment = Alignment.Center,
   ) {
-    if (!path.isNullOrBlank()) {
+    if (!backgroundPath.isNullOrBlank()) {
       AsyncImage(
-        model = path,
+        model = backgroundPath,
         contentDescription = null,
         modifier = Modifier.fillMaxSize(),
         contentScale = ContentScale.Crop,
+      )
+    }
+    if (!foregroundPath.isNullOrBlank()) {
+      AsyncImage(
+        model = foregroundPath,
+        contentDescription = null,
+        modifier = Modifier.fillMaxSize(),
+        contentScale = ContentScale.Fit,
       )
     } else {
       Text(
@@ -3193,23 +3453,18 @@ private fun StorySettingPanel(
           horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
           roles.forEach { role ->
-            val active = role.id == selectedRole?.id
             Column(
               modifier = Modifier
                 .clickable { selectedRoleId = role.id },
               horizontalAlignment = Alignment.CenterHorizontally,
               verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-              Box(
-                modifier = Modifier
-                  .size(40.dp)
-                  .clip(CircleShape)
-                  .background(if (active) Color(0x333A7BFF) else Color(0x22FFFFFF))
-                  .border(1.dp, if (active) Color(0xFF80AAFF) else Color(0x33FFFFFF), CircleShape),
-                contentAlignment = Alignment.Center,
-              ) {
-                SmallAvatar(path = role.avatarPath.trim().ifBlank { null }, title = role.name)
-              }
+              SmallAvatar(
+                foregroundPath = role.avatarPath.trim().ifBlank { null },
+                backgroundPath = role.avatarBgPath.trim().ifBlank { role.avatarPath.trim().ifBlank { null } },
+                title = role.name,
+                size = 40.dp,
+              )
               Text(
                 role.name.ifBlank { role.roleType },
                 color = Color(0xFFDCEEFF),
@@ -5907,6 +6162,7 @@ private fun SettingsModelEditorDialog(
   onDismiss: () -> Unit,
   onSubmit: (Long?, String, String, String, String, String) -> Unit,
 ) {
+  val context = LocalContext.current
   val normalizedInitialManufacturer = remember(initial?.id, slot.key) {
     val raw = initial?.manufacturer?.ifBlank { defaultSettingsManufacturerForSlot(slot) } ?: defaultSettingsManufacturerForSlot(slot)
     if (isVoiceDesignSlot(slot) && !isVoiceDesignManufacturer(raw)) defaultSettingsManufacturerForSlot(slot) else raw
@@ -5961,6 +6217,18 @@ private fun SettingsModelEditorDialog(
                 },
               )
             }
+          }
+        }
+        settingsManufacturerWebsite(manufacturer).takeIf { it.isNotBlank() }?.let { website ->
+          TextButton(
+            onClick = {
+              runCatching {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(website)))
+              }
+            },
+            contentPadding = PaddingValues(0.dp),
+          ) {
+            Text("点击获取厂商 API", color = Color(0xFF4C67B2))
           }
         }
 
