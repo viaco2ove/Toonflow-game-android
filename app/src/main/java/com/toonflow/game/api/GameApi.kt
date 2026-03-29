@@ -4,8 +4,10 @@ import com.google.gson.JsonObject
 import com.toonflow.game.data.ApiEnvelope
 import com.toonflow.game.data.AiModelMapItem
 import com.toonflow.game.data.ChapterItem
+import com.toonflow.game.data.DebugOrchestrationResult
 import com.toonflow.game.data.DebugStepResult
 import com.toonflow.game.data.GeneratedImageResult
+import com.toonflow.game.data.LocalAvatarMattingStatus
 import com.toonflow.game.data.MessageItem
 import com.toonflow.game.data.ModelConfigItem
 import com.toonflow.game.data.ProjectItem
@@ -89,6 +91,9 @@ interface GameApi {
   @POST("game/debugStep")
   suspend fun debugStep(@Body payload: JsonObject): ApiEnvelope<DebugStepResult>
 
+  @POST("game/orchestration")
+  suspend fun orchestrateDebug(@Body payload: JsonObject): ApiEnvelope<DebugOrchestrationResult>
+
   @POST("setting/getVoiceModelList")
   suspend fun getVoiceModelList(@Body payload: JsonObject = JsonObject()): ApiEnvelope<List<VoiceModelConfig>>
 
@@ -110,6 +115,12 @@ interface GameApi {
   @POST("setting/configurationModel")
   suspend fun bindModelConfig(@Body payload: JsonObject): ApiEnvelope<String>
 
+  @POST("setting/localAvatarMatting/status")
+  suspend fun getLocalAvatarMattingStatus(@Body payload: JsonObject): ApiEnvelope<LocalAvatarMattingStatus>
+
+  @POST("setting/localAvatarMatting/install")
+  suspend fun installLocalAvatarMatting(@Body payload: JsonObject): ApiEnvelope<LocalAvatarMattingStatus>
+
   @GET("prompt/getPrompts")
   suspend fun getPrompts(): ApiEnvelope<List<PromptItem>>
 
@@ -124,6 +135,9 @@ interface GameApi {
 
   @POST("voice/preview")
   suspend fun previewVoice(@Body payload: JsonObject): ApiEnvelope<JsonObject>
+
+  @POST("game/streamvoice")
+  suspend fun streamVoice(@Body payload: JsonObject): ApiEnvelope<JsonObject>
 
   @POST("voice/transcribe")
   suspend fun transcribeVoice(@Body payload: JsonObject): ApiEnvelope<JsonObject>

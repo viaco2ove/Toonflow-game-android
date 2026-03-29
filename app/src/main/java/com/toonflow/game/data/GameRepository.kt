@@ -6,6 +6,11 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.toonflow.game.api.ApiClient
 import kotlinx.coroutines.delay
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 
 class GameRepository(private val settingsStore: SettingsStore) {
   private val gson = Gson()
@@ -259,6 +264,76 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return api().debugStep(payload).data
   }
 
+  suspend fun debugOrchestration(
+    worldId: Long,
+    chapterId: Long?,
+    state: JsonElement?,
+    messages: List<MessageItem>,
+    playerContent: String? = null,
+  ): DebugOrchestrationResult {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+      if (chapterId != null && chapterId > 0L) addProperty("chapterId", chapterId)
+      if (playerContent != null) addProperty("playerContent", playerContent)
+      if (state != null && !state.isJsonNull) {
+        add("state", state)
+      }
+      add("messages", gson.toJsonTree(messages))
+    }
+    return api().orchestrateDebug(payload).data
+  }
+
+  suspend fun streamDebugLines(
+    worldId: Long,
+    chapterId: Long?,
+    state: JsonElement?,
+    messages: List<MessageItem>,
+    playerContent: String? = null,
+    plan: DebugNarrativePlan,
+    onEvent: suspend (JsonObject) -> Unit,
+  ) {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+      if (chapterId != null && chapterId > 0L) addProperty("chapterId", chapterId)
+      if (playerContent != null) addProperty("playerContent", playerContent)
+      if (state != null && !state.isJsonNull) {
+        add("state", state)
+      }
+      add("messages", gson.toJsonTree(messages))
+      add("plan", gson.toJsonTree(plan))
+    }
+    val baseUrl = settingsStore.baseUrl.trim().removeSuffix("/")
+    val request = Request.Builder()
+      .url("$baseUrl/game/streamlines")
+      .post(gson.toJson(payload).toRequestBody("application/json; charset=utf-8".toMediaType()))
+      .apply {
+        val token = settingsStore.token.trim()
+        if (token.isNotEmpty()) {
+          header("Authorization", token)
+        }
+      }
+      .build()
+    val client = OkHttpClient.Builder()
+      .connectTimeout(20, TimeUnit.SECONDS)
+      .readTimeout(0, TimeUnit.SECONDS)
+      .writeTimeout(30, TimeUnit.SECONDS)
+      .build()
+    client.newCall(request).execute().use { response ->
+      if (!response.isSuccessful) {
+        error("HTTP ${response.code}")
+      }
+      val body = response.body ?: error("未返回流式正文")
+      body.charStream().buffered().useLines { lines ->
+        lines.forEach { raw ->
+          val line = raw.trim()
+          if (line.isBlank()) return@forEach
+          val event = gson.fromJson(line, JsonObject::class.java)
+          onEvent(event)
+        }
+      }
+    }
+  }
+
   suspend fun getVoiceModels(): List<VoiceModelConfig> {
     return runCatching { api().getVoiceModelList().data }.getOrElse { emptyList() }
   }
@@ -290,6 +365,22 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("manufacturer", manufacturer)
     }
     api().updateModelConfig(payload)
+  }
+
+  suspend fun getLocalAvatarMattingStatus(manufacturer: String, model: String): LocalAvatarMattingStatus {
+    val payload = JsonObject().apply {
+      addProperty("manufacturer", manufacturer)
+      addProperty("model", model)
+    }
+    return api().getLocalAvatarMattingStatus(payload).data
+  }
+
+  suspend fun installLocalAvatarMatting(manufacturer: String, model: String): LocalAvatarMattingStatus {
+    val payload = JsonObject().apply {
+      addProperty("manufacturer", manufacturer)
+      addProperty("model", model)
+    }
+    return api().installLocalAvatarMatting(payload).data
   }
 
   suspend fun deleteModelConfig(id: Long) {
@@ -421,6 +512,53 @@ class GameRepository(private val settingsStore: SettingsStore) {
       }
     }
     val data = api().previewVoice(payload).data
+    return data.get("audioUrl")?.asString?.trim().orEmpty()
+  }
+
+  suspend fun streamVoice(
+    configId: Long?,
+    text: String,
+    mode: String = "text",
+    voiceId: String = "",
+    referenceAudioPath: String = "",
+    referenceText: String = "",
+    promptText: String = "",
+    mixVoices: List<VoiceMixItem> = emptyList(),
+    format: String = "",
+    sampleRate: Int? = null,
+  ): String {
+    val payload = JsonObject().apply {
+      if (configId != null && configId > 0L) addProperty("configId", configId)
+      addProperty("text", text)
+      addProperty("mode", mode)
+      if (format.isNotBlank()) addProperty("format", format)
+      if (sampleRate != null && sampleRate > 0) addProperty("sampleRate", sampleRate)
+      when (mode) {
+        "text" -> if (voiceId.isNotBlank()) {
+          addProperty("voiceId", voiceId)
+        }
+        "clone" -> {
+          if (referenceAudioPath.isNotBlank()) addProperty("referenceAudioPath", referenceAudioPath)
+          if (referenceText.isNotBlank()) addProperty("referenceText", referenceText)
+        }
+        "mix" -> {
+          add("mixVoices", JsonArray().apply {
+            mixVoices
+              .filter { it.voiceId.isNotBlank() }
+              .forEach { item ->
+                add(JsonObject().apply {
+                  addProperty("voiceId", item.voiceId)
+                  addProperty("weight", item.weight)
+                })
+              }
+          })
+        }
+        "prompt_voice" -> if (promptText.isNotBlank()) {
+          addProperty("promptText", promptText)
+        }
+      }
+    }
+    val data = api().streamVoice(payload).data
     return data.get("audioUrl")?.asString?.trim().orEmpty()
   }
 

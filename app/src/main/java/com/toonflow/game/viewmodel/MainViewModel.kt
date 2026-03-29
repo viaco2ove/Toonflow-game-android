@@ -34,6 +34,7 @@ import com.toonflow.game.data.SettingsStore
 import com.toonflow.game.data.StoryRole
 import com.toonflow.game.data.UploadedVoiceAudioResult
 import com.toonflow.game.data.AiModelMapItem
+import com.toonflow.game.data.DebugNarrativePlan
 import com.toonflow.game.data.VoiceBindingDraft
 import com.toonflow.game.data.VoiceModelConfig
 import com.toonflow.game.data.VoiceMixItem
@@ -99,6 +100,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     SettingsModelSlot("storySpeakerModel", "角色发言", "text"),
     SettingsModelSlot("storyMemoryModel", "记忆管理", "text"),
     SettingsModelSlot("storyImageModel", "AI生图", "image"),
+    SettingsModelSlot("storyAvatarMattingModel", "头像分离", "image"),
     SettingsModelSlot("storyVoiceDesignModel", "语音设计", "voice_design"),
     SettingsModelSlot("storyVoiceModel", "语音生成", "voice"),
     SettingsModelSlot("storyAsrModel", "语音识别", "voice"),
@@ -362,7 +364,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return score
   }
 
+  private fun isAvatarMattingManufacturer(manufacturer: String): Boolean {
+    return manufacturer.trim().equals("bria", ignoreCase = true)
+      || manufacturer.trim().equals("aliyun_imageseg", ignoreCase = true)
+      || manufacturer.trim().equals("tencent_ci", ignoreCase = true)
+      || manufacturer.trim().equals("local_birefnet", ignoreCase = true)
+  }
+
+  private fun avatarMattingRecommendationScore(item: ModelConfigItem): Double {
+    val manufacturer = item.manufacturer.trim().lowercase(Locale.ROOT)
+    var score = 0.0
+    if (manufacturer == "bria") score += 1000.0
+    if (manufacturer == "local_birefnet") score += 960.0
+    if (manufacturer == "tencent_ci") score += 850.0
+    if (manufacturer == "aliyun_imageseg") score += 700.0
+    if (item.model.trim().equals("SegmentCommonImage", ignoreCase = true)) score += 80.0
+    if (item.model.trim().equals("AIPortraitMatting", ignoreCase = true)) score += 120.0
+    if (item.model.trim().equals("birefnet-portrait", ignoreCase = true)) score += 160.0
+    score += minOf((item.createTime / 1_000_000_000_000.0), 50.0)
+    return score
+  }
+
   fun settingsRecommendedModel(key: String): ModelConfigItem? {
+    if (key == "storyAvatarMattingModel") {
+      return settingsImageConfigs
+        .filter { item -> isAvatarMattingManufacturer(item.manufacturer) }
+        .sortedWith(compareByDescending<ModelConfigItem> { avatarMattingRecommendationScore(it) }.thenByDescending { it.id })
+        .firstOrNull()
+    }
     if (key != "storySpeakerModel") return null
     val orchestratorConfigId = settingsModelBinding("storyOrchestratorModel")?.configId
     return settingsTextConfigs
@@ -375,6 +404,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun settingsModelAdvisory(key: String): String? {
+    if (key == "storyAvatarMattingModel") {
+      val binding = settingsModelBinding("storyAvatarMattingModel")
+      val recommendation = settingsRecommendedModel("storyAvatarMattingModel")
+      val recommendationText = recommendation?.let {
+        listOf(it.manufacturer.takeIf { value -> value.isNotBlank() }, it.model.takeIf { value -> value.isNotBlank() })
+          .filterNotNull()
+          .joinToString(" / ")
+      }.orEmpty().ifBlank { "Bria / RMBG-2.0" }
+      val credentialHint = "Bria 的 API Key 直接填 token；阿里云视觉请填 AccessKeyId|AccessKeySecret 或 JSON；腾讯云数据万象请填 SecretId|SecretKey，Base URL 填标准 COS 桶域名；BiRefNet 本地无需 Key，但首次选择会提示安装本地依赖和模型文件。"
+      return if (binding?.configId == null || binding.configId <= 0L) {
+        "用于角色头像的主体/背景分离。建议绑定：$recommendationText。未配置时会回退旧的图像大模型分离链路，效果通常更差。$credentialHint"
+      } else {
+        "这个槽位专门负责角色头像主体/背景分离，不参与普通生图。$credentialHint"
+      }
+    }
     if (key != "storySpeakerModel") return null
     val speaker = settingsModelBinding("storySpeakerModel")
     val orchestrator = settingsModelBinding("storyOrchestratorModel")
@@ -705,6 +749,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ensureSettingsPanelData(true)
   }
 
+  suspend fun getLocalAvatarMattingStatus(manufacturer: String, model: String): com.toonflow.game.data.LocalAvatarMattingStatus {
+    return repository.getLocalAvatarMattingStatus(manufacturer, model)
+  }
+
+  suspend fun installLocalAvatarMattingModel(manufacturer: String, model: String): com.toonflow.game.data.LocalAvatarMattingStatus {
+    return repository.installLocalAvatarMatting(manufacturer, model)
+  }
+
   suspend fun deleteManagedModelConfig(id: Long) {
     repository.deleteModelConfig(id)
     ensureSettingsPanelData(true)
@@ -720,10 +772,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         kind = "text",
         content = repository.testTextModel(config.model, config.apiKey, config.baseUrl, config.manufacturer),
       )
-      "image" -> SettingsModelTestResult(
-        kind = "image",
-        content = resolveMediaPath(repository.testImageModel(config.model, config.apiKey, config.baseUrl, config.manufacturer)),
-      )
+      "image" -> {
+        if (isAvatarMattingManufacturer(config.manufacturer)) {
+          SettingsModelTestResult(
+            kind = "text",
+            content = "当前是头像分离专用模型，不走普通生图测试。请在角色头像上传或 AI 生成后直接验证主体/背景分离效果。",
+          )
+        } else {
+          SettingsModelTestResult(
+            kind = "image",
+            content = resolveMediaPath(repository.testImageModel(config.model, config.apiKey, config.baseUrl, config.manufacturer)),
+          )
+        }
+      }
       else -> {
         if (config.modelType == "asr") {
           return SettingsModelTestResult(
@@ -910,6 +971,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sampleRate: Int? = null,
   ): String {
     return repository.previewVoice(
+      configId = configId,
+      text = text,
+      mode = mode,
+      voiceId = presetId,
+      referenceAudioPath = referenceAudioPath,
+      referenceText = referenceText,
+      promptText = promptText,
+      mixVoices = normalizedMixVoices(mixVoices),
+      format = format,
+      sampleRate = sampleRate,
+    )
+  }
+
+  suspend fun streamVoice(
+    configId: Long?,
+    text: String,
+    mode: String = "text",
+    presetId: String = "",
+    referenceAudioPath: String = "",
+    referenceText: String = "",
+    promptText: String = "",
+    mixVoices: List<VoiceMixItem> = emptyList(),
+    format: String = "",
+    sampleRate: Int? = null,
+  ): String {
+    return repository.streamVoice(
       configId = configId,
       text = text,
       mode = mode,
@@ -1945,6 +2032,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return message.eventType == RUNTIME_RETRY_EVENT
   }
 
+  fun isStreamingRuntimeMessage(message: MessageItem): Boolean {
+    val meta = message.meta?.takeIf { it.isJsonObject }?.asJsonObject ?: return false
+    return meta.get("kind")?.asString == "runtime_stream" && (meta.get("streaming")?.asBoolean == true)
+  }
+
+  fun streamingSentenceTexts(message: MessageItem): List<String> {
+    val meta = message.meta?.takeIf { it.isJsonObject }?.asJsonObject ?: return emptyList()
+    val sentences = meta.getAsJsonArray("sentences") ?: return emptyList()
+    return sentences.mapNotNull { item ->
+      item?.takeIf { !it.isJsonNull }?.asString?.trim()?.takeIf { it.isNotBlank() }
+    }
+  }
+
   fun reactionForMessage(message: MessageItem, sessionId: String = currentSessionId): String {
     val key = messageUiKey(message, sessionId)
     val cached = messageReactions[key]
@@ -2016,6 +2116,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private fun conversationMessages(source: List<MessageItem> = messages): List<MessageItem> {
     return source.filterNot(::isRuntimeRetryMessage)
+  }
+
+  private fun updateMessageById(messageId: Long, updater: (MessageItem) -> MessageItem?) {
+    val index = messages.indexOfFirst { it.id == messageId }
+    if (index < 0) return
+    val next = updater(messages[index])
+    if (next == null) {
+      messages.removeAt(index)
+      return
+    }
+    messages[index] = next
+  }
+
+  private fun createStreamingMessage(plan: DebugNarrativePlan): MessageItem {
+    val now = System.currentTimeMillis()
+    return MessageItem(
+      id = now,
+      role = plan.role.ifBlank { "旁白" },
+      roleType = plan.roleType.ifBlank { "narrator" },
+      eventType = plan.eventType.ifBlank { "on_streaming_reply" },
+      content = "",
+      createTime = now,
+      meta = JsonObject().apply {
+        addProperty("kind", "runtime_stream")
+        addProperty("streaming", true)
+        add("sentences", JsonArray())
+      },
+    )
   }
 
   private fun clearRuntimeRetryMessage() {
@@ -3092,7 +3220,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       sendText = ""
 
       debugLoadingStage = "读取记忆"
-      val result = repository.debugStep(
+      val result = repository.debugOrchestration(
         worldId = worldId,
         chapterId = startChapter.id,
         state = debugRuntimeState,
@@ -3101,13 +3229,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       )
       debugLoadingStage = "准备剧情编排完毕"
       clearRuntimeRetryState()
-      debugRuntimeState = result.state
-      debugChapterId = result.chapterId ?: startChapter.id
-      debugChapterTitle = normalizeChapterTitleLabel(result.chapterTitle.ifBlank { startChapter.title }, startChapter.sort)
-      messages.clear()
-      if (result.messages.isNotEmpty()) {
-        messages.addAll(result.messages)
-        debugMessageSeed = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
+      applyDebugOrchestrationResult(result, startChapter)
+      debugLoading = false
+      debugLoadingStage = ""
+      if (result.plan != null) {
+        streamDebugPlan(result.plan, emptyList(), null)
+      } else {
+        messages.clear()
       }
       updateDebugStatePreview()
       activeTab = "游玩"
@@ -3347,7 +3475,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val last = list.lastOrNull()
         if (last?.roleType == "player" && last.content == text) list.dropLast(1) else list
       }
-    val result = repository.debugStep(
+    val result = repository.debugOrchestration(
       worldId = worldId,
       chapterId = debugChapterId,
       state = debugRuntimeState,
@@ -3355,59 +3483,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       playerContent = text,
     )
     clearRuntimeRetryState()
-    debugRuntimeState = result.state
-    if (result.chapterId != null && result.chapterId > 0L) {
-      debugChapterId = result.chapterId
+    applyDebugOrchestrationResult(result, playCurrentChapter())
+    if (result.plan != null) {
+      streamDebugPlan(result.plan, conversationMessages(), text)
     }
-    if (result.chapterTitle.isNotBlank()) {
-      debugChapterTitle = result.chapterTitle
-    }
-    if (result.messages.isNotEmpty()) {
-      messages.addAll(result.messages)
-      debugMessageSeed = (messages.maxOfOrNull { it.id } ?: debugMessageSeed) + 1L
-    }
-    debugEndDialog = result.endDialog
     updateDebugStatePreview()
   }
 
-  fun continueDebugNarrative() {
-    if (!debugMode || worldId <= 0L) return
+  suspend fun continueDebugNarrative(): Boolean {
+    if (!debugMode || worldId <= 0L) return false
     clearRuntimeRetryState()
-    viewModelScope.launch {
-      runCatching {
+    return runCatching {
+      performContinueDebugNarrative()
+      true
+    }.getOrElse {
+      showRuntimeRetryMessage("调试推进失败: ${it.message ?: "未知错误"}") {
         performContinueDebugNarrative()
-      }.onFailure {
-        showRuntimeRetryMessage("调试推进失败: ${it.message ?: "未知错误"}") {
-          performContinueDebugNarrative()
-        }
-        updateDebugStatePreview()
       }
+      updateDebugStatePreview()
+      false
     }
   }
 
   private suspend fun performContinueDebugNarrative() {
+    var advanced = false
     for (attempt in 0 until 3) {
       val beforeCount = conversationMessages().size
-      val result = repository.debugStep(
+      val history = conversationMessages()
+      val result = repository.debugOrchestration(
         worldId = worldId,
         chapterId = debugChapterId,
         state = debugRuntimeState,
-        messages = conversationMessages(),
+        messages = history,
         playerContent = null,
       )
       clearRuntimeRetryState()
-      debugRuntimeState = result.state
-      if (result.chapterId != null && result.chapterId > 0L) {
-        debugChapterId = result.chapterId
+      applyDebugOrchestrationResult(result, playCurrentChapter())
+      if (result.plan != null) {
+        streamDebugPlan(result.plan, history, null)
       }
-      if (result.chapterTitle.isNotBlank()) {
-        debugChapterTitle = result.chapterTitle
-      }
-      if (result.messages.isNotEmpty()) {
-        messages.addAll(result.messages)
-        debugMessageSeed = (messages.maxOfOrNull { it.id } ?: debugMessageSeed) + 1L
-      }
-      debugEndDialog = result.endDialog
       updateDebugStatePreview()
       val canSpeak = try {
         val turnState = debugRuntimeState?.asJsonObject?.getAsJsonObject("turnState")
@@ -3416,8 +3530,92 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         true
       }
       if (conversationMessages().size > beforeCount || debugEndDialog != null || canSpeak) {
+        advanced = true
         break
       }
+    }
+    if (!advanced) {
+      error("自动推进没有产出新内容")
+    }
+  }
+
+  private fun applyDebugOrchestrationResult(result: com.toonflow.game.data.DebugOrchestrationResult, fallbackChapter: ChapterItem?) {
+    debugRuntimeState = result.state
+    if (result.chapterId != null && result.chapterId > 0L) {
+      debugChapterId = result.chapterId
+    }
+    val activeChapter = chapters.firstOrNull { it.id == (result.chapterId ?: debugChapterId) } ?: fallbackChapter
+    debugChapterTitle = normalizeChapterTitleLabel(result.chapterTitle.ifBlank { activeChapter?.title.orEmpty() }, activeChapter?.sort ?: 0)
+    debugEndDialog = result.endDialog
+    updateDebugStatePreview()
+  }
+
+  private suspend fun streamDebugPlan(plan: DebugNarrativePlan, historyMessages: List<MessageItem>, playerContent: String?) {
+    val placeholder = createStreamingMessage(plan)
+    messages.clear()
+    messages.addAll(historyMessages)
+    messages.add(placeholder)
+    var done = false
+    repository.streamDebugLines(
+      worldId = worldId,
+      chapterId = debugChapterId,
+      state = debugRuntimeState,
+      messages = historyMessages,
+      playerContent = playerContent,
+      plan = plan,
+    ) { event ->
+      when (event.get("type")?.asString.orEmpty()) {
+        "delta" -> {
+          val text = event.getAsJsonObject("data")?.get("text")?.asString.orEmpty()
+          if (text.isBlank()) return@streamDebugLines
+          updateMessageById(placeholder.id) { current ->
+            current.copy(content = current.content + text)
+          }
+        }
+
+        "sentence" -> {
+          val text = event.getAsJsonObject("data")?.get("text")?.asString.orEmpty().trim()
+          if (text.isBlank()) return@streamDebugLines
+          updateMessageById(placeholder.id) { current ->
+            val meta = current.meta?.deepCopy()?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject().apply {
+              addProperty("kind", "runtime_stream")
+              addProperty("streaming", true)
+            }
+            val sentences = meta.getAsJsonArray("sentences") ?: JsonArray().also { meta.add("sentences", it) }
+            val exists = sentences.any { item -> item?.takeIf { !it.isJsonNull }?.asString == text }
+            if (!exists) {
+              sentences.add(text)
+            }
+            current.copy(meta = meta)
+          }
+        }
+
+        "done" -> {
+          done = true
+          val data = event.getAsJsonObject("data")
+          val message = data?.getAsJsonObject("message")
+          val finalContent = message?.get("content")?.asString ?: data?.get("content")?.asString.orEmpty()
+          updateMessageById(placeholder.id) { current ->
+            current.copy(
+              role = message?.get("role")?.asString ?: current.role,
+              roleType = message?.get("roleType")?.asString ?: current.roleType,
+              eventType = message?.get("eventType")?.asString ?: current.eventType,
+              content = finalContent,
+              meta = JsonObject(),
+            )
+          }
+        }
+
+        "error" -> {
+          val message = event.getAsJsonObject("data")?.get("message")?.asString.orEmpty().ifBlank { "台词流生成失败" }
+          updateMessageById(placeholder.id) { null }
+          error(message)
+        }
+      }
+    }
+    if (!done) {
+      updateMessageById(placeholder.id) { null }
+      error("台词流未正常结束")
     }
   }
 

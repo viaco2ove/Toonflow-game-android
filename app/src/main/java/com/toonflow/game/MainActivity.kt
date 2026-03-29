@@ -11,10 +11,18 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.OpenableColumns
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -22,11 +30,13 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -77,6 +87,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -113,6 +124,7 @@ import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Replay
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material.icons.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.VolumeOff
@@ -158,6 +170,9 @@ private fun sanitizeSpeakableText(input: String): String {
     .replace(Regex("\\([^)]*\\)"), "")
     .replace(Regex("【[^】]*】"), "")
     .replace(Regex("\\[[^\\]]*]"), "")
+    .replace(Regex("《[^》]*》"), "")
+    .replace(Regex("〈[^〉]*〉"), "")
+    .replace(Regex("〔[^〕]*〕"), "")
     .replace(Regex("[ \\t]+\\n"), "\n")
     .replace(Regex("\\n{3,}"), "\n\n")
     .trim()
@@ -277,6 +292,30 @@ private val settingsManufacturers = listOf(
     imageBaseUrl = "https://generativelanguage.googleapis.com/v1beta",
   ),
   SettingsManufacturerOption(
+    value = "bria",
+    label = "Bria",
+    website = "https://platform.bria.ai",
+    imageBaseUrl = "https://engine.prod.bria-api.com/v2/image/edit",
+  ),
+  SettingsManufacturerOption(
+    value = "aliyun_imageseg",
+    label = "阿里云视觉",
+    website = "https://ram.console.aliyun.com/manage/ak",
+    imageBaseUrl = "https://imageseg.cn-shanghai.aliyuncs.com",
+  ),
+  SettingsManufacturerOption(
+    value = "tencent_ci",
+    label = "腾讯云数据万象",
+    website = "https://console.cloud.tencent.com/cam/capi",
+    imageBaseUrl = "",
+  ),
+  SettingsManufacturerOption(
+    value = "local_birefnet",
+    label = "BiRefNet 本地",
+    website = "https://github.com/ZhengPeng7/BiRefNet",
+    imageBaseUrl = "",
+  ),
+  SettingsManufacturerOption(
     value = "t8star",
     label = "t8star",
     textBaseUrl = "https://ai.t8star.cn/v1",
@@ -347,7 +386,13 @@ private fun settingsManufacturersFor(type: String): List<SettingsManufacturerOpt
     if (type == "voice") {
       it.value != "qwen"
     } else {
-      it.value != "ai_voice_tts" && it.value != "aliyun" && it.value != "aliyun_direct"
+      it.value != "ai_voice_tts"
+        && it.value != "aliyun"
+        && it.value != "aliyun_direct"
+        && it.value != "bria"
+        && it.value != "aliyun_imageseg"
+        && it.value != "tencent_ci"
+        && it.value != "local_birefnet"
     }
   }
 }
@@ -356,7 +401,17 @@ private fun settingsManufacturersForSlot(slot: MainViewModel.SettingsModelSlot):
   if (isVoiceDesignSlot(slot)) {
     return settingsManufacturers.filter { it.value == "qwen" }
   }
+  if (slot.key == "storyAvatarMattingModel") {
+    return settingsManufacturers.filter { it.value == "bria" || it.value == "aliyun_imageseg" || it.value == "tencent_ci" || it.value == "local_birefnet" }
+  }
   return settingsManufacturersFor(slot.configType)
+}
+
+private fun isAvatarMattingManufacturer(value: String): Boolean {
+  return value.trim().equals("bria", ignoreCase = true)
+    || value.trim().equals("aliyun_imageseg", ignoreCase = true)
+    || value.trim().equals("tencent_ci", ignoreCase = true)
+    || value.trim().equals("local_birefnet", ignoreCase = true)
 }
 
 private fun defaultSettingsModelType(type: String): String {
@@ -384,6 +439,7 @@ private fun defaultSettingsManufacturer(type: String): String {
 private fun defaultSettingsManufacturerForSlot(slot: MainViewModel.SettingsModelSlot): String {
   return when {
     isVoiceDesignSlot(slot) -> "qwen"
+    slot.key == "storyAvatarMattingModel" -> "bria"
     slot.configType == "voice" && slot.key == "storyAsrModel" -> "aliyun_direct"
     else -> defaultSettingsManufacturer(slot.configType)
   }
@@ -407,6 +463,18 @@ private fun defaultSettingsBaseUrl(manufacturer: String, type: String, modelType
 private fun defaultSettingsModelName(manufacturer: String, type: String, modelType: String = defaultSettingsModelType(type)): String {
   if (type == "voice_design" && manufacturer == "qwen") {
     return "qwen3-tts-vd-2026-01-26"
+  }
+  if (type == "image" && manufacturer == "bria") {
+    return "RMBG-2.0"
+  }
+  if (type == "image" && manufacturer == "aliyun_imageseg") {
+    return "SegmentCommonImage"
+  }
+  if (type == "image" && manufacturer == "tencent_ci") {
+    return "AIPortraitMatting"
+  }
+  if (type == "image" && manufacturer == "local_birefnet") {
+    return "birefnet-portrait"
   }
   if (type == "voice" && manufacturer == "ai_voice_tts") {
     return if (modelType == "tts") "ai_voice_tts" else ""
@@ -433,11 +501,18 @@ private fun defaultSettingsModelNameForSlot(
 
 private fun settingsApiKeyRequired(manufacturer: String, type: String): Boolean {
   return !(type == "voice" && manufacturer == "ai_voice_tts")
+    && !(type == "image" && manufacturer == "local_birefnet")
 }
 
 private fun settingsRowMatchesSlot(slot: MainViewModel.SettingsModelSlot, row: com.toonflow.game.data.ModelConfigItem): Boolean {
   if (isVoiceDesignSlot(slot)) {
     return isVoiceDesignManufacturer(row.manufacturer) && isVoiceDesignModelName(row.model)
+  }
+  if (slot.key == "storyAvatarMattingModel") {
+    return isAvatarMattingManufacturer(row.manufacturer)
+  }
+  if (slot.configType == "image" && isAvatarMattingManufacturer(row.manufacturer)) {
+    return false
   }
   if (slot.configType != "voice") return true
   val modelType = row.modelType.ifBlank { "tts" }
@@ -467,6 +542,10 @@ private fun settingsModelTypeOptionsForSlot(slot: MainViewModel.SettingsModelSlo
   }
 }
 
+private fun settingsShouldShowModelType(slot: MainViewModel.SettingsModelSlot): Boolean {
+  return !isVoiceDesignSlot(slot) && slot.configType != "image"
+}
+
 private fun settingsModelTypeOptionLabel(slot: MainViewModel.SettingsModelSlot, modelType: String): String {
   return when {
     isVoiceDesignSlot(slot) -> "语音设计"
@@ -477,6 +556,31 @@ private fun settingsModelTypeOptionLabel(slot: MainViewModel.SettingsModelSlot, 
     modelType == "tts" -> "语音tts"
     slot.configType == "image" -> "文生图"
     else -> "通用文本"
+  }
+}
+
+private fun settingsApiKeyPlaceholder(slot: MainViewModel.SettingsModelSlot, manufacturer: String): String {
+  if (!settingsApiKeyRequired(manufacturer, slot.configType)) return "本地 ai_voice_tts 可留空"
+  if (slot.key == "storyAvatarMattingModel" && manufacturer == "aliyun_imageseg") {
+    return "AccessKeyId|AccessKeySecret"
+  }
+  if (slot.key == "storyAvatarMattingModel" && manufacturer == "tencent_ci") {
+    return "SecretId|SecretKey"
+  }
+  if (slot.key == "storyAvatarMattingModel" && manufacturer == "local_birefnet") {
+    return "本地模型无需填写"
+  }
+  return "请输入 API Key"
+}
+
+private fun settingsApiKeyHint(slot: MainViewModel.SettingsModelSlot, manufacturer: String): String {
+  if (slot.key != "storyAvatarMattingModel") return ""
+  return when (manufacturer) {
+    "aliyun_imageseg" -> "阿里云视觉这里请填写 AccessKeyId|AccessKeySecret，或填写 {\"accessKeyId\":\"...\",\"accessKeySecret\":\"...\"}。"
+    "bria" -> "Bria 这里填写平台生成的 API token。"
+    "tencent_ci" -> "腾讯云这里请填写 SecretId|SecretKey；Base URL 请填标准 COS 桶域名，例如 https://bucket-appid.cos.ap-shanghai.myqcloud.com。"
+    "local_birefnet" -> "本地 BiRefNet 不需要 Base URL 或 API Key。首次选择会提示安装 Python 依赖和模型文件，安装完成后即可直接使用。"
+    else -> ""
   }
 }
 
@@ -908,6 +1012,8 @@ private fun CreateScene(
   var showAdvanced by remember { mutableStateOf(false) }
   var showAvatarActionDialog by remember { mutableStateOf(false) }
   var showNpcAvatarActionDialog by remember { mutableStateOf(false) }
+  var showUserAvatarPreviewDialog by remember { mutableStateOf(false) }
+  var showNpcAvatarPreviewDialog by remember { mutableStateOf(false) }
   var showCoverActionDialog by remember { mutableStateOf(false) }
   var showChapterBgActionDialog by remember { mutableStateOf(false) }
   var showUserVoiceDialog by remember { mutableStateOf(false) }
@@ -922,6 +1028,8 @@ private fun CreateScene(
   val mentionRoles = vm.mentionRoleNames().distinct().filter { it.isNotBlank() }.ifEmpty { listOf("用户", "旁白") }
   val resolvedOpeningRole = if (vm.chapterOpeningRole in mentionRoles) vm.chapterOpeningRole else mentionRoles.first()
   val chapterUsed = vm.chapterContent.length
+  val hasUserAvatarPreview = vm.userAvatarPath.isNotBlank() || vm.userAvatarBgPath.isNotBlank()
+  val hasNpcAvatarPreview = npcAvatarPath.isNotBlank() || npcAvatarBgPath.isNotBlank()
   var autoPersistReady by remember { mutableStateOf(false) }
   val autoPersistFingerprint = buildString {
     append(step).append('|')
@@ -1110,6 +1218,7 @@ private fun CreateScene(
           ) {
             MediumEditableAvatar(
               path = vm.userAvatarPath.trim().ifBlank { null },
+              backgroundPath = vm.userAvatarBgPath.trim().ifBlank { vm.userAvatarPath.trim().ifBlank { null } },
               fallbackName = vm.playerName.ifBlank { vm.userName.ifBlank { "用户" } },
               loading = vm.storyPlayerAvatarProcessing,
               onClick = { showAvatarActionDialog = true },
@@ -1117,7 +1226,23 @@ private fun CreateScene(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
               Text(if (vm.storyPlayerAvatarProcessing) "头像处理中..." else "点击头像更换", color = Color(0xFF3F5476), fontWeight = FontWeight.SemiBold)
               Text("支持 PNG / GIF，保存时会自动标准化。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
-              Text("可选：上传、AI 文生图、AI 图生图。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
+              Text("可选：上传、AI 文生图、AI 图生图、图标查看大图。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
+            }
+          }
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(top = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            MiniBtn(text = "上传") { onPickAvatar() }
+            MiniBtn(text = "AI 生图") { openImageGenerate("user", vm.playerDesc) }
+            MiniIconBtn(icon = Icons.Outlined.Visibility, contentDescription = "查看头像大图") {
+              if (hasUserAvatarPreview) {
+                showUserAvatarPreviewDialog = true
+              } else {
+                vm.notice = "当前还没有头像可查看"
+              }
             }
           }
           if (showAvatarActionDialog) {
@@ -1131,6 +1256,15 @@ private fun CreateScene(
                 openImageGenerate("user", vm.playerDesc)
                 showAvatarActionDialog = false
               },
+            )
+          }
+          if (showUserAvatarPreviewDialog) {
+            AvatarPreviewDialog(
+              title = vm.playerName.ifBlank { "用户头像" },
+              foregroundPath = vm.userAvatarPath.trim().ifBlank { null },
+              backgroundPath = vm.userAvatarBgPath.trim().ifBlank { vm.userAvatarPath.trim().ifBlank { null } },
+              fallbackName = vm.playerName.ifBlank { vm.userName.ifBlank { "用户" } },
+              onDismiss = { showUserAvatarPreviewDialog = false },
             )
           }
         }
@@ -1263,6 +1397,7 @@ private fun CreateScene(
           ) {
             MediumEditableAvatar(
               path = npcAvatarPath.trim().ifBlank { null },
+              backgroundPath = npcAvatarBgPath.trim().ifBlank { npcAvatarPath.trim().ifBlank { null } },
               fallbackName = npcName.ifBlank { "角色" },
               loading = vm.roleAvatarProcessing,
               onClick = { showNpcAvatarActionDialog = true },
@@ -1270,7 +1405,23 @@ private fun CreateScene(
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
               Text(if (vm.roleAvatarProcessing) "头像处理中..." else "点击头像更换", color = Color(0xFF3F5476), fontWeight = FontWeight.SemiBold)
               Text("支持 PNG / GIF，保存时会自动标准化。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
-              Text("可选：上传、AI 文生图、AI 图生图。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
+              Text("可选：上传、AI 文生图、AI 图生图、图标查看大图。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
+            }
+          }
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(top = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            MiniBtn(text = "上传") { npcAvatarPicker.launch("image/*") }
+            MiniBtn(text = "AI 生图") { openImageGenerate("npc", npcDesc) }
+            MiniIconBtn(icon = Icons.Outlined.Visibility, contentDescription = "查看头像大图") {
+              if (hasNpcAvatarPreview) {
+                showNpcAvatarPreviewDialog = true
+              } else {
+                vm.notice = "当前还没有头像可查看"
+              }
             }
           }
           if (showNpcAvatarActionDialog) {
@@ -1284,6 +1435,15 @@ private fun CreateScene(
                 openImageGenerate("npc", npcDesc)
                 showNpcAvatarActionDialog = false
               },
+            )
+          }
+          if (showNpcAvatarPreviewDialog) {
+            AvatarPreviewDialog(
+              title = npcName.ifBlank { "角色头像" },
+              foregroundPath = npcAvatarPath.trim().ifBlank { null },
+              backgroundPath = npcAvatarBgPath.trim().ifBlank { npcAvatarPath.trim().ifBlank { null } },
+              fallbackName = npcName.ifBlank { "角色" },
+              onDismiss = { showNpcAvatarPreviewDialog = false },
             )
           }
         }
@@ -1487,6 +1647,7 @@ private fun CreateScene(
             label = "用户",
             icon = Icons.Outlined.Person,
             avatarPath = vm.userAvatarPath.trim().ifBlank { null },
+            avatarBgPath = vm.userAvatarBgPath.trim().ifBlank { null },
             onClick = onOpenUserEditor,
             showEditBadge = true,
             iconTint = Color(0xFF6B55A2),
@@ -1496,6 +1657,7 @@ private fun CreateScene(
               label = role.name.ifBlank { "新角色" },
               icon = Icons.Outlined.AccountCircle,
               avatarPath = role.avatarPath.trim().ifBlank { null },
+              avatarBgPath = role.avatarBgPath.trim().ifBlank { null },
               showEditBadge = true,
               onClick = {
                 npcName = role.name
@@ -1967,6 +2129,8 @@ private fun PlayScene(
   val runtimeVoiceAudioInflight = remember(vm.currentSessionId) { mutableMapOf<String, CompletableDeferred<String>>() }
   val runtimeVoiceFallbackBindingCache = remember(vm.currentSessionId) { mutableMapOf<String, VoiceBindingDraft>() }
   val runtimeVoiceWarmCache = remember(vm.currentSessionId) { mutableSetOf<String>() }
+  var systemTts by remember { mutableStateOf<TextToSpeech?>(null) }
+  var systemTtsInit by remember { mutableStateOf<CompletableDeferred<TextToSpeech>?>(null) }
   val revealedMessages = remember(vm.currentSessionId) { mutableStateListOf<MessageItem>() }
   var debugAutoAdvancing by remember(vm.currentSessionId) { mutableStateOf(false) }
   var runtimeVoiceMessageKey by remember(vm.currentSessionId) { mutableStateOf("") }
@@ -1994,6 +2158,7 @@ private fun PlayScene(
     if (invalidate) {
       playbackRequestId += 1
     }
+    systemTts?.stop()
     playbackPlayer?.let { player ->
       runCatching {
         player.stop()
@@ -2004,6 +2169,42 @@ private fun PlayScene(
     runtimeVoiceMessageKey = ""
     runtimeVoicePhase = ""
     runtimeVoiceIndicator = "."
+  }
+
+  suspend fun ensureSystemTts(): TextToSpeech {
+    systemTts?.let { return it }
+    systemTtsInit?.let { return it.await() }
+    val deferred = CompletableDeferred<TextToSpeech>()
+    systemTtsInit = deferred
+    var createdTts: TextToSpeech? = null
+    createdTts = TextToSpeech(context.applicationContext) { status ->
+      val engine = createdTts
+      if (status == TextToSpeech.SUCCESS && engine != null) {
+        runCatching {
+          val zhResult = engine.setLanguage(Locale.SIMPLIFIED_CHINESE)
+          if (zhResult == TextToSpeech.LANG_MISSING_DATA || zhResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+            engine.setLanguage(Locale.CHINESE)
+          }
+          engine.setSpeechRate(1f)
+        }
+        systemTts = engine
+        if (!deferred.isCompleted) {
+          deferred.complete(engine)
+        }
+      } else {
+        engine?.shutdown()
+        if (!deferred.isCompleted) {
+          deferred.completeExceptionally(IllegalStateException("系统朗读不可用"))
+        }
+      }
+      systemTtsInit = null
+    }
+    return try {
+      deferred.await()
+    } catch (err: Throwable) {
+      systemTts = null
+      throw err
+    }
   }
 
   fun setRuntimeVoiceIndicator(message: MessageItem?, phase: String) {
@@ -2137,7 +2338,7 @@ private fun PlayScene(
     runtimeVoicePreviewInflight[cacheKey] = deferred
     try {
       val url = withTimeoutOrNull(15000L) {
-        vm.previewVoice(
+        vm.streamVoice(
           configId = binding.configId,
           text = text,
           mode = binding.mode,
@@ -2202,6 +2403,94 @@ private fun PlayScene(
     if (!runtimeVoiceWarmCache.add(bindingKey)) return
     runCatching {
       resolveRuntimeVoiceUrl(binding, "你好啊，有什么可以帮到你")
+    }
+  }
+
+  suspend fun replayWithSystemTts(
+    message: MessageItem,
+    speakable: String,
+    manual: Boolean,
+    waitForCompletion: Boolean,
+  ): Boolean {
+    if (speakable.isBlank()) {
+      if (manual) {
+        vm.notice = "这条对话没有可重听内容"
+      }
+      return false
+    }
+    val requestId = playbackRequestId
+    return try {
+      val tts = ensureSystemTts()
+      val played = withTimeoutOrNull(if (waitForCompletion) estimatePlaybackTimeoutMs(speakable) else 5000L) {
+        suspendCancellableCoroutine<Boolean> { continuation ->
+          val utteranceId = "runtime_tts_${requestId}_${System.currentTimeMillis()}"
+          val listener = object : UtteranceProgressListener() {
+            override fun onStart(utteranceIdFromEngine: String?) {
+              if (utteranceIdFromEngine != utteranceId) return
+              if (requestId != playbackRequestId) {
+                if (continuation.isActive) continuation.resume(false)
+                return
+              }
+              setRuntimeVoiceIndicator(message, "playing")
+              if (manual) {
+                vm.notice = "正在本地朗读"
+              }
+              if (!waitForCompletion && continuation.isActive) {
+                continuation.resume(true)
+              }
+            }
+
+            override fun onDone(utteranceIdFromEngine: String?) {
+              if (utteranceIdFromEngine != utteranceId) return
+              if (manual) {
+                vm.notice = "朗读完成"
+              }
+              if (continuation.isActive) {
+                continuation.resume(true)
+              }
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceIdFromEngine: String?) {
+              onError(utteranceIdFromEngine, TextToSpeech.ERROR)
+            }
+
+            override fun onError(utteranceIdFromEngine: String?, errorCode: Int) {
+              if (utteranceIdFromEngine != utteranceId) return
+              if (manual) {
+                vm.notice = "系统朗读失败"
+              }
+              if (continuation.isActive) {
+                continuation.resume(false)
+              }
+            }
+          }
+          tts.setOnUtteranceProgressListener(listener)
+          continuation.invokeOnCancellation {
+            tts.stop()
+          }
+          val result = tts.speak(speakable, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+          if (result == TextToSpeech.ERROR && continuation.isActive) {
+            if (manual) {
+              vm.notice = "系统朗读失败"
+            }
+            continuation.resume(false)
+          }
+        }
+      }
+      if (played == null) {
+        tts.stop()
+        if (manual) {
+          vm.notice = "系统朗读超时"
+        }
+        return false
+      }
+      played
+    } catch (err: Throwable) {
+      if (manual) {
+        vm.notice = "系统朗读失败: ${err.message ?: "未知错误"}"
+      }
+      false
     }
   }
 
@@ -2329,8 +2618,13 @@ private fun PlayScene(
     return true
   }
 
-  suspend fun playMessageVoice(message: MessageItem, manual: Boolean, waitForCompletion: Boolean = manual): Boolean {
-    val speakable = sanitizeSpeakableText(message.content)
+  suspend fun playMessageVoice(
+    message: MessageItem,
+    manual: Boolean,
+    waitForCompletion: Boolean = manual,
+    overrideText: String? = null,
+  ): Boolean {
+    val speakable = sanitizeSpeakableText(overrideText ?: message.content)
     if (speakable.isBlank()) {
       if (manual) vm.notice = "这条对话没有可重听内容"
       return false
@@ -2338,7 +2632,7 @@ private fun PlayScene(
     val binding = vm.playVoiceBindingForMessage(message)
     if (binding == null) {
       if (manual) vm.notice = "当前角色未绑定可用音色"
-      return false
+      return replayWithSystemTts(message, speakable, manual, waitForCompletion)
     }
     val bindingKey = runtimeVoiceBindingKey(binding)
     val preferredBinding = runtimeVoiceFallbackBindingCache[bindingKey] ?: binding
@@ -2359,6 +2653,18 @@ private fun PlayScene(
             finalError = fallbackError
           }
         }
+      }
+      val fallbackNotice = if (manual) {
+        "后端语音不可用，改用系统朗读"
+      } else {
+        ""
+      }
+      if (manual) {
+        vm.notice = fallbackNotice
+      }
+      val systemPlayed = replayWithSystemTts(message, speakable, manual, waitForCompletion)
+      if (systemPlayed) {
+        return true
       }
       if (manual) {
         vm.notice = "重听失败: ${finalError.message ?: "未知错误"}"
@@ -2383,6 +2689,13 @@ private fun PlayScene(
       voiceListening = false
       voiceTranscribing = false
       stopRuntimePlayback()
+      systemTtsInit?.cancel()
+      systemTtsInit = null
+      systemTts?.let { engine ->
+        runCatching { engine.stop() }
+        runCatching { engine.shutdown() }
+      }
+      systemTts = null
     }
   }
 
@@ -2437,12 +2750,37 @@ private fun PlayScene(
       if (vm.isRuntimeRetryMessage(message)) {
         continue
       }
+      var streamedSentenceCount = 0
+      var streamedVoicePlayed = false
+      if (vm.isStreamingRuntimeMessage(message)) {
+        while (vm.isStreamingRuntimeMessage(message)) {
+          val sentences = vm.streamingSentenceTexts(message)
+          while (autoVoice && streamedSentenceCount < sentences.size) {
+            val sentence = sentences[streamedSentenceCount]
+            streamedSentenceCount += 1
+            if (sentence.isBlank()) continue
+            val played = playMessageVoice(message, manual = false, waitForCompletion = false, overrideText = sentence)
+            streamedVoicePlayed = streamedVoicePlayed || played
+          }
+          delay(120)
+        }
+        val finalSentences = vm.streamingSentenceTexts(message)
+        while (autoVoice && streamedSentenceCount < finalSentences.size) {
+          val sentence = finalSentences[streamedSentenceCount]
+          streamedSentenceCount += 1
+          if (sentence.isBlank()) continue
+          val played = playMessageVoice(message, manual = false, waitForCompletion = false, overrideText = sentence)
+          streamedVoicePlayed = streamedVoicePlayed || played
+        }
+      }
       if (message.roleType == "player") {
         delay(180)
         continue
       }
       if (!autoVoice) {
         delay(estimateRevealDelayMs(message.content))
+      } else if (streamedVoicePlayed || streamedSentenceCount > 0) {
+        delay(260)
       } else {
         val played = playMessageVoice(message, manual = false, waitForCompletion = false)
         delay(if (played) 260 else estimateRevealDelayMs(message.content))
@@ -2457,22 +2795,25 @@ private fun PlayScene(
     vm.debugEndDialog,
     canPlayerSpeak,
     latestRevealedMessage?.let { vm.messageUiKey(it) } ?: "",
+    latestRevealedMessage?.let { vm.isStreamingRuntimeMessage(it) } ?: false,
   ) {
     if (!vm.debugMode || mode != "live" || vm.debugLoading || vm.debugEndDialog != null || canPlayerSpeak) {
       return@LaunchedEffect
     }
     val latest = latestRevealedMessage ?: return@LaunchedEffect
-    if (latest.roleType == "player" || vm.isRuntimeRetryMessage(latest)) {
+    if (latest.roleType == "player" || vm.isRuntimeRetryMessage(latest) || vm.isStreamingRuntimeMessage(latest)) {
       return@LaunchedEffect
     }
     val messageKey = vm.messageUiKey(latest)
     if (messageKey == lastAutoAdvanceMessageKey || debugAutoAdvancing) {
       return@LaunchedEffect
     }
-    lastAutoAdvanceMessageKey = messageKey
     debugAutoAdvancing = true
     try {
-      vm.continueDebugNarrative()
+      val ok = vm.continueDebugNarrative()
+      if (ok) {
+        lastAutoAdvanceMessageKey = messageKey
+      }
     } finally {
       debugAutoAdvancing = false
     }
@@ -2504,11 +2845,8 @@ private fun PlayScene(
   val playerAvatarBgPath = vm.userAvatarBgPath.trim().ifBlank { null }
   val chapterBackgroundPath = vm.playChapterBackgroundPath().trim().ifBlank { null }
   val currentLiveMessage = if (mode == "history") null else displayMessages.lastOrNull()
-  val currentLiveFigureBgPath = currentLiveMessage
-    ?.takeIf { it.roleType != "player" && !vm.isRuntimeRetryMessage(it) }
-    ?.let { vm.avatarBgPathForMessage(it).trim().ifBlank { vm.avatarPathForMessage(it).trim().ifBlank { null } } }
   val currentLiveFigureFgPath = currentLiveMessage
-    ?.takeIf { it.roleType != "player" && !vm.isRuntimeRetryMessage(it) }
+    ?.takeIf { !vm.isRuntimeRetryMessage(it) }
     ?.let { vm.avatarPathForMessage(it).trim().ifBlank { null } }
   val closeDialogMenu = {
     selectedMessage = null
@@ -2525,54 +2863,32 @@ private fun PlayScene(
       )
       Box(modifier = Modifier.fillMaxSize().background(Color(0xAA0F1D31)))
     }
-    if (playerAvatarBgPath != null) {
-      AsyncImage(
-        model = playerAvatarBgPath,
-        contentDescription = null,
-        modifier = Modifier.fillMaxSize().alpha(0.16f),
-        contentScale = ContentScale.Crop,
-      )
-    }
-    if (currentLiveFigureBgPath != null || currentLiveFigureFgPath != null) {
+    if (currentLiveFigureFgPath != null) {
       Box(
         modifier = Modifier
           .align(Alignment.BottomCenter)
           .fillMaxWidth()
-          .height(470.dp),
+          .fillMaxHeight(0.74f),
       ) {
         Box(
           modifier = Modifier
             .fillMaxSize()
             .background(
               brush = Brush.radialGradient(
-                colors = listOf(Color(0x507EB0F7), Color.Transparent),
-                radius = 520f,
+                colors = listOf(Color(0x587EAFF4), Color.Transparent),
+                radius = 620f,
               ),
             ),
         )
-        if (currentLiveFigureBgPath != null) {
-          AsyncImage(
-            model = currentLiveFigureBgPath,
-            contentDescription = null,
-            modifier = Modifier
-              .align(Alignment.BottomCenter)
-              .offset(y = 10.dp)
-              .width(292.dp)
-              .height(444.dp)
-              .alpha(0.36f),
-            contentScale = ContentScale.Crop,
-          )
-        }
         if (currentLiveFigureFgPath != null) {
           AsyncImage(
             model = currentLiveFigureFgPath,
             contentDescription = null,
             modifier = Modifier
               .align(Alignment.BottomCenter)
-              .offset(y = 4.dp)
-              .width(306.dp)
-              .height(454.dp)
-              .alpha(0.96f),
+              .fillMaxSize()
+              .alpha(0.98f),
+            alignment = Alignment.BottomCenter,
             contentScale = ContentScale.Fit,
           )
         }
@@ -2675,14 +2991,17 @@ private fun PlayScene(
                     modifier = Modifier.fillMaxWidth(),
                   )
                 } else {
+                  val loading = vm.isStreamingRuntimeMessage(msg) && msg.content.isBlank()
                   LiveStoryCard(
                     title = vm.displayNameForMessage(msg),
                     content = msg.content.ifBlank { "（空消息）" },
+                    loading = loading,
                     roleType = msg.roleType,
                     reaction = vm.reactionForMessage(msg),
                     voiceTail = messageVoiceTail(msg),
                     voicePlaying = runtimeVoicePhase == "playing" && messageVoiceTail(msg).isNotBlank(),
                     onOpenMenu = {
+                      if (vm.isStreamingRuntimeMessage(msg)) return@LiveStoryCard
                       selectedMessage = msg
                       onOpenDialogMenu()
                     },
@@ -2718,9 +3037,11 @@ private fun PlayScene(
                   modifier = Modifier.fillMaxWidth(),
                 )
               } else {
+                val loading = vm.isStreamingRuntimeMessage(msg) && msg.content.isBlank()
                 Bubble(
                   title = vm.displayNameForMessage(msg),
-                  content = msg.content.ifBlank { "（空消息）" },
+                  content = msg.content,
+                  loading = loading,
                   roleType = msg.roleType,
                   avatarPath = vm.avatarPathForMessage(msg).trim().ifBlank { if (msg.roleType == "player") playerAvatarPath else null },
                   avatarBgPath = vm.avatarBgPathForMessage(msg).trim().ifBlank { if (msg.roleType == "player") playerAvatarBgPath else null },
@@ -2728,6 +3049,7 @@ private fun PlayScene(
                   voiceTail = messageVoiceTail(msg),
                   voicePlaying = runtimeVoicePhase == "playing" && messageVoiceTail(msg).isNotBlank(),
                   onOpenMenu = {
+                    if (vm.isStreamingRuntimeMessage(msg)) return@Bubble
                     selectedMessage = msg
                     onOpenDialogMenu()
                   },
@@ -2778,6 +3100,11 @@ private fun PlayScene(
               closeDialogMenu()
             },
             onReplay = {
+              if (vm.isStreamingRuntimeMessage(selectedMessage!!)) {
+                vm.notice = "正文仍在生成中"
+                closeDialogMenu()
+                return@DialogMenu
+              }
               val content = selectedMessage!!.content.trim()
               if (content.isBlank()) {
                 vm.notice = "这条对话没有可重听内容"
@@ -2982,6 +3309,7 @@ private fun ObjectiveChip(
 private fun LiveStoryCard(
   title: String,
   content: String,
+  loading: Boolean = false,
   roleType: String = "npc",
   reaction: String = "",
   voiceTail: String = "",
@@ -3018,25 +3346,29 @@ private fun LiveStoryCard(
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
       ) {
-        Text(
-          text = buildAnnotatedString {
-            append(content)
-            if (voiceTail.isNotBlank()) {
-              withStyle(
-                SpanStyle(
-                  color = if (voicePlaying) Color(0xFFF0A91E) else Color(0xFF4D75C7),
-                  fontWeight = FontWeight.ExtraBold,
-                ),
-              ) {
-                append(" ")
-                append(voiceTail)
+        if (loading) {
+          MessageLoadingDots()
+        } else {
+          Text(
+            text = buildAnnotatedString {
+              append(content)
+              if (voiceTail.isNotBlank()) {
+                withStyle(
+                  SpanStyle(
+                    color = if (voicePlaying) Color(0xFFF0A91E) else Color(0xFF4D75C7),
+                    fontWeight = FontWeight.ExtraBold,
+                  ),
+                ) {
+                  append(" ")
+                  append(voiceTail)
+                }
               }
-            }
-          },
-          color = if (isPlayer) Color(0xFFE8F2FF) else Color(0xFF20304A),
-          style = MaterialTheme.typography.bodyMedium,
-          fontWeight = FontWeight.SemiBold,
-        )
+            },
+            color = if (isPlayer) Color(0xFFE8F2FF) else Color(0xFF20304A),
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+          )
+        }
         if (reactionLabel.isNotBlank()) {
           Surface(
             color = if (isPlayer) Color(0x223BA7FF) else Color(0xFFEAF2FF),
@@ -3133,6 +3465,7 @@ private fun RuntimeRetryCard(
 private fun Bubble(
   title: String,
   content: String,
+  loading: Boolean = false,
   roleType: String = "npc",
   avatarPath: String? = null,
   avatarBgPath: String? = null,
@@ -3187,24 +3520,28 @@ private fun Bubble(
         shape = RoundedCornerShape(12.dp),
       ) {
         Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-          Text(
-            buildAnnotatedString {
-              append(content)
-              if (voiceTail.isNotBlank()) {
-                withStyle(
-                  SpanStyle(
-                    color = if (voicePlaying) Color(0xFFF0A91E) else Color(0xFF4D75C7),
-                    fontWeight = FontWeight.ExtraBold,
-                  ),
-                ) {
-                  append(" ")
-                  append(voiceTail)
+          if (loading) {
+            MessageLoadingDots()
+          } else {
+            Text(
+              buildAnnotatedString {
+                append(content)
+                if (voiceTail.isNotBlank()) {
+                  withStyle(
+                    SpanStyle(
+                      color = if (voicePlaying) Color(0xFFF0A91E) else Color(0xFF4D75C7),
+                      fontWeight = FontWeight.ExtraBold,
+                    ),
+                  ) {
+                    append(" ")
+                    append(voiceTail)
+                  }
                 }
-              }
-            },
-            color = if (isPlayer) Color(0xFFE8F2FF) else Color(0xFF1F2B40),
-            style = MaterialTheme.typography.bodySmall,
-          )
+              },
+              color = if (isPlayer) Color(0xFFE8F2FF) else Color(0xFF1F2B40),
+              style = MaterialTheme.typography.bodySmall,
+            )
+          }
           if (reactionLabel.isNotBlank()) {
             Row(
               modifier = Modifier
@@ -3243,18 +3580,79 @@ private fun Bubble(
 }
 
 @Composable
+private fun MessageLoadingDots() {
+  val pulse = rememberInfiniteTransition(label = "message-loading")
+  val scales = List(3) { index ->
+    pulse.animateFloat(
+      initialValue = 0.72f,
+      targetValue = 1f,
+      animationSpec = infiniteRepeatable(
+        animation = tween(durationMillis = 620, easing = LinearEasing, delayMillis = index * 140),
+        repeatMode = RepeatMode.Reverse,
+      ),
+      label = "message-loading-$index",
+    )
+  }
+  Row(
+    horizontalArrangement = Arrangement.spacedBy(8.dp),
+    verticalAlignment = Alignment.CenterVertically,
+    modifier = Modifier.height(24.dp),
+  ) {
+    scales.forEach { scale ->
+      Box(
+        modifier = Modifier
+          .size(8.dp)
+          .graphicsLayer {
+            scaleX = scale.value
+            scaleY = scale.value
+            alpha = 0.45f + ((scale.value - 0.72f) / 0.28f) * 0.55f
+          }
+          .clip(CircleShape)
+          .background(Color(0x8A57709C)),
+      )
+    }
+  }
+}
+
+@Composable
 private fun SmallAvatar(
   foregroundPath: String?,
   backgroundPath: String?,
   title: String,
   size: androidx.compose.ui.unit.Dp = 24.dp,
 ) {
+  LayeredAvatarFrame(
+    foregroundPath = foregroundPath,
+    backgroundPath = backgroundPath,
+    modifier = Modifier.size(size),
+    backgroundColor = Color(0xFFE5EAF3),
+    borderColor = Color(0xFFC7D4E8),
+    fallback = {
+      Text(
+        text = title.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+        color = Color(0xFF7D8CA5),
+        style = MaterialTheme.typography.labelSmall,
+      )
+    },
+  )
+}
+
+@Composable
+private fun LayeredAvatarFrame(
+  foregroundPath: String?,
+  backgroundPath: String?,
+  modifier: Modifier,
+  backgroundColor: Color,
+  borderColor: Color,
+  shape: androidx.compose.ui.graphics.Shape = CircleShape,
+  fallback: @Composable BoxScope.() -> Unit,
+  overlay: @Composable BoxScope.() -> Unit = {},
+) {
   Box(
-    modifier = Modifier
-      .size(size)
-      .clip(CircleShape)
-      .background(Color(0xFFE5EAF3))
-      .border(1.dp, Color(0xFFC7D4E8), CircleShape),
+    modifier = modifier
+      .clip(shape)
+      .border(1.dp, borderColor, shape)
+      .background(backgroundColor),
     contentAlignment = Alignment.Center,
   ) {
     if (!backgroundPath.isNullOrBlank()) {
@@ -3263,6 +3661,7 @@ private fun SmallAvatar(
         contentDescription = null,
         modifier = Modifier.fillMaxSize(),
         contentScale = ContentScale.Crop,
+        alignment = Alignment.Center,
       )
     }
     if (!foregroundPath.isNullOrBlank()) {
@@ -3271,14 +3670,12 @@ private fun SmallAvatar(
         contentDescription = null,
         modifier = Modifier.fillMaxSize(),
         contentScale = ContentScale.Fit,
+        alignment = Alignment.BottomCenter,
       )
     } else {
-      Text(
-        text = title.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
-        color = Color(0xFF7D8CA5),
-        style = MaterialTheme.typography.labelSmall,
-      )
+      fallback()
     }
+    overlay()
   }
 }
 
@@ -3461,7 +3858,7 @@ private fun StorySettingPanel(
             ) {
               SmallAvatar(
                 foregroundPath = role.avatarPath.trim().ifBlank { null },
-                backgroundPath = role.avatarBgPath.trim().ifBlank { role.avatarPath.trim().ifBlank { null } },
+                backgroundPath = role.avatarBgPath.trim().ifBlank { null },
                 title = role.name,
                 size = 40.dp,
               )
@@ -3923,66 +4320,54 @@ private fun ProfileScene(vm: MainViewModel, onPickAvatar: () -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
-        Box(
+        LayeredAvatarFrame(
+          foregroundPath = vm.accountAvatarPath.trim().ifBlank { null },
+          backgroundPath = vm.accountAvatarBgPath.trim().ifBlank { null },
           modifier = Modifier
             .size(56.dp)
-            .clip(CircleShape)
-            .border(1.dp, Color(0xFFCCD8EA), CircleShape)
-            .background(Color(0xFFE5EAF3))
             .clickable(enabled = !vm.accountAvatarProcessing) { showAvatarActionDialog = true },
-        ) {
-          if (vm.accountAvatarPath.isNotBlank()) {
-            AsyncImage(
-              model = vm.accountAvatarPath,
-              contentDescription = null,
-              modifier = Modifier.fillMaxSize(),
-              contentScale = ContentScale.Crop,
+          backgroundColor = Color(0xFFE5EAF3),
+          borderColor = Color(0xFFCCD8EA),
+          fallback = {
+            Text(
+              text = vm.userName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+              color = Color(0xFF7D8CA5),
+              fontWeight = FontWeight.Bold,
             )
-          } else {
+          },
+          overlay = {
+            if (vm.accountAvatarProcessing) {
+              Box(
+                modifier = Modifier
+                  .fillMaxSize()
+                  .background(Color(0x66132134)),
+                contentAlignment = Alignment.Center,
+              ) {
+                CircularProgressIndicator(
+                  modifier = Modifier.size(20.dp),
+                  color = Color(0xFFFFD071),
+                  strokeWidth = 2.2.dp,
+                )
+              }
+            }
             Box(
               modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0xFFE5EAF3)),
+                .align(Alignment.BottomEnd)
+                .size(18.dp)
+                .clip(CircleShape)
+                .background(Color.White)
+                .border(1.dp, Color(0xFFC7D4E8), CircleShape),
               contentAlignment = Alignment.Center,
             ) {
-              Text(
-                text = vm.userName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
-                color = Color(0xFF7D8CA5),
-                fontWeight = FontWeight.Bold,
+              Icon(
+                imageVector = Icons.Outlined.Add,
+                contentDescription = "更换头像",
+                tint = Color(0xFF6B7F9F),
+                modifier = Modifier.size(12.dp),
               )
             }
-          }
-          if (vm.accountAvatarProcessing) {
-            Box(
-              modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0x66132134)),
-              contentAlignment = Alignment.Center,
-            ) {
-              CircularProgressIndicator(
-                modifier = Modifier.size(20.dp),
-                color = Color(0xFFFFD071),
-                strokeWidth = 2.2.dp,
-              )
-            }
-          }
-          Box(
-            modifier = Modifier
-              .align(Alignment.BottomEnd)
-              .size(18.dp)
-              .clip(CircleShape)
-              .background(Color.White)
-              .border(1.dp, Color(0xFFC7D4E8), CircleShape),
-            contentAlignment = Alignment.Center,
-          ) {
-            Icon(
-              imageVector = Icons.Outlined.Add,
-              contentDescription = "更换头像",
-              tint = Color(0xFF6B7F9F),
-              modifier = Modifier.size(12.dp),
-            )
-          }
-        }
+          },
+        )
         Text(
           vm.userName.ifBlank { "未登录" },
           fontSize = MaterialTheme.typography.headlineSmall.fontSize,
@@ -4489,6 +4874,184 @@ private fun AvatarActionDialog(
       }
     },
   )
+}
+
+@Composable
+private fun AvatarPreviewDialog(
+  title: String,
+  foregroundPath: String?,
+  backgroundPath: String?,
+  fallbackName: String,
+  onDismiss: () -> Unit,
+) {
+  var previewMode by remember(foregroundPath, backgroundPath) {
+    mutableStateOf(
+      when {
+        !foregroundPath.isNullOrBlank() && !backgroundPath.isNullOrBlank() -> AvatarPreviewMode.Composite
+        !foregroundPath.isNullOrBlank() -> AvatarPreviewMode.Foreground
+        else -> AvatarPreviewMode.Background
+      },
+    )
+  }
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false),
+  ) {
+    Card(
+      shape = RoundedCornerShape(24.dp),
+      colors = CardDefaults.cardColors(containerColor = Color(0xFFF7FAFF)),
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(16.dp),
+    ) {
+      Column(
+        modifier = Modifier.padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text("查看头像", fontWeight = FontWeight.ExtraBold, color = Color(0xFF213958))
+          TextButton(onClick = onDismiss) {
+            Text("关闭")
+          }
+        }
+        Text(
+          title.ifBlank { "角色头像" },
+          color = Color(0xFF4D6285),
+          style = MaterialTheme.typography.bodySmall,
+        )
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.Center,
+        ) {
+          AvatarPreviewModePill(
+            text = "合成",
+            selected = previewMode == AvatarPreviewMode.Composite,
+            enabled = !foregroundPath.isNullOrBlank() || !backgroundPath.isNullOrBlank(),
+          ) {
+            previewMode = AvatarPreviewMode.Composite
+          }
+          Spacer(modifier = Modifier.width(8.dp))
+          AvatarPreviewModePill(
+            text = "仅主体",
+            selected = previewMode == AvatarPreviewMode.Foreground,
+            enabled = !foregroundPath.isNullOrBlank(),
+          ) {
+            previewMode = AvatarPreviewMode.Foreground
+          }
+          Spacer(modifier = Modifier.width(8.dp))
+          AvatarPreviewModePill(
+            text = "仅背景",
+            selected = previewMode == AvatarPreviewMode.Background,
+            enabled = !backgroundPath.isNullOrBlank(),
+          ) {
+            previewMode = AvatarPreviewMode.Background
+          }
+        }
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .height(320.dp)
+            .clip(RoundedCornerShape(28.dp))
+            .border(1.dp, Color(0xFFD3DEEF), RoundedCornerShape(28.dp))
+            .background(if (previewMode == AvatarPreviewMode.Composite) Color(0xFFEAF1FB) else Color(0xFFF3F7FD)),
+          contentAlignment = Alignment.Center,
+        ) {
+          when (previewMode) {
+            AvatarPreviewMode.Composite -> LayeredAvatarFrame(
+              foregroundPath = foregroundPath,
+              backgroundPath = backgroundPath,
+              modifier = Modifier.fillMaxSize(),
+              backgroundColor = Color.Transparent,
+              borderColor = Color.Transparent,
+              shape = RoundedCornerShape(28.dp),
+              fallback = {
+                Text(
+                  text = fallbackName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                  color = Color(0xFF7D8CA5),
+                  fontWeight = FontWeight.Bold,
+                )
+              },
+            )
+            AvatarPreviewMode.Foreground -> {
+              if (!foregroundPath.isNullOrBlank()) {
+                AsyncImage(
+                  model = foregroundPath,
+                  contentDescription = null,
+                  modifier = Modifier.fillMaxSize(),
+                  contentScale = ContentScale.Fit,
+                  alignment = Alignment.BottomCenter,
+                )
+              } else {
+                Text(
+                  text = fallbackName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                  color = Color(0xFF7D8CA5),
+                  fontWeight = FontWeight.Bold,
+                )
+              }
+            }
+            AvatarPreviewMode.Background -> {
+              if (!backgroundPath.isNullOrBlank()) {
+                AsyncImage(
+                  model = backgroundPath,
+                  contentDescription = null,
+                  modifier = Modifier.fillMaxSize(),
+                  contentScale = ContentScale.Fit,
+                  alignment = Alignment.Center,
+                )
+              } else {
+                Text(
+                  text = fallbackName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+                  color = Color(0xFF7D8CA5),
+                  fontWeight = FontWeight.Bold,
+                )
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+private enum class AvatarPreviewMode {
+  Composite,
+  Foreground,
+  Background,
+}
+
+@Composable
+private fun AvatarPreviewModePill(
+  text: String,
+  selected: Boolean,
+  enabled: Boolean,
+  onClick: () -> Unit,
+) {
+  Box(
+    modifier = Modifier
+      .alpha(if (enabled) 1f else 0.45f)
+      .clip(CircleShape)
+      .border(
+        1.dp,
+        if (selected) Color(0xFF8FB0F5) else Color(0xFFD3DEEF),
+        CircleShape,
+      )
+      .background(
+        if (selected) Color(0xFFE3EDFF) else Color.White,
+      )
+      .clickable(enabled = enabled) { onClick() }
+      .padding(horizontal = 14.dp, vertical = 8.dp),
+  ) {
+    Text(
+      text = text,
+      color = if (selected) Color(0xFF2348A6) else Color(0xFF566B89),
+      fontWeight = FontWeight.Bold,
+      style = MaterialTheme.typography.bodySmall,
+    )
+  }
 }
 
 @Composable
@@ -5981,7 +6544,9 @@ private fun SettingsModelManagerDialog(
                   )
                   Text(settingsManufacturerLabel(row.manufacturer), fontWeight = FontWeight.Bold, color = Color(0xFF3559A6))
                   Text(settingsModelKindLabel(row.type.ifBlank { slot.configType }, slot.key), color = Color(0xFFC57A16), style = MaterialTheme.typography.bodySmall)
-                  Text(settingsModelTypeLabel(row.modelType.ifBlank { defaultSettingsModelTypeForSlot(slot) }, slot.key), color = Color(0xFF6E819B), style = MaterialTheme.typography.bodySmall)
+                  if (settingsShouldShowModelType(slot)) {
+                    Text(settingsModelTypeLabel(row.modelType.ifBlank { defaultSettingsModelTypeForSlot(slot) }, slot.key), color = Color(0xFF6E819B), style = MaterialTheme.typography.bodySmall)
+                  }
                 }
                 Text(row.model.ifBlank { "配置${row.id}" }, fontWeight = FontWeight.ExtraBold, color = Color(0xFF213958))
                 Text(row.baseUrl.ifBlank { "默认 Base URL" }, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6E819B))
@@ -6032,11 +6597,31 @@ private fun SettingsModelManagerDialog(
             full = true,
             onClick = {
               val configId = selectedId
-              if (configId == null || slotOptions.none { it.id == configId }) {
+              val selectedRow = slotOptions.firstOrNull { it.id == configId }
+              if (configId == null || selectedRow == null) {
                 vm.notice = "请先选择模型配置"
               } else {
-                vm.bindGameModel(slot.key, configId)
-                onDismiss()
+                scope.launch {
+                  runCatching {
+                    if (slot.key == "storyAvatarMattingModel" && selectedRow.manufacturer == "local_birefnet") {
+                      val status = vm.getLocalAvatarMattingStatus(selectedRow.manufacturer, selectedRow.model)
+                      if (!status.installed) {
+                        if (!status.canInstall) {
+                          error(status.message.ifBlank { "当前环境无法安装本地 BiRefNet" })
+                        }
+                        val installed = vm.installLocalAvatarMattingModel(selectedRow.manufacturer, selectedRow.model)
+                        if (!installed.installed) {
+                          error(installed.message.ifBlank { "本地 BiRefNet 尚未安装完成" })
+                        }
+                      }
+                    }
+                    vm.bindGameModel(slot.key, configId)
+                  }.onSuccess {
+                    onDismiss()
+                  }.onFailure {
+                    vm.notice = "保存模型配置失败: ${it.message ?: "未知错误"}"
+                  }
+                }
               }
             },
           )
@@ -6047,6 +6632,7 @@ private fun SettingsModelManagerDialog(
 
   if (showEditor) {
     SettingsModelEditorDialog(
+      vm = vm,
       slot = slot,
       initial = editingModel,
       onDismiss = { showEditor = false },
@@ -6157,12 +6743,14 @@ private fun SettingsModelManagerDialog(
 
 @Composable
 private fun SettingsModelEditorDialog(
+  vm: MainViewModel,
   slot: MainViewModel.SettingsModelSlot,
   initial: com.toonflow.game.data.ModelConfigItem?,
   onDismiss: () -> Unit,
   onSubmit: (Long?, String, String, String, String, String) -> Unit,
 ) {
   val context = LocalContext.current
+  val scope = rememberCoroutineScope()
   val normalizedInitialManufacturer = remember(initial?.id, slot.key) {
     val raw = initial?.manufacturer?.ifBlank { defaultSettingsManufacturerForSlot(slot) } ?: defaultSettingsManufacturerForSlot(slot)
     if (isVoiceDesignSlot(slot) && !isVoiceDesignManufacturer(raw)) defaultSettingsManufacturerForSlot(slot) else raw
@@ -6191,7 +6779,74 @@ private fun SettingsModelEditorDialog(
   var apiKey by remember(initial?.id) { mutableStateOf(initial?.apiKey.orEmpty()) }
   var manufacturerExpanded by remember { mutableStateOf(false) }
   var modelTypeExpanded by remember { mutableStateOf(false) }
+  var previousManufacturer by remember(initial?.id, slot.key) { mutableStateOf(normalizedInitialManufacturer) }
+  var previousModel by remember(initial?.id, slot.key) { mutableStateOf(normalizedInitialModel) }
+  var previousBaseUrl by remember(initial?.id, slot.key) { mutableStateOf(initial?.baseUrl.orEmpty()) }
+  var previousApiKey by remember(initial?.id) { mutableStateOf(initial?.apiKey.orEmpty()) }
+  var localAvatarMattingStatus by remember { mutableStateOf<com.toonflow.game.data.LocalAvatarMattingStatus?>(null) }
+  var localAvatarMattingInstalling by remember { mutableStateOf(false) }
+  var showLocalInstallConfirm by remember { mutableStateOf(false) }
   val modelTypeOptions = remember(slot.key, slot.configType) { settingsModelTypeOptionsForSlot(slot) }
+  val usesLocalAvatarMatting = remember(slot.key, manufacturer) {
+    slot.key == "storyAvatarMattingModel" && manufacturer == "local_birefnet"
+  }
+
+  fun applyManufacturerDefaults(nextManufacturer: String, nextModelType: String) {
+    if (baseUrl.isBlank() || initial == null) {
+      baseUrl = defaultSettingsBaseUrl(nextManufacturer, slot.configType, nextModelType)
+    }
+    if (initial == null || model.isBlank()) {
+      model = defaultSettingsModelNameForSlot(slot, nextManufacturer, nextModelType)
+    }
+  }
+
+  suspend fun refreshLocalAvatarMattingStatus(): com.toonflow.game.data.LocalAvatarMattingStatus? {
+    if (!usesLocalAvatarMatting) {
+      localAvatarMattingStatus = null
+      return null
+    }
+    val status = vm.getLocalAvatarMattingStatus(manufacturer, model.trim())
+    localAvatarMattingStatus = status
+    return status
+  }
+
+  suspend fun ensureLocalAvatarMattingInstalled(interactive: Boolean): Boolean {
+    if (!usesLocalAvatarMatting) return true
+    val status = refreshLocalAvatarMattingStatus() ?: return false
+    if (status.installed) return true
+    if (status.status.equals("installing", ignoreCase = true)) {
+      vm.notice = status.message.ifBlank { "本地 BiRefNet 安装中，请稍候" }
+      return false
+    }
+    if (!status.canInstall) {
+      error(status.message.ifBlank { "当前环境无法安装本地 BiRefNet" })
+    }
+    if (!interactive) return false
+    localAvatarMattingInstalling = true
+    vm.notice = "正在安装本地 BiRefNet，请稍候..."
+    try {
+      val installed = vm.installLocalAvatarMattingModel(manufacturer, model.trim())
+      localAvatarMattingStatus = installed
+      vm.notice = installed.message.ifBlank { "本地 BiRefNet 已安装" }
+      return installed.installed
+    } finally {
+      localAvatarMattingInstalling = false
+    }
+  }
+
+  LaunchedEffect(usesLocalAvatarMatting, model, initial?.id) {
+    if (!usesLocalAvatarMatting) {
+      localAvatarMattingStatus = null
+      localAvatarMattingInstalling = false
+      showLocalInstallConfirm = false
+      return@LaunchedEffect
+    }
+    runCatching {
+      refreshLocalAvatarMattingStatus()
+    }.onFailure {
+      vm.notice = "读取本地 BiRefNet 状态失败: ${it.message ?: "未知错误"}"
+    }
+  }
 
   AlertDialog(
     onDismissRequest = onDismiss,
@@ -6206,14 +6861,37 @@ private fun SettingsModelEditorDialog(
               DropdownMenuItem(
                 text = { Text(item.label) },
                 onClick = {
+                  previousManufacturer = manufacturer
+                  previousModel = model
+                  previousBaseUrl = baseUrl
+                  previousApiKey = apiKey
                   manufacturer = item.value
-                  if (baseUrl.isBlank() || initial == null) {
-                    baseUrl = defaultSettingsBaseUrl(item.value, slot.configType, modelType)
-                  }
-                  if (initial == null || model.isBlank()) {
+                  if (item.value == "local_birefnet") {
                     model = defaultSettingsModelNameForSlot(slot, item.value, modelType)
+                    baseUrl = ""
+                    apiKey = ""
+                  } else {
+                    applyManufacturerDefaults(item.value, modelType)
                   }
                   manufacturerExpanded = false
+                  if (slot.key == "storyAvatarMattingModel" && item.value == "local_birefnet") {
+                    scope.launch {
+                      runCatching {
+                        val status = vm.getLocalAvatarMattingStatus(item.value, model.trim())
+                        localAvatarMattingStatus = status
+                        if (!status.installed) {
+                          showLocalInstallConfirm = true
+                        }
+                      }.onFailure {
+                        manufacturer = previousManufacturer
+                        applyManufacturerDefaults(manufacturer, modelType)
+                        vm.notice = "读取本地 BiRefNet 状态失败: ${it.message ?: "未知错误"}"
+                      }
+                    }
+                  } else {
+                    localAvatarMattingStatus = null
+                    showLocalInstallConfirm = false
+                  }
                 },
               )
             }
@@ -6232,42 +6910,79 @@ private fun SettingsModelEditorDialog(
           }
         }
 
-        Text("类型", fontWeight = FontWeight.Bold, color = Color(0xFF25324A))
-        Box {
-          MiniBtn(
-            text = settingsModelTypeOptionLabel(slot, modelType),
-            full = true,
-            onClick = { modelTypeExpanded = true },
-          )
-          DropdownMenu(expanded = modelTypeExpanded, onDismissRequest = { modelTypeExpanded = false }) {
-            modelTypeOptions.forEach { item ->
-              DropdownMenuItem(
-                text = { Text(item.second) },
-                onClick = {
-                  modelType = item.first
-                  if (baseUrl.isBlank() || initial == null) {
-                    baseUrl = defaultSettingsBaseUrl(manufacturer, slot.configType, item.first)
-                  }
-                  if (initial == null || model.isBlank()) {
-                    model = defaultSettingsModelNameForSlot(slot, manufacturer, item.first)
-                  }
-                  modelTypeExpanded = false
-                },
-              )
+        if (settingsShouldShowModelType(slot)) {
+          Text("类型", fontWeight = FontWeight.Bold, color = Color(0xFF25324A))
+          Box {
+            MiniBtn(
+              text = settingsModelTypeOptionLabel(slot, modelType),
+              full = true,
+              onClick = { modelTypeExpanded = true },
+            )
+            DropdownMenu(expanded = modelTypeExpanded, onDismissRequest = { modelTypeExpanded = false }) {
+              modelTypeOptions.forEach { item ->
+                DropdownMenuItem(
+                  text = { Text(item.second) },
+                  onClick = {
+                    modelType = item.first
+                    applyManufacturerDefaults(manufacturer, item.first)
+                    modelTypeExpanded = false
+                  },
+                )
+              }
             }
           }
         }
 
         OutlinedTextField(value = model, onValueChange = { model = it }, label = { Text("模型") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, label = { Text("Base URL") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(
-          value = apiKey,
-          onValueChange = { apiKey = it },
-          label = { Text("API Key") },
-          modifier = Modifier.fillMaxWidth(),
-          placeholder = { Text(if (settingsApiKeyRequired(manufacturer, slot.configType)) "请输入 API Key" else "本地 ai_voice_tts 可留空") },
-          visualTransformation = PasswordVisualTransformation(),
-        )
+        if (usesLocalAvatarMatting) {
+          Column(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(14.dp))
+              .background(Color(0xFFF6FBEF))
+              .border(1.dp, Color(0xFFD9E5CF), RoundedCornerShape(14.dp))
+              .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            Text("BiRefNet 本地模型", fontWeight = FontWeight.Bold, color = Color(0xFF31562D))
+            Text(
+              localAvatarMattingStatus?.message?.ifBlank { "首次使用需要安装 Python 依赖和模型文件。" }
+                ?: "首次使用需要安装 Python 依赖和模型文件。",
+              style = MaterialTheme.typography.bodySmall,
+              color = Color(0xFF567052),
+            )
+            if (localAvatarMattingStatus?.installed != true) {
+              MiniBtn(
+                text = if (localAvatarMattingInstalling) "安装中" else if (localAvatarMattingStatus?.status == "failed") "重新安装" else "立即安装",
+                onClick = {
+                  scope.launch {
+                    runCatching { ensureLocalAvatarMattingInstalled(true) }
+                      .onFailure {
+                        vm.notice = "本地 BiRefNet 安装失败: ${it.message ?: "未知错误"}"
+                      }
+                  }
+                },
+              )
+            }
+          }
+        } else {
+          OutlinedTextField(value = baseUrl, onValueChange = { baseUrl = it }, label = { Text("Base URL") }, modifier = Modifier.fillMaxWidth())
+          OutlinedTextField(
+            value = apiKey,
+            onValueChange = { apiKey = it },
+            label = { Text("API Key") },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text(settingsApiKeyPlaceholder(slot, manufacturer)) },
+            visualTransformation = PasswordVisualTransformation(),
+          )
+        }
+        settingsApiKeyHint(slot, manufacturer).takeIf { it.isNotBlank() }?.let { hint ->
+          Text(
+            hint,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF8A5B0B),
+          )
+        }
       }
     },
     confirmButton = {
@@ -6276,9 +6991,26 @@ private fun SettingsModelEditorDialog(
         val submitModelType = if (isVoiceDesignSlot(slot)) defaultSettingsModelTypeForSlot(slot) else modelType
         if (model.trim().isBlank()) return@TextButton
         if (settingsApiKeyRequired(submitManufacturer, slot.configType) && apiKey.trim().isBlank()) return@TextButton
-        onSubmit(initial?.id, submitManufacturer, submitModelType, model.trim(), baseUrl.trim(), apiKey.trim())
+        scope.launch {
+          runCatching {
+            if (slot.key == "storyAvatarMattingModel" && submitManufacturer == "local_birefnet") {
+              val ready = ensureLocalAvatarMattingInstalled(true)
+              if (!ready) return@runCatching
+            }
+            onSubmit(
+              initial?.id,
+              submitManufacturer,
+              submitModelType,
+              model.trim(),
+              if (submitManufacturer == "local_birefnet") "" else baseUrl.trim(),
+              if (submitManufacturer == "local_birefnet") "" else apiKey.trim(),
+            )
+          }.onFailure {
+            vm.notice = "本地 BiRefNet 安装失败: ${it.message ?: "未知错误"}"
+          }
+        }
       }) {
-        Text("保存")
+        Text(if (localAvatarMattingInstalling) "安装中" else "保存")
       }
     },
     dismissButton = {
@@ -6287,6 +7019,52 @@ private fun SettingsModelEditorDialog(
       }
     },
   )
+
+  if (showLocalInstallConfirm) {
+    AlertDialog(
+      onDismissRequest = {
+        showLocalInstallConfirm = false
+        manufacturer = previousManufacturer
+        model = previousModel
+        baseUrl = previousBaseUrl
+        apiKey = previousApiKey
+      },
+      title = { Text("安装本地 BiRefNet") },
+      text = {
+        Text(localAvatarMattingStatus?.message?.ifBlank { "首次使用需要安装 Python 依赖和模型文件。" }
+          ?: "首次使用需要安装 Python 依赖和模型文件。")
+      },
+      confirmButton = {
+        TextButton(onClick = {
+          showLocalInstallConfirm = false
+          scope.launch {
+            runCatching {
+              ensureLocalAvatarMattingInstalled(true)
+            }.onFailure {
+              vm.notice = "本地 BiRefNet 安装失败: ${it.message ?: "未知错误"}"
+              manufacturer = previousManufacturer
+              model = previousModel
+              baseUrl = previousBaseUrl
+              apiKey = previousApiKey
+            }
+          }
+        }) {
+          Text("确认安装")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = {
+          showLocalInstallConfirm = false
+          manufacturer = previousManufacturer
+          model = previousModel
+          baseUrl = previousBaseUrl
+          apiKey = previousApiKey
+        }) {
+          Text("取消")
+        }
+      },
+    )
+  }
 }
 
 @Composable
@@ -6471,126 +7249,108 @@ private fun AvatarItem(
   label: String,
   icon: ImageVector,
   avatarPath: String? = null,
+  avatarBgPath: String? = null,
   onClick: () -> Unit,
   showEditBadge: Boolean = false,
   iconTint: Color = Color(0xFF8AA0C6),
 ) {
   Column(horizontalAlignment = Alignment.CenterHorizontally) {
-    Box(
+    LayeredAvatarFrame(
+      foregroundPath = avatarPath,
+      backgroundPath = avatarBgPath,
       modifier = Modifier
         .size(54.dp)
-        .clip(CircleShape)
-        .border(1.dp, Color(0xFFD3DEEF), CircleShape)
-        .background(Color.White)
         .clickable { onClick() },
-      contentAlignment = Alignment.Center,
-    ) {
-      if (!avatarPath.isNullOrBlank()) {
-        AsyncImage(
-          model = avatarPath,
-          contentDescription = null,
-          modifier = Modifier.fillMaxSize(),
-          contentScale = ContentScale.Crop,
-        )
-      } else {
+      backgroundColor = Color.White,
+      borderColor = Color(0xFFD3DEEF),
+      fallback = {
         Icon(
           imageVector = icon,
           contentDescription = null,
           tint = iconTint,
           modifier = Modifier.size(16.dp),
         )
-      }
-      if (showEditBadge) {
-        Box(
-          modifier = Modifier
-            .align(Alignment.BottomEnd)
-            .offset(x = (-9).dp, y = (-2).dp)
-            .size(17.dp)
-            .clip(CircleShape)
-            .background(Color.White)
-            .border(1.dp, Color(0xFFC7D4E8), CircleShape)
-            .shadow(elevation = 2.dp, shape = CircleShape),
-          contentAlignment = Alignment.Center,
-        ) {
-          Icon(
-            imageVector = Icons.Outlined.Edit,
-            contentDescription = "编辑",
-            tint = Color(0xFF6B7F9F),
-            modifier = Modifier.size(9.dp),
-          )
+      },
+      overlay = {
+        if (showEditBadge) {
+          Box(
+            modifier = Modifier
+              .align(Alignment.BottomEnd)
+              .offset(x = (-9).dp, y = (-2).dp)
+              .size(17.dp)
+              .clip(CircleShape)
+              .background(Color.White)
+              .border(1.dp, Color(0xFFC7D4E8), CircleShape)
+              .shadow(elevation = 2.dp, shape = CircleShape),
+            contentAlignment = Alignment.Center,
+          ) {
+            Icon(
+              imageVector = Icons.Outlined.Edit,
+              contentDescription = "编辑",
+              tint = Color(0xFF6B7F9F),
+              modifier = Modifier.size(9.dp),
+            )
+          }
         }
-      }
-    }
+      },
+    )
     Text(label, style = MaterialTheme.typography.labelSmall, color = Color(0xFF50617C), modifier = Modifier.padding(top = 5.dp))
   }
 }
 
 @Composable
-private fun MediumEditableAvatar(path: String?, fallbackName: String, loading: Boolean = false, onClick: () -> Unit) {
-  Box(
+private fun MediumEditableAvatar(path: String?, backgroundPath: String?, fallbackName: String, loading: Boolean = false, onClick: () -> Unit) {
+  LayeredAvatarFrame(
+    foregroundPath = path,
+    backgroundPath = backgroundPath,
     modifier = Modifier
       .size(82.dp)
-      .clip(CircleShape)
-      .border(1.dp, Color(0xFFCCD8EA), CircleShape)
-      .background(Color(0xFFE5EAF3))
       .clickable(enabled = !loading) { onClick() },
-  ) {
-    if (!path.isNullOrBlank()) {
-      AsyncImage(
-        model = path,
-        contentDescription = null,
-        modifier = Modifier.fillMaxSize(),
-        contentScale = ContentScale.Crop,
+    backgroundColor = Color(0xFFE5EAF3),
+    borderColor = Color(0xFFCCD8EA),
+    fallback = {
+      Text(
+        text = fallbackName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+        color = Color(0xFF7D8CA5),
+        fontWeight = FontWeight.Bold,
       )
-    } else {
-      Box(
-        modifier = Modifier
-          .fillMaxSize()
-          .background(Color(0xFFE5EAF3)),
-        contentAlignment = Alignment.Center,
-      ) {
-        Text(
-          text = fallbackName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
-          color = Color(0xFF7D8CA5),
-          fontWeight = FontWeight.Bold,
-        )
+    },
+    overlay = {
+      if (loading) {
+        Box(
+          modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0x66132134)),
+          contentAlignment = Alignment.Center,
+        ) {
+          CircularProgressIndicator(
+            modifier = Modifier.size(24.dp),
+            color = Color(0xFFFFD071),
+            strokeWidth = 2.2.dp,
+          )
+        }
       }
-    }
 
-    if (loading) {
-      Box(
-        modifier = Modifier
-          .fillMaxSize()
-          .background(Color(0x66132134)),
-        contentAlignment = Alignment.Center,
-      ) {
-        CircularProgressIndicator(
-          modifier = Modifier.size(24.dp),
-          color = Color(0xFFFFD071),
-          strokeWidth = 2.2.dp,
-        )
+      if (!loading) {
+        Box(
+          modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .size(24.dp)
+            .clip(CircleShape)
+            .background(Color.White)
+            .border(1.dp, Color(0xFFC7D4E8), CircleShape),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(
+            imageVector = Icons.Outlined.Add,
+            contentDescription = "更换头像",
+            tint = Color(0xFF6B7F9F),
+            modifier = Modifier.size(14.dp),
+          )
+        }
       }
-    }
-
-    if (!loading) {
-      Box(
-        modifier = Modifier
-          .align(Alignment.BottomEnd)
-          .size(24.dp)
-          .clip(CircleShape)
-          .background(Color.White)
-          .border(1.dp, Color(0xFFC7D4E8), CircleShape),
-        contentAlignment = Alignment.Center,
-      ) {
-        Icon(
-          imageVector = Icons.Outlined.Add,
-          contentDescription = "更换头像",
-          tint = Color(0xFF6B7F9F),
-          modifier = Modifier.size(14.dp),
-        )
-      }
-    }
-  }
+    },
+  )
 }
 
 @Composable
@@ -6752,5 +7512,25 @@ private fun MiniBtn(text: String, primary: Boolean = false, full: Boolean = fals
     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
   ) {
     Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
+  }
+}
+
+@Composable
+private fun MiniIconBtn(icon: ImageVector, contentDescription: String, onClick: () -> Unit) {
+  Button(
+    onClick = onClick,
+    modifier = Modifier.size(32.dp),
+    shape = RoundedCornerShape(10.dp),
+    colors = ButtonDefaults.buttonColors(
+      containerColor = Color(0xFFF2F7FF),
+      contentColor = Color(0xFF2E466A),
+    ),
+    contentPadding = PaddingValues(0.dp),
+  ) {
+    Icon(
+      imageVector = icon,
+      contentDescription = contentDescription,
+      modifier = Modifier.size(16.dp),
+    )
   }
 }

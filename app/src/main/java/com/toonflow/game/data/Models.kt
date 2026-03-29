@@ -138,6 +138,7 @@ data class MessageItem(
   @SerializedName("eventType") val eventType: String = "",
   @SerializedName("content") val content: String = "",
   @SerializedName("createTime") val createTime: Long = 0L,
+  @SerializedName("meta") val meta: JsonElement? = null,
 )
 
 data class SessionItem(
@@ -173,6 +174,28 @@ data class DebugStepResult(
   @SerializedName("state") val state: JsonElement? = null,
   @SerializedName("endDialog") val endDialog: String? = null,
   @SerializedName("messages") val messages: List<MessageItem> = emptyList(),
+)
+
+data class DebugNarrativePlan(
+  @SerializedName("role") val role: String = "",
+  @SerializedName("roleType") val roleType: String = "",
+  @SerializedName("motive") val motive: String = "",
+  @SerializedName("awaitUser") val awaitUser: Boolean = false,
+  @SerializedName("nextRole") val nextRole: String = "",
+  @SerializedName("nextRoleType") val nextRoleType: String = "",
+  @SerializedName("chapterOutcome") val chapterOutcome: String = "continue",
+  @SerializedName("nextChapterId") val nextChapterId: Long? = null,
+  @SerializedName("source") val source: String = "ai",
+  @SerializedName("eventType") val eventType: String = "",
+  @SerializedName("presetContent") val presetContent: String? = null,
+)
+
+data class DebugOrchestrationResult(
+  @SerializedName("chapterId") val chapterId: Long? = null,
+  @SerializedName("chapterTitle") val chapterTitle: String = "",
+  @SerializedName("state") val state: JsonElement? = null,
+  @SerializedName("endDialog") val endDialog: String? = null,
+  @SerializedName("plan") val plan: DebugNarrativePlan? = null,
 )
 
 data class GeneratedImageResult(
@@ -220,6 +243,15 @@ data class ModelConfigItem(
   @SerializedName("baseUrl") val baseUrl: String = "",
   @SerializedName("apiKey") val apiKey: String = "",
   @SerializedName("createTime") val createTime: Long = 0L,
+)
+
+data class LocalAvatarMattingStatus(
+  @SerializedName("manufacturer") val manufacturer: String = "",
+  @SerializedName("model") val model: String = "",
+  @SerializedName("status") val status: String = "not_installed",
+  @SerializedName("installed") val installed: Boolean = false,
+  @SerializedName("canInstall") val canInstall: Boolean = false,
+  @SerializedName("message") val message: String = "",
 )
 
 data class AiModelMapItem(
