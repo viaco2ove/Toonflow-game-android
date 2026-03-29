@@ -1034,6 +1034,7 @@ private fun HallScene(vm: MainViewModel) {
         gridItems(list, key = { it.id }) { item ->
           HallStoryCard(
             world = item,
+            coverPath = vm.worldCoverPath(item).ifBlank { null },
             onPlay = { vm.startFromWorld(item) },
             canEdit = vm.canEditWorld(item),
             onEdit = { vm.openWorldForEdit(item) },
@@ -1060,7 +1061,7 @@ private fun HallTag(text: String, active: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun HallStoryCard(world: WorldItem, canEdit: Boolean, onPlay: () -> Unit, onEdit: () -> Unit) {
+private fun HallStoryCard(world: WorldItem, coverPath: String?, canEdit: Boolean, onPlay: () -> Unit, onEdit: () -> Unit) {
   Card(
     shape = RoundedCornerShape(12.dp),
     colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -1068,7 +1069,7 @@ private fun HallStoryCard(world: WorldItem, canEdit: Boolean, onPlay: () -> Unit
   ) {
     StoryCoverImage(
       title = world.name,
-      coverPath = world.settings?.coverPath?.ifBlank { null },
+      coverPath = coverPath,
       modifier = Modifier.fillMaxWidth().height(98.dp),
     )
     Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
