@@ -230,6 +230,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var sessionPlaybackStartIndex by mutableIntStateOf(0)
   private val messageReactions = mutableStateMapOf<String, String>()
   var sendText by mutableStateOf("")
+  var sendPending by mutableStateOf(false)
 
   var debugMode by mutableStateOf(false)
   var debugSessionTitle by mutableStateOf("")
@@ -4019,7 +4020,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun sendMessage() {
     val sid = currentSessionId
     val text = sendText.trim()
-    if (sid.isBlank() || text.isBlank()) return
+    if (sid.isBlank() || text.isBlank() || sendPending) return
     if (!playCanPlayerInput()) {
       notice = playTurnHint()
       return
@@ -4031,6 +4032,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     clearRuntimeRetryState()
+    sendPending = true
     viewModelScope.launch {
       runCatching {
         performSessionPlayerMessage(sid, text)
@@ -4044,6 +4046,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             performSessionPlayerMessage(sid, text)
           }
         }
+      }.also {
+        sendPending = false
       }
     }
   }
@@ -4051,13 +4055,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun sendMiniGameAction(action: String) {
     val sid = currentSessionId
     val text = action.trim()
-    if (sid.isBlank() || text.isBlank()) return
+    if (sid.isBlank() || text.isBlank() || sendPending) return
     sendText = text
     if (debugMode) {
       sendDebugMessage(text)
       return
     }
     clearRuntimeRetryState()
+    sendPending = true
     viewModelScope.launch {
       runCatching {
         performSessionPlayerMessage(sid, text)
@@ -4066,6 +4071,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         showRuntimeRetryMessage("小游戏操作失败: $message") {
           performSessionPlayerMessage(sid, text)
         }
+      }.also {
+        sendPending = false
       }
     }
   }
@@ -4185,7 +4192,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       updateDebugStatePreview()
       return
     }
+    if (sendPending) return
     clearRuntimeRetryState()
+    sendPending = true
     viewModelScope.launch {
       runCatching {
         performDebugPlayerMessage(text, appendPlayerMessage = true)
@@ -4195,6 +4204,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           performDebugPlayerMessage(text, appendPlayerMessage = false)
         }
         updateDebugStatePreview()
+      }.also {
+        sendPending = false
       }
     }
   }

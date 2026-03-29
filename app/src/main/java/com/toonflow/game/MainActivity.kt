@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.OpenableColumns
+import android.view.MotionEvent
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import androidx.activity.ComponentActivity
@@ -79,6 +80,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -103,6 +105,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -159,9 +162,11 @@ import com.toonflow.game.data.VoiceMixItem
 import com.toonflow.game.data.WorldItem
 import com.toonflow.game.viewmodel.MainViewModel
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -2196,7 +2201,7 @@ private fun HistoryScene(vm: MainViewModel) {
           val world = vm.worlds.firstOrNull { it.id == item.worldId }
           HistoryCard(
             item = item,
-            coverPath = item.worldCoverPath.ifBlank { vm.worldCoverPath(world) }.ifBlank { null },
+            coverPath = vm.resolveMediaPath(item.worldCoverPath).ifBlank { vm.worldCoverPath(world) }.ifBlank { null },
             onClick = { vm.continueSessionForWorld(item.worldId, item.sessionId) },
             onWatch = { vm.continueSessionForWorld(item.worldId, item.sessionId, playback = true, playbackIndex = 0) },
             onDelete = { pendingDeleteSession = item },
@@ -2337,6 +2342,7 @@ private fun PlayScene(
   var inputMode by remember(vm.currentSessionId) { mutableStateOf("text") }
   var voiceListening by remember(vm.currentSessionId) { mutableStateOf(false) }
   var voiceTranscribing by remember(vm.currentSessionId) { mutableStateOf(false) }
+  var pendingVoiceStartAfterPermission by remember(vm.currentSessionId) { mutableStateOf(false) }
   var recorder by remember(vm.currentSessionId) { mutableStateOf<MediaRecorder?>(null) }
   var recordFile by remember(vm.currentSessionId) { mutableStateOf<File?>(null) }
   var playbackPlayer by remember(vm.currentSessionId) { mutableStateOf<MediaPlayer?>(null) }
@@ -2359,9 +2365,12 @@ private fun PlayScene(
   var runtimeVoiceMessageKey by remember(vm.currentSessionId) { mutableStateOf("") }
   var runtimeVoicePhase by remember(vm.currentSessionId) { mutableStateOf("") }
   var runtimeVoiceIndicator by remember(vm.currentSessionId) { mutableStateOf(".") }
+  var runtimeVoiceAutoJob by remember(vm.currentSessionId) { mutableStateOf<Job?>(null) }
   val scope = rememberCoroutineScope()
   val recordPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
     if (granted) {
+      if (!pendingVoiceStartAfterPermission) return@rememberLauncherForActivityResult
+      pendingVoiceStartAfterPermission = false
       scope.launch {
         startRuntimeVoiceRecording(
           context = context,
@@ -2374,6 +2383,7 @@ private fun PlayScene(
         )
       }
     } else {
+      pendingVoiceStartAfterPermission = false
       vm.notice = "未授予录音权限"
     }
   }
@@ -2392,6 +2402,12 @@ private fun PlayScene(
     runtimeVoiceMessageKey = ""
     runtimeVoicePhase = ""
     runtimeVoiceIndicator = "."
+  }
+
+  fun stopRuntimeAutoVoiceQueue(invalidate: Boolean = true) {
+    runtimeVoiceAutoJob?.cancel()
+    runtimeVoiceAutoJob = null
+    stopRuntimePlayback(invalidate)
   }
 
   suspend fun ensureSystemTts(): TextToSpeech {
@@ -2906,7 +2922,35 @@ private fun PlayScene(
   fun stopPlaybackSequence() {
     playbackPlaying = false
     playbackRunId += 1
-    stopRuntimePlayback()
+    stopRuntimeAutoVoiceQueue()
+  }
+
+  fun launchRuntimeAutoVoice(message: MessageItem, segments: List<String>) {
+    val speakableSegments = segments
+      .map(::sanitizeSpeakableText)
+      .filter { it.isNotBlank() }
+    if (speakableSegments.isEmpty()) return
+    stopRuntimeAutoVoiceQueue(invalidate = true)
+    runtimeVoiceAutoJob = scope.launch {
+      try {
+        for (segment in speakableSegments) {
+          ensureActive()
+          playMessageVoice(
+            message,
+            manual = false,
+            waitForCompletion = true,
+            overrideText = segment,
+          )
+          ensureActive()
+          delay(120L)
+        }
+      } catch (_: CancellationException) {
+      } finally {
+        if (runtimeVoiceAutoJob === this) {
+          runtimeVoiceAutoJob = null
+        }
+      }
+    }
   }
 
   fun continueFromPlayback() {
@@ -2945,7 +2989,7 @@ private fun PlayScene(
       recordFile = null
       voiceListening = false
       voiceTranscribing = false
-      stopRuntimePlayback()
+      stopRuntimeAutoVoiceQueue()
       systemTtsInit?.cancel()
       systemTtsInit = null
       systemTts?.let { engine ->
@@ -3005,7 +3049,7 @@ private fun PlayScene(
     playbackCursor = vm.sessionPlaybackStartIndex.coerceAtLeast(0)
     playbackPlaying = false
     playbackRunId += 1
-    stopRuntimePlayback()
+    stopRuntimeAutoVoiceQueue()
     debugAutoAdvancing = false
   }
   LaunchedEffect(vm.currentSessionId, vm.sessionViewMode, playbackMessages.size) {
@@ -3115,27 +3159,14 @@ private fun PlayScene(
         vm.setRuntimeMessageStatus(currentMessage.id, if (canPlayerSpeak) "waiting_player" else "waiting_next")
         delay(estimateRevealDelayMs(displayContent))
       } else {
-        val voiceSegments = if (queuedVoiceSegments.isNotEmpty()) {
-          queuedVoiceSegments.toList()
-        } else {
-          listOf(displayContent).filter { it.isNotBlank() }
-        }
-        if (voiceSegments.isNotEmpty()) {
+        val voiceSegments = if (queuedVoiceSegments.isNotEmpty()) queuedVoiceSegments.toList() else listOf(displayContent)
+        val playableSegments = voiceSegments.map(::sanitizeSpeakableText).filter { it.isNotBlank() }
+        if (playableSegments.isNotEmpty()) {
           vm.setRuntimeMessageStatus(currentMessage.id, "voicing")
-          val voiceTarget = currentMessage
-          voiceSegments.forEach { segment ->
-            val playable = sanitizeSpeakableText(segment)
-            if (playable.isBlank()) return@forEach
-            playMessageVoice(
-              voiceTarget,
-              manual = false,
-              waitForCompletion = true,
-              overrideText = playable,
-            )
-          }
+          launchRuntimeAutoVoice(currentMessage, playableSegments)
         }
         vm.setRuntimeMessageStatus(currentMessage.id, if (canPlayerSpeak) "waiting_player" else "waiting_next")
-        delay(if (voiceSegments.isNotEmpty()) 260 else estimateRevealDelayMs(displayContent))
+        delay(if (playableSegments.isNotEmpty()) 260 else estimateRevealDelayMs(displayContent))
       }
     }
   }
@@ -3202,12 +3233,12 @@ private fun PlayScene(
       selectedMessage = null
       dialogMenuAnchorBounds = null
       onCloseDialogMenu()
-      stopRuntimePlayback()
+      stopRuntimeAutoVoiceQueue()
     }
   }
   LaunchedEffect(autoVoice) {
     if (!autoVoice) {
-      stopRuntimePlayback()
+      stopRuntimeAutoVoiceQueue()
     }
   }
   LaunchedEffect(
@@ -3655,6 +3686,7 @@ private fun PlayScene(
         storySubtitle = "@${vm.playStoryRoles().firstOrNull { it.roleType != "player" }?.name ?: "旁白"}",
         chapterObjectivePreview = chapterObjectivePreview,
         canPlayerInput = canPlayerInput,
+        sendPending = vm.sendPending,
         inputMode = inputMode,
         voiceListening = voiceListening,
         voiceTranscribing = voiceTranscribing,
@@ -3699,20 +3731,53 @@ private fun PlayScene(
             recordFile?.delete()
             recordFile = null
             voiceListening = false
+            pendingVoiceStartAfterPermission = false
           }
         },
-        onVoicePrimary = {
-          if (!vm.playCanPlayerInput()) {
+        onVoicePressStart = {
+          if (vm.sendPending) {
+            vm.notice = "发送中，请稍候"
+          } else if (!vm.playCanPlayerInput()) {
             vm.notice = vm.playTurnHint().ifBlank { "当前还没轮到用户发言" }
-          } else if (voiceTranscribing) {
+          } else if (voiceTranscribing || voiceListening) {
             Unit
-          } else if (voiceListening) {
+          } else {
+            val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            if (granted) {
+              scope.launch {
+                startRuntimeVoiceRecording(
+                  context = context,
+                  onStart = { mediaRecorder, output ->
+                    recorder = mediaRecorder
+                    recordFile = output
+                    voiceListening = true
+                  },
+                  onFailure = { message -> vm.notice = message },
+                )
+              }
+            } else {
+              pendingVoiceStartAfterPermission = true
+              recordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+          }
+        },
+        onVoicePressFinish = { cancel ->
+          pendingVoiceStartAfterPermission = false
+          if (voiceTranscribing || !voiceListening) {
+            Unit
+          } else {
             val currentRecorder = recorder
             val currentFile = recordFile
             recorder = null
             recordFile = null
             voiceListening = false
             scope.launch {
+              if (cancel) {
+                runCatching { currentRecorder?.stop() }
+                currentRecorder?.release()
+                currentFile?.delete()
+                return@launch
+              }
               voiceTranscribing = true
               runCatching {
                 currentRecorder?.stop()
@@ -3729,23 +3794,6 @@ private fun PlayScene(
               }
               currentFile?.delete()
               voiceTranscribing = false
-            }
-          } else {
-            val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-            if (granted) {
-              scope.launch {
-                startRuntimeVoiceRecording(
-                  context = context,
-                  onStart = { mediaRecorder, output ->
-                    recorder = mediaRecorder
-                    recordFile = output
-                    voiceListening = true
-                  },
-                  onFailure = { message -> vm.notice = message },
-                )
-              }
-            } else {
-              recordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             }
           }
         },
@@ -4352,15 +4400,22 @@ private fun StorySettingPanel(
   var selectedRoleId by remember(worldName) { mutableStateOf<String?>(null) }
   var showModePicker by remember(worldName) { mutableStateOf(false) }
   val selectedRole = roles.firstOrNull { it.id == selectedRoleId } ?: roles.firstOrNull()
+  val panelScroll = rememberScrollState()
   Card(
     modifier = Modifier
       .fillMaxWidth()
       .padding(horizontal = 10.dp)
-      .offset(y = (-90).dp),
+      .heightIn(max = 460.dp)
+      .offset(y = (-22).dp),
     colors = CardDefaults.cardColors(containerColor = Color(0xDD0B1A2D)),
     shape = RoundedCornerShape(14.dp),
   ) {
-    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(
+      modifier = Modifier
+        .padding(10.dp)
+        .verticalScroll(panelScroll),
+      verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
       Box(modifier = Modifier.fillMaxWidth()) {
         Text(
           text = worldName,
@@ -4536,6 +4591,7 @@ private fun ParameterCardDetail(card: com.toonflow.game.data.RoleParameterCard) 
 }
 
 @Composable
+@OptIn(ExperimentalComposeUiApi::class)
 private fun FooterBar(
   mode: String,
   miniGame: MainViewModel.RuntimeMiniGameView?,
@@ -4552,6 +4608,7 @@ private fun FooterBar(
   storySubtitle: String,
   chapterObjectivePreview: String,
   canPlayerInput: Boolean,
+  sendPending: Boolean,
   inputMode: String,
   voiceListening: Boolean,
   voiceTranscribing: Boolean,
@@ -4570,7 +4627,8 @@ private fun FooterBar(
   onTogglePlayback: () -> Unit,
   onContinueFromPlayback: () -> Unit,
   onToggleInputMode: () -> Unit,
-  onVoicePrimary: () -> Unit,
+  onVoicePressStart: () -> Unit,
+  onVoicePressFinish: (Boolean) -> Unit,
   onMiniGameAction: (String) -> Unit,
 ) {
   val miniGameActive = miniGame != null && mode != "tips" && mode != "setting"
@@ -4763,7 +4821,7 @@ private fun FooterBar(
           value = sendText,
           onValueChange = onSendTextChange,
           modifier = Modifier.weight(1f),
-          enabled = canPlayerInput,
+          enabled = canPlayerInput && !sendPending,
           placeholder = { Text(inputPlaceholder) },
           maxLines = 2,
           colors = OutlinedTextFieldDefaults.colors(
@@ -4787,7 +4845,7 @@ private fun FooterBar(
         Spacer(modifier = Modifier.width(8.dp))
         Button(
           onClick = onSend,
-          enabled = canPlayerInput,
+          enabled = canPlayerInput && !sendPending,
           shape = RoundedCornerShape(12.dp),
           colors = ButtonDefaults.buttonColors(
             containerColor = Color(0xFFF7FBFF),
@@ -4796,30 +4854,73 @@ private fun FooterBar(
             disabledContentColor = Color(0xFFE3EEFF),
           ),
         ) {
-          Text("发送")
+          Text(if (sendPending) "发送中..." else "发送")
         }
       }
     } else {
+      val density = LocalDensity.current
+      var holdCancelPending by remember(voiceListening, voiceTranscribing) { mutableStateOf(false) }
+      var holdStartY by remember(inputMode, voiceListening) { mutableStateOf(0f) }
+      val cancelDistancePx = with(density) { 76.dp.toPx() }
+      LaunchedEffect(voiceListening, voiceTranscribing) {
+        if (!voiceListening || voiceTranscribing) {
+          holdCancelPending = false
+        }
+      }
       Row(verticalAlignment = Alignment.CenterVertically) {
-        Button(
-          onClick = onVoicePrimary,
-          enabled = canPlayerInput && !voiceTranscribing,
+        Surface(
           modifier = Modifier.weight(1f),
           shape = RoundedCornerShape(12.dp),
-          colors = ButtonDefaults.buttonColors(
-            containerColor = Color(0xFFF7FBFF),
-            contentColor = Color(0xFF20304A),
-            disabledContainerColor = Color(0x66F7FBFF),
-            disabledContentColor = Color(0xFFE3EEFF),
-          ),
+          color = if (canPlayerInput && !sendPending && !voiceTranscribing) Color(0xFFF7FBFF) else Color(0x66F7FBFF),
         ) {
-          Text(
-            when {
-              voiceTranscribing -> "识别处理中..."
-              voiceListening -> "录音中，点击结束"
-              else -> inputPlaceholder
-            },
-          )
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .defaultMinSize(minHeight = 48.dp)
+              .pointerInteropFilter { event ->
+                if (!canPlayerInput || sendPending || voiceTranscribing) {
+                  return@pointerInteropFilter false
+                }
+                when (event.actionMasked) {
+                  MotionEvent.ACTION_DOWN -> {
+                    holdStartY = event.rawY
+                    holdCancelPending = false
+                    onVoicePressStart()
+                    true
+                  }
+                  MotionEvent.ACTION_MOVE -> {
+                    if (voiceListening) {
+                      holdCancelPending = holdStartY - event.rawY > cancelDistancePx
+                    }
+                    true
+                  }
+                  MotionEvent.ACTION_UP -> {
+                    onVoicePressFinish(holdCancelPending)
+                    holdCancelPending = false
+                    true
+                  }
+                  MotionEvent.ACTION_CANCEL -> {
+                    onVoicePressFinish(true)
+                    holdCancelPending = false
+                    true
+                  }
+                  else -> false
+                }
+              }
+              .padding(horizontal = 16.dp, vertical = 12.dp),
+            contentAlignment = Alignment.Center,
+          ) {
+            Text(
+              when {
+                voiceTranscribing -> "识别处理中..."
+                sendPending -> "发送中..."
+                voiceListening && holdCancelPending -> "松开取消"
+                voiceListening -> "松开发送，上滑取消"
+                else -> "按住说话"
+              },
+              color = if (canPlayerInput && !sendPending && !voiceTranscribing) Color(0xFF20304A) else Color(0xFFE3EEFF),
+            )
+          }
         }
         Spacer(modifier = Modifier.width(8.dp))
         MiniBtn(text = "键", onClick = onToggleInputMode)
