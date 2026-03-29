@@ -23,6 +23,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -30,12 +31,14 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -69,6 +72,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -90,13 +95,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -106,24 +116,32 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Replay
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material.icons.outlined.ArrowBack
@@ -133,6 +151,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.ThumbDown
 import androidx.compose.material.icons.outlined.ThumbUp
 import coil.compose.AsyncImage
+import org.json.JSONArray
 import com.toonflow.game.data.MessageItem
 import com.toonflow.game.data.SessionItem
 import com.toonflow.game.data.VoiceBindingDraft
@@ -141,6 +160,7 @@ import com.toonflow.game.data.WorldItem
 import com.toonflow.game.viewmodel.MainViewModel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -155,6 +175,7 @@ import java.util.Locale
 import android.util.Base64
 import androidx.compose.ui.unit.min
 import kotlin.coroutines.resume
+import kotlin.math.roundToInt
 
 private val bgDark = Color(0xFF081424)
 private val textSoft = Color(0xFFEAF3FF)
@@ -173,6 +194,7 @@ private fun sanitizeSpeakableText(input: String): String {
     .replace(Regex("《[^》]*》"), "")
     .replace(Regex("〈[^〉]*〉"), "")
     .replace(Regex("〔[^〕]*〕"), "")
+    .replace(Regex("(^|\\n)[：:，,；;、]+"), "$1")
     .replace(Regex("[ \\t]+\\n"), "\n")
     .replace(Regex("\\n{3,}"), "\n\n")
     .trim()
@@ -627,17 +649,32 @@ private fun PrototypeAndroidApp(vm: MainViewModel = viewModel()) {
   var showUserEditor by remember { mutableStateOf(false) }
   var showNpcEditor by remember { mutableStateOf(false) }
   var playMode by remember { mutableStateOf("live") }
-  var autoVoice by remember { mutableStateOf(true) }
+  var autoVoice by remember { mutableStateOf(vm.autoVoiceEnabled()) }
   var showDialogMenu by remember { mutableStateOf(false) }
   var showStorySettingDetail by remember { mutableStateOf(false) }
+  val toggleAutoVoice = {
+    val next = !autoVoice
+    autoVoice = next
+    vm.setAutoVoiceEnabled(next)
+  }
   val storyAvatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
     if (uri != null) {
       vm.updateStoryPlayerAvatarFromUri(uri.toString())
     }
   }
+  val storyAvatarVideoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+    if (uri != null) {
+      vm.updateStoryPlayerAvatarFromVideoUri(uri.toString())
+    }
+  }
   val accountAvatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
     if (uri != null) {
       vm.updateAccountAvatarFromUri(uri.toString())
+    }
+  }
+  val accountAvatarVideoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+    if (uri != null) {
+      vm.updateAccountAvatarFromVideoUri(uri.toString())
     }
   }
 
@@ -665,7 +702,7 @@ private fun PrototypeAndroidApp(vm: MainViewModel = viewModel()) {
     Column(modifier = Modifier.fillMaxSize()) {
       Box(modifier = Modifier.weight(1f)) {
         when (vm.activeTab) {
-          "主页" -> HomeScene(vm = vm, autoVoice = autoVoice, onToggleVoice = { autoVoice = !autoVoice })
+          "主页" -> HomeScene(vm = vm, autoVoice = autoVoice, onToggleVoice = toggleAutoVoice)
           "故事大厅" -> HallScene(vm = vm)
           "创建" -> CreateScene(
             vm = vm,
@@ -679,6 +716,7 @@ private fun PrototypeAndroidApp(vm: MainViewModel = viewModel()) {
             onOpenNpcEditor = { showNpcEditor = true },
             onCloseNpcEditor = { showNpcEditor = false },
             onPickAvatar = { storyAvatarPicker.launch("image/*") },
+            onPickAvatarVideoGif = { storyAvatarVideoPicker.launch("video/mp4") },
           )
           "聊过" -> HistoryScene(vm = vm)
           "游玩" -> PlayScene(
@@ -686,7 +724,7 @@ private fun PrototypeAndroidApp(vm: MainViewModel = viewModel()) {
             mode = playMode,
             onModeChange = { playMode = it },
             autoVoice = autoVoice,
-            onToggleVoice = { autoVoice = !autoVoice },
+            onToggleVoice = toggleAutoVoice,
             showDialogMenu = showDialogMenu,
             onOpenDialogMenu = { showDialogMenu = true },
             onCloseDialogMenu = { showDialogMenu = false },
@@ -699,9 +737,13 @@ private fun PrototypeAndroidApp(vm: MainViewModel = viewModel()) {
               playMode = "live"
             },
           )
-          "我的" -> ProfileScene(vm = vm, onPickAvatar = { accountAvatarPicker.launch("image/*") })
+          "我的" -> ProfileScene(
+            vm = vm,
+            onPickAvatar = { accountAvatarPicker.launch("image/*") },
+            onPickAvatarVideoGif = { accountAvatarVideoPicker.launch("video/mp4") },
+          )
           "设置" -> SettingsScene(vm = vm)
-          else -> HomeScene(vm = vm, autoVoice = autoVoice, onToggleVoice = { autoVoice = !autoVoice })
+          else -> HomeScene(vm = vm, autoVoice = autoVoice, onToggleVoice = toggleAutoVoice)
         }
       }
 
@@ -752,13 +794,30 @@ private fun PrototypeAndroidApp(vm: MainViewModel = viewModel()) {
 
 @Composable
 private fun HomeScene(vm: MainViewModel, autoVoice: Boolean, onToggleVoice: () -> Unit) {
+  val rec = vm.recommendedWorld()
+  val coverPath = rec?.let { vm.worldCoverPath(it).trim().ifBlank { null } }
+
   Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0A1830)))
+    if (coverPath != null) {
+      AsyncImage(
+        model = coverPath,
+        contentDescription = null,
+        modifier = Modifier
+          .fillMaxSize()
+          .clickable {
+            vm.startFromWorld(rec, vm.quickInput.trim())
+            vm.quickInput = ""
+          },
+        contentScale = ContentScale.Crop,
+      )
+    }
     Box(
       modifier = Modifier
         .fillMaxSize()
         .background(
-          Brush.linearGradient(
-            colors = listOf(Color(0xFF0F1F36), Color(0xFF1C3659), Color(0xFF0B1526)),
+          Brush.verticalGradient(
+            colors = listOf(Color(0x3D0A1424), Color(0x7A0A1424), Color(0xE00A1424)),
           ),
         ),
     )
@@ -766,7 +825,7 @@ private fun HomeScene(vm: MainViewModel, autoVoice: Boolean, onToggleVoice: () -
     Row(
       modifier = Modifier
         .align(Alignment.TopEnd)
-        .padding(top = 8.dp, end = 10.dp),
+        .padding(top = 10.dp, end = 12.dp),
       horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
       CircleGhostBtn(icon = Icons.Outlined.Search, contentDescription = "进入故事大厅") { vm.setTab("故事大厅") }
@@ -781,9 +840,9 @@ private fun HomeScene(vm: MainViewModel, autoVoice: Boolean, onToggleVoice: () -
     Column(
       modifier = Modifier
         .align(Alignment.TopStart)
-        .padding(top = 12.dp, start = 10.dp),
+        .padding(top = 14.dp, start = 12.dp),
     ) {
-      Text("主页", color = Color(0xFFE7F1FF), fontWeight = FontWeight.Bold)
+      Text("主页", color = Color(0xFFF2F6FF), fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleLarge)
       Text("项目：${vm.selectedProjectName()}", color = Color(0xFFBFD3F1), style = MaterialTheme.typography.labelSmall)
     }
 
@@ -791,51 +850,50 @@ private fun HomeScene(vm: MainViewModel, autoVoice: Boolean, onToggleVoice: () -
       modifier = Modifier
         .align(Alignment.BottomCenter)
         .fillMaxWidth()
-        .padding(horizontal = 10.dp, vertical = 12.dp),
-      verticalArrangement = Arrangement.spacedBy(8.dp),
+        .padding(horizontal = 12.dp, vertical = 14.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-      val rec = vm.recommendedWorld()
       if (rec != null) {
-        Card(
-          colors = CardDefaults.cardColors(containerColor = Color(0x6620344B)),
-          shape = RoundedCornerShape(12.dp),
+        Column(
           modifier = Modifier
-            .fillMaxWidth()
-            .clickable {
-              vm.startFromWorld(rec, vm.quickInput.trim())
-              vm.quickInput = ""
-            },
+            .fillMaxWidth(),
+          verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-          Box(modifier = Modifier.fillMaxWidth()) {
-            val coverPath = vm.worldCoverPath(rec).trim().ifBlank { null }
-            if (coverPath != null) {
-              AsyncImage(
-                model = coverPath,
-                contentDescription = null,
-                modifier = Modifier.fillMaxWidth().height(138.dp),
-                contentScale = ContentScale.Crop,
-              )
-              Box(modifier = Modifier.fillMaxWidth().height(138.dp).background(Color(0x7A14263A)))
-            }
-            Column(modifier = Modifier.padding(10.dp)) {
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(18.dp))
+              .background(Color(0x32131F35))
+              .clickable {
+                vm.startFromWorld(rec, vm.quickInput.trim())
+                vm.quickInput = ""
+              }
+              .padding(14.dp),
+          ) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              Box(
+                modifier = Modifier
+                  .clip(RoundedCornerShape(999.dp))
+                  .background(Color(0x2AFFFFFF))
+                  .padding(horizontal = 10.dp, vertical = 5.dp),
+              ) {
+                Text("随机推荐故事", color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+              }
               Text(
-                text = "随机推荐：${rec.name}",
-                color = textSoft,
-                fontWeight = FontWeight.Bold,
+                text = rec.name,
+                color = Color.White,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.ExtraBold,
+              )
+              Text(
+                text = rec.intro.ifBlank { "随机展示一个已发布故事，点主视觉或下方输入区都能进入。" },
+                color = Color(0xFFE6EEF9),
                 style = MaterialTheme.typography.bodyMedium,
               )
-              Text(
-                text = rec.intro.ifBlank { "点击进入故事，或按住说话。" },
-                color = textSoft,
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(top = 4.dp),
-              )
-              Row(
-                modifier = Modifier.padding(top = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-              ) {
-                Text("章节 ${rec.chapterCount ?: 0}", color = Color(0xFFE7EDF9), style = MaterialTheme.typography.labelSmall)
-                Text("会话 ${rec.sessionCount ?: 0}", color = Color(0xFFE7EDF9), style = MaterialTheme.typography.labelSmall)
+              Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TinyPill("章节 ${rec.chapterCount ?: 0}")
+                TinyPill("会话 ${rec.sessionCount ?: 0}")
+                TinyPill("全站已发布")
               }
             }
           }
@@ -843,34 +901,85 @@ private fun HomeScene(vm: MainViewModel, autoVoice: Boolean, onToggleVoice: () -
       } else {
         Card(
           colors = CardDefaults.cardColors(containerColor = Color(0x6620344B)),
-          shape = RoundedCornerShape(12.dp),
+          shape = RoundedCornerShape(16.dp),
           modifier = Modifier.fillMaxWidth(),
         ) {
-          Column(modifier = Modifier.padding(10.dp)) {
-            Text("暂无可游玩故事", color = textSoft, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
-            Text("当前项目还没有“已发布且有章节”的故事。", color = textSoft, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+          Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("暂无可游玩故事", color = textSoft, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+            Text("当前还没有已发布且有章节的故事，可以先去故事大厅看看。", color = textSoft, style = MaterialTheme.typography.bodySmall)
           }
         }
       }
 
-      OutlinedTextField(
-        value = vm.quickInput,
-        onValueChange = { vm.quickInput = it },
+      Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xCC10233D)),
+        shape = RoundedCornerShape(18.dp),
         modifier = Modifier.fillMaxWidth(),
-        label = { Text("输入一句话开始故事") },
-        singleLine = false,
-      )
-
-      Button(
-        onClick = { vm.quickStart() },
-        enabled = rec != null,
-        modifier = Modifier.fillMaxWidth().height(46.dp),
-        shape = RoundedCornerShape(14.dp),
-        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF41516C), contentColor = Color.White),
       ) {
-        Text("按住说话")
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("输入一句话开始故事", color = Color(0xFFF4F7FD), fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.bodyLarge)
+            Text(
+              if (rec != null) "会从当前随机推荐的已发布故事开始。" else "暂无推荐故事，可先去故事大厅选择。",
+              color = Color(0xFFBFD2EF),
+              style = MaterialTheme.typography.bodySmall,
+            )
+          }
+
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.Bottom,
+          ) {
+            OutlinedTextField(
+              value = vm.quickInput,
+              onValueChange = { vm.quickInput = it },
+              modifier = Modifier.weight(1f),
+              placeholder = { Text("输入一句话，点击右侧按钮进入故事") },
+              singleLine = false,
+              shape = RoundedCornerShape(16.dp),
+              colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = Color(0x172C4468),
+                unfocusedContainerColor = Color(0x172C4468),
+                focusedBorderColor = Color(0x5E9BD1FF),
+                unfocusedBorderColor = Color(0x3B7D9FCC),
+                focusedTextColor = Color.White,
+                unfocusedTextColor = Color.White,
+                focusedPlaceholderColor = Color(0x8FD4E0F5),
+                unfocusedPlaceholderColor = Color(0x70D4E0F5),
+              ),
+              minLines = 3,
+            )
+
+            Button(
+              onClick = { vm.quickStart() },
+              enabled = rec != null,
+              modifier = Modifier.height(112.dp).width(98.dp),
+              shape = RoundedCornerShape(18.dp),
+              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFD84A), contentColor = Color(0xFF2B3240)),
+            ) {
+              Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Outlined.ArrowForward, contentDescription = null)
+                Text("进入故事", fontWeight = FontWeight.ExtraBold)
+              }
+            }
+          }
+        }
       }
     }
+  }
+}
+
+@Composable
+private fun TinyPill(text: String) {
+  Box(
+    modifier = Modifier
+      .clip(RoundedCornerShape(999.dp))
+      .background(Color(0x2A0E1B30))
+      .border(1.dp, Color(0x24E2EBF7), RoundedCornerShape(999.dp))
+      .padding(horizontal = 10.dp, vertical = 5.dp),
+  ) {
+    Text(text, color = Color(0xFFF3F7FF), style = MaterialTheme.typography.labelSmall)
   }
 }
 
@@ -921,9 +1030,8 @@ private fun HallScene(vm: MainViewModel) {
           HallStoryCard(
             world = item,
             onPlay = { vm.startFromWorld(item) },
-            onEdit = {
-              vm.openWorldForEdit(item)
-            },
+            canEdit = vm.canEditWorld(item),
+            onEdit = { vm.openWorldForEdit(item) },
           )
         }
       }
@@ -947,7 +1055,7 @@ private fun HallTag(text: String, active: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun HallStoryCard(world: WorldItem, onPlay: () -> Unit, onEdit: () -> Unit) {
+private fun HallStoryCard(world: WorldItem, canEdit: Boolean, onPlay: () -> Unit, onEdit: () -> Unit) {
   Card(
     shape = RoundedCornerShape(12.dp),
     colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -974,7 +1082,9 @@ private fun HallStoryCard(world: WorldItem, onPlay: () -> Unit, onEdit: () -> Un
       )
       Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         MiniBtn(text = "游玩", primary = true, onClick = onPlay)
-        MiniBtn(text = "编辑", onClick = onEdit)
+        if (canEdit) {
+          MiniBtn(text = "编辑", onClick = onEdit)
+        }
       }
     }
   }
@@ -993,6 +1103,7 @@ private fun CreateScene(
   onOpenNpcEditor: () -> Unit,
   onCloseNpcEditor: () -> Unit,
   onPickAvatar: () -> Unit,
+  onPickAvatarVideoGif: () -> Unit,
 ) {
   var npcName by remember { mutableStateOf("") }
   var npcDesc by remember { mutableStateOf("") }
@@ -1028,6 +1139,41 @@ private fun CreateScene(
   val mentionRoles = vm.mentionRoleNames().distinct().filter { it.isNotBlank() }.ifEmpty { listOf("用户", "旁白") }
   val resolvedOpeningRole = if (vm.chapterOpeningRole in mentionRoles) vm.chapterOpeningRole else mentionRoles.first()
   val chapterUsed = vm.chapterContent.length
+  val currentEditorChapterSort = vm.selectedChapterId?.let { selectedId ->
+    vm.chapters.firstOrNull { it.id == selectedId }?.sort
+  } ?: if (vm.chapters.isNotEmpty()) {
+    (vm.chapters.maxOfOrNull { it.sort } ?: 0) + 1
+  } else {
+    1
+  }
+  val showChapterOpeningEditor = currentEditorChapterSort <= 1
+  data class ChapterTabView(
+    val id: Long?,
+    val label: String,
+    val draft: Boolean,
+  )
+  val chapterTabs = buildList {
+    vm.chapters
+      .sortedBy { it.sort }
+      .forEach { chapter ->
+        add(
+          ChapterTabView(
+            id = chapter.id,
+            label = chapter.title.ifBlank { "第 ${chapter.sort} 章" },
+            draft = false,
+          ),
+        )
+      }
+    if (vm.selectedChapterId == null && vm.chapters.isNotEmpty()) {
+      add(
+        ChapterTabView(
+          id = null,
+          label = "${vm.chapterTitle.ifBlank { "第 $currentEditorChapterSort 章" }}（草稿）",
+          draft = true,
+        ),
+      )
+    }
+  }
   val hasUserAvatarPreview = vm.userAvatarPath.isNotBlank() || vm.userAvatarBgPath.isNotBlank()
   val hasNpcAvatarPreview = npcAvatarPath.isNotBlank() || npcAvatarBgPath.isNotBlank()
   var autoPersistReady by remember { mutableStateOf(false) }
@@ -1100,6 +1246,14 @@ private fun CreateScene(
         npcAvatarDraftKey
       }
       vm.importRoleAvatar(uri.toString(), "npc_${vm.selectedProjectId}_$roleKey") { fg, bg ->
+        npcAvatarPath = fg
+        npcAvatarBgPath = bg
+      }
+    }
+  }
+  val npcAvatarVideoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+    if (uri != null) {
+      vm.importRoleAvatarVideoGif(uri.toString()) { fg, bg ->
         npcAvatarPath = fg
         npcAvatarBgPath = bg
       }
@@ -1225,8 +1379,8 @@ private fun CreateScene(
             )
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
               Text(if (vm.storyPlayerAvatarProcessing) "头像处理中..." else "点击头像更换", color = Color(0xFF3F5476), fontWeight = FontWeight.SemiBold)
-              Text("支持 PNG / GIF，保存时会自动标准化。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
-              Text("可选：上传、AI 文生图、AI 图生图、图标查看大图。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
+              Text("支持 PNG / GIF / MP4，保存时会自动标准化。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
+              Text("可选：上传、GIF、AI 文生图、AI 图生图、图标查看大图。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
             }
           }
           Row(
@@ -1236,6 +1390,7 @@ private fun CreateScene(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
           ) {
             MiniBtn(text = "上传") { onPickAvatar() }
+            MiniBtn(text = "GIF") { onPickAvatarVideoGif() }
             MiniBtn(text = "AI 生图") { openImageGenerate("user", vm.playerDesc) }
             MiniIconBtn(icon = Icons.Outlined.Visibility, contentDescription = "查看头像大图") {
               if (hasUserAvatarPreview) {
@@ -1251,6 +1406,10 @@ private fun CreateScene(
               onUpload = {
                 showAvatarActionDialog = false
                 onPickAvatar()
+              },
+              onUploadVideoGif = {
+                showAvatarActionDialog = false
+                onPickAvatarVideoGif()
               },
               onAiGenerate = {
                 openImageGenerate("user", vm.playerDesc)
@@ -1404,8 +1563,8 @@ private fun CreateScene(
             )
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
               Text(if (vm.roleAvatarProcessing) "头像处理中..." else "点击头像更换", color = Color(0xFF3F5476), fontWeight = FontWeight.SemiBold)
-              Text("支持 PNG / GIF，保存时会自动标准化。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
-              Text("可选：上传、AI 文生图、AI 图生图、图标查看大图。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
+              Text("支持 PNG / GIF / MP4，保存时会自动标准化。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
+              Text("可选：上传、GIF、AI 文生图、AI 图生图、图标查看大图。", color = Color(0xFF7F95B5), style = MaterialTheme.typography.bodySmall)
             }
           }
           Row(
@@ -1415,6 +1574,7 @@ private fun CreateScene(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
           ) {
             MiniBtn(text = "上传") { npcAvatarPicker.launch("image/*") }
+            MiniBtn(text = "GIF") { npcAvatarVideoPicker.launch("video/mp4") }
             MiniBtn(text = "AI 生图") { openImageGenerate("npc", npcDesc) }
             MiniIconBtn(icon = Icons.Outlined.Visibility, contentDescription = "查看头像大图") {
               if (hasNpcAvatarPreview) {
@@ -1430,6 +1590,10 @@ private fun CreateScene(
               onUpload = {
                 showNpcAvatarActionDialog = false
                 npcAvatarPicker.launch("image/*")
+              },
+              onUploadVideoGif = {
+                showNpcAvatarActionDialog = false
+                npcAvatarVideoPicker.launch("video/mp4")
               },
               onAiGenerate = {
                 openImageGenerate("npc", npcDesc)
@@ -1450,7 +1614,7 @@ private fun CreateScene(
         ProtoInputCard(label = "角色名") {
           OutlinedTextField(value = npcName, onValueChange = { npcName = it }, modifier = Modifier.fillMaxWidth())
         }
-        ProtoInputCard(label = "角色设定", top = 10.dp) {
+        ProtoInputCard(label = "角色设定(性别,年龄,性格,外貌,音色特点,技能,物品,装备,等级,血量,蓝量,金钱,其他)", top = 10.dp) {
           ScrollableOutlinedTextField(
             value = npcDesc,
             onValueChange = { npcDesc = it },
@@ -1586,6 +1750,7 @@ private fun CreateScene(
               showCoverActionDialog = false
               coverPicker.launch("image/*")
             },
+            onUploadVideoGif = null,
             onAiGenerate = {
               openImageGenerate("cover", vm.worldIntro)
               showCoverActionDialog = false
@@ -1720,34 +1885,36 @@ private fun CreateScene(
       }
     }
 
-    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
-      Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("故事描述", fontWeight = FontWeight.Bold, color = Color(0xFF232F43))
-        Text("开场白", style = MaterialTheme.typography.labelSmall, color = Color(0xFF7B8EA8))
-        Box(
-          modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(Color(0xFFF8FBFF))
-            .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
-            .clickable {
-              val curr = mentionRoles.indexOf(resolvedOpeningRole).let { if (it < 0) 0 else it }
-              vm.chapterOpeningRole = mentionRoles[(curr + 1) % mentionRoles.size]
+    if (showChapterOpeningEditor) {
+      Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
+        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Text("故事描述", fontWeight = FontWeight.Bold, color = Color(0xFF232F43))
+          Text("开场白", style = MaterialTheme.typography.labelSmall, color = Color(0xFF7B8EA8))
+          Box(
+            modifier = Modifier
+              .fillMaxWidth()
+              .clip(RoundedCornerShape(10.dp))
+              .background(Color(0xFFF8FBFF))
+              .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+              .clickable {
+                val curr = mentionRoles.indexOf(resolvedOpeningRole).let { if (it < 0) 0 else it }
+                vm.chapterOpeningRole = mentionRoles[(curr + 1) % mentionRoles.size]
+              }
+              .padding(horizontal = 12.dp, vertical = 12.dp),
+          ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+              Text("选择开场白发言角色", color = Color(0xFF5E7395))
+              Text("${resolvedOpeningRole}  >", color = Color(0xFF4D6285), fontWeight = FontWeight.Bold)
             }
-            .padding(horizontal = 12.dp, vertical = 12.dp),
-        ) {
-          Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("选择开场白发言角色", color = Color(0xFF5E7395))
-            Text("${resolvedOpeningRole}  >", color = Color(0xFF4D6285), fontWeight = FontWeight.Bold)
           }
+          ScrollableOutlinedTextField(
+            value = vm.chapterOpeningLine,
+            onValueChange = { vm.chapterOpeningLine = it },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 3,
+            placeholder = { Text("作为选定角色/旁白的第一句话开启整个故事") },
+          )
         }
-        ScrollableOutlinedTextField(
-          value = vm.chapterOpeningLine,
-          onValueChange = { vm.chapterOpeningLine = it },
-          modifier = Modifier.fillMaxWidth(),
-          minLines = 3,
-          placeholder = { Text("作为选定角色/旁白的第一句话开启整个故事") },
-        )
       }
     }
 
@@ -1776,6 +1943,7 @@ private fun CreateScene(
           showChapterBgActionDialog = false
           chapterBgPicker.launch("image/*")
         },
+        onUploadVideoGif = null,
         onAiGenerate = {
           openImageGenerate("chapter", vm.chapterContent)
           showChapterBgActionDialog = false
@@ -1873,23 +2041,25 @@ private fun CreateScene(
       }
     }
 
-    if (vm.chapters.size > 1) {
+    if (chapterTabs.size > 1) {
       Row(
         modifier = Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
       ) {
-        vm.chapters.forEach { chapter ->
-          val active = chapter.id == vm.selectedChapterId
+        chapterTabs.forEach { chapter ->
+          val active = if (chapter.draft) vm.selectedChapterId == null else chapter.id == vm.selectedChapterId
           Box(
             modifier = Modifier
               .clip(RoundedCornerShape(999.dp))
               .background(if (active) Color(0xFF314F7E) else Color(0xFFF2F7FF))
               .border(1.dp, if (active) Color(0xFF2A426A) else Color(0xFFD7E2F2), RoundedCornerShape(999.dp))
-              .clickable { vm.saveCurrentChapterAndSelect(chapter.id) }
+              .clickable(enabled = chapter.id != null) {
+                vm.saveCurrentChapterAndSelect(chapter.id)
+              }
               .padding(horizontal = 10.dp, vertical = 5.dp),
           ) {
             Text(
-              chapter.title.ifBlank { "章节${chapter.sort}" },
+              chapter.label,
               color = if (active) Color.White else Color(0xFF2E466A),
               style = MaterialTheme.typography.labelSmall,
             )
@@ -2013,6 +2183,7 @@ private fun MentionRow(vm: MainViewModel, onClick: (String) -> Unit) {
 
 @Composable
 private fun HistoryScene(vm: MainViewModel) {
+  var pendingDeleteSession by remember { mutableStateOf<SessionItem?>(null) }
   Column(modifier = Modifier.fillMaxSize().background(pageGray).padding(10.dp)) {
     HeaderTitle(title = "聊过", rightText = "刷新") { vm.reloadAll() }
     if (vm.sessions.isEmpty()) {
@@ -2026,16 +2197,44 @@ private fun HistoryScene(vm: MainViewModel) {
           HistoryCard(
             item = item,
             coverPath = item.worldCoverPath.ifBlank { vm.worldCoverPath(world) }.ifBlank { null },
-            onClick = { vm.openSession(item.sessionId) },
+            onClick = { vm.continueSessionForWorld(item.worldId, item.sessionId) },
+            onWatch = { vm.continueSessionForWorld(item.worldId, item.sessionId, playback = true, playbackIndex = 0) },
+            onDelete = { pendingDeleteSession = item },
           )
         }
       }
     }
   }
+  pendingDeleteSession?.let { item ->
+    AlertDialog(
+      onDismissRequest = { pendingDeleteSession = null },
+      title = { Text("删除会话") },
+      text = { Text("确认删除会话「${item.title.ifBlank { item.worldName.ifBlank { "未命名会话" } }}」吗？删除后无法恢复。") },
+      confirmButton = {
+        TextButton(onClick = {
+          vm.deleteSession(item.sessionId)
+          pendingDeleteSession = null
+        }) {
+          Text("删除", color = Color(0xFFC43F3F))
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { pendingDeleteSession = null }) {
+          Text("取消")
+        }
+      },
+    )
+  }
 }
 
 @Composable
-private fun HistoryCard(item: SessionItem, coverPath: String?, onClick: () -> Unit) {
+private fun HistoryCard(
+  item: SessionItem,
+  coverPath: String?,
+  onClick: () -> Unit,
+  onWatch: () -> Unit,
+  onDelete: () -> Unit,
+) {
   Card(
     modifier = Modifier.fillMaxWidth().clickable { onClick() },
     shape = RoundedCornerShape(12.dp),
@@ -2086,6 +2285,24 @@ private fun HistoryCard(item: SessionItem, coverPath: String?, onClick: () -> Un
             modifier = Modifier.padding(top = 4.dp),
           )
         }
+        Row(
+          modifier = Modifier.padding(top = 8.dp),
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Button(
+            onClick = onClick,
+            modifier = Modifier.weight(1f).height(34.dp),
+            shape = RoundedCornerShape(999.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF3F7FD), contentColor = Color(0xFF2E466A)),
+            elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp),
+          ) {
+            Text("继续", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+          }
+          MiniIconBtn(icon = Icons.Outlined.Visibility, contentDescription = "观看回放", onClick = onWatch)
+          MiniIconBtn(icon = Icons.Outlined.Delete, contentDescription = "删除会话", onClick = onDelete)
+        }
       }
     }
   }
@@ -2116,7 +2333,8 @@ private fun PlayScene(
   val context = LocalContext.current
   val clipboardManager = LocalClipboardManager.current
   var selectedMessage by remember(vm.currentSessionId) { mutableStateOf<MessageItem?>(null) }
-  var inputMode by remember(vm.currentSessionId) { mutableStateOf("voice") }
+  var deletingMessage by remember(vm.currentSessionId) { mutableStateOf<MessageItem?>(null) }
+  var inputMode by remember(vm.currentSessionId) { mutableStateOf("text") }
   var voiceListening by remember(vm.currentSessionId) { mutableStateOf(false) }
   var voiceTranscribing by remember(vm.currentSessionId) { mutableStateOf(false) }
   var recorder by remember(vm.currentSessionId) { mutableStateOf<MediaRecorder?>(null) }
@@ -2132,7 +2350,12 @@ private fun PlayScene(
   var systemTts by remember { mutableStateOf<TextToSpeech?>(null) }
   var systemTtsInit by remember { mutableStateOf<CompletableDeferred<TextToSpeech>?>(null) }
   val revealedMessages = remember(vm.currentSessionId) { mutableStateListOf<MessageItem>() }
+  var playbackCursor by remember(vm.currentSessionId) { mutableIntStateOf(0) }
+  var playbackPlaying by remember(vm.currentSessionId) { mutableStateOf(false) }
+  var playbackRunId by remember(vm.currentSessionId) { mutableIntStateOf(0) }
   var debugAutoAdvancing by remember(vm.currentSessionId) { mutableStateOf(false) }
+  var debugAutoAdvanceJob by remember { mutableStateOf<Job?>(null) }
+  var dialogMenuAnchorBounds by remember(vm.currentSessionId) { mutableStateOf<Rect?>(null) }
   var runtimeVoiceMessageKey by remember(vm.currentSessionId) { mutableStateOf("") }
   var runtimeVoicePhase by remember(vm.currentSessionId) { mutableStateOf("") }
   var runtimeVoiceIndicator by remember(vm.currentSessionId) { mutableStateOf(".") }
@@ -2369,12 +2592,13 @@ private fun PlayScene(
     val deferred = CompletableDeferred<String>()
     runtimeVoiceAudioInflight[audioUrl] = deferred
     try {
+      val resolvedAudioUrl = vm.resolveMediaPath(audioUrl)
       val localPath = withTimeoutOrNull(10000L) {
         withContext(Dispatchers.IO) {
           val targetDir = File(context.cacheDir, "runtime_voice_preview").apply { mkdirs() }
-          val targetFile = File(targetDir, "${sha1(audioUrl)}.${inferRuntimeAudioExt(audioUrl)}")
+          val targetFile = File(targetDir, "${sha1(resolvedAudioUrl)}.${inferRuntimeAudioExt(resolvedAudioUrl)}")
           if (!targetFile.exists() || targetFile.length() <= 0L) {
-            URL(audioUrl).openStream().use { input ->
+            URL(resolvedAudioUrl).openStream().use { input ->
               targetFile.outputStream().use { output ->
                 input.copyTo(output)
               }
@@ -2624,7 +2848,7 @@ private fun PlayScene(
     waitForCompletion: Boolean = manual,
     overrideText: String? = null,
   ): Boolean {
-    val speakable = sanitizeSpeakableText(overrideText ?: message.content)
+    val speakable = sanitizeSpeakableText(overrideText ?: vm.displayContentForMessage(message))
     if (speakable.isBlank()) {
       if (manual) vm.notice = "这条对话没有可重听内容"
       return false
@@ -2679,6 +2903,39 @@ private fun PlayScene(
     }
   }
 
+  fun stopPlaybackSequence() {
+    playbackPlaying = false
+    playbackRunId += 1
+    stopRuntimePlayback()
+  }
+
+  fun continueFromPlayback() {
+    stopPlaybackSequence()
+    vm.sessionViewMode = "live"
+    vm.sessionPlaybackStartIndex = 0
+    onModeChange("live")
+  }
+
+  suspend fun startPlaybackSequence() {
+    val playbackSequence = vm.messages.toList().filterNot(vm::isRuntimeRetryMessage)
+    if (playbackSequence.isEmpty()) return
+    val runId = playbackRunId + 1
+    playbackRunId = runId
+    playbackPlaying = true
+    for (index in playbackCursor until playbackSequence.size) {
+      if (runId != playbackRunId) return
+      playbackCursor = index
+      vm.sessionPlaybackStartIndex = index
+      val message = playbackSequence.getOrNull(index) ?: continue
+      playMessageVoice(message, manual = false, waitForCompletion = true)
+      if (runId != playbackRunId) return
+      delay(120L)
+    }
+    if (runId == playbackRunId) {
+      playbackPlaying = false
+    }
+  }
+
   DisposableEffect(context) {
     onDispose {
       runCatching { recorder?.stop() }
@@ -2702,27 +2959,93 @@ private fun PlayScene(
   val sessionTitle = vm.playSessionTitle()
   val currentChapter = vm.playCurrentChapter()
   val allMessages = vm.messages.toList()
-  val displayMessages = if (mode == "history") allMessages else revealedMessages.takeLast(1).toList()
+  val playbackMessages = remember(allMessages) { allMessages.filterNot(vm::isRuntimeRetryMessage) }
+  val allMessageKeysFingerprint = allMessages.map { vm.messageUiKey(it) }.joinToString("|")
+  val allMessageProgressFingerprint = allMessages.joinToString("|") { message ->
+    buildString {
+      append(vm.messageUiKey(message))
+      append('_').append(message.content)
+      append('_').append(vm.isStreamingRuntimeMessage(message))
+      append('_').append(vm.streamingSentenceTexts(message).joinToString("||"))
+      append('_').append(vm.runtimeMessageStatus(message))
+      append('_').append(message.meta?.toString().orEmpty())
+    }
+  }
+  val isSessionPlaybackMode = !vm.debugMode && vm.sessionViewMode == "playback"
+  val playbackMaxIndex = maxOf(0, playbackMessages.lastIndex)
+  val playbackCurrentMessage = playbackMessages.getOrNull(playbackCursor)
+  val playbackProgressLabel = if (playbackMessages.isEmpty()) {
+    "暂无可回放台词"
+  } else {
+    "${playbackCursor + 1}/${playbackMessages.size} · ${vm.displayNameForMessage(playbackCurrentMessage ?: playbackMessages.last())}"
+  }
+  val displayMessages = when {
+    mode == "history" && isSessionPlaybackMode -> playbackMessages.take(minOf(playbackCursor + 1, playbackMessages.size))
+    mode == "history" -> allMessages
+    else -> revealedMessages.takeLast(1).toList()
+  }
   val latestRevealedMessage = revealedMessages.lastOrNull()
   val canPlayerSpeak = vm.playCanPlayerSpeak()
+  val canPlayerInput = vm.playCanPlayerInput()
   val listState = rememberLazyListState()
-  var lastAutoAdvanceMessageKey by remember(vm.currentSessionId) { mutableStateOf<String?>(null) }
+  var debugPanelOpen by remember(vm.currentSessionId) { mutableStateOf(false) }
+  fun latestMessageByKey(messageKey: String): MessageItem? {
+    return vm.messages.firstOrNull { vm.messageUiKey(it) == messageKey }
+  }
   LaunchedEffect(mode, displayMessages.size) {
     if (displayMessages.isNotEmpty()) {
       listState.scrollToItem(displayMessages.lastIndex)
     }
   }
   LaunchedEffect(vm.currentSessionId) {
+    debugAutoAdvanceJob?.cancel()
+    debugAutoAdvanceJob = null
+    onModeChange(if (vm.sessionViewMode == "playback") "history" else "live")
     revealedMessages.clear()
+    playbackCursor = vm.sessionPlaybackStartIndex.coerceAtLeast(0)
+    playbackPlaying = false
+    playbackRunId += 1
     stopRuntimePlayback()
     debugAutoAdvancing = false
-    lastAutoAdvanceMessageKey = null
+  }
+  LaunchedEffect(vm.currentSessionId, vm.sessionViewMode, playbackMessages.size) {
+    playbackCursor = vm.sessionPlaybackStartIndex.coerceIn(0, maxOf(0, playbackMessages.lastIndex))
   }
   LaunchedEffect(vm.currentSessionId, autoVoice, mode) {
     if (!autoVoice || mode == "history" || mode == "tips" || mode == "setting") return@LaunchedEffect
     vm.playNarratorVoiceBinding()?.let { warmVoiceBinding(it) }
   }
-  LaunchedEffect(vm.currentSessionId, allMessages.map { vm.messageUiKey(it) }.joinToString("|"), mode, autoVoice, vm.debugLoading) {
+  LaunchedEffect(mode, isSessionPlaybackMode, vm.currentSessionId) {
+    if (mode != "history" || !isSessionPlaybackMode) {
+      stopPlaybackSequence()
+    }
+  }
+  LaunchedEffect(vm.currentSessionId, allMessageProgressFingerprint, mode) {
+    if (mode == "history") {
+      revealedMessages.clear()
+      revealedMessages.addAll(allMessages)
+      return@LaunchedEffect
+    }
+    if (allMessages.isEmpty()) {
+      revealedMessages.clear()
+      return@LaunchedEffect
+    }
+    val currentKeys = allMessages.map { vm.messageUiKey(it) }
+    val revealedKeys = revealedMessages.map { vm.messageUiKey(it) }
+    val mismatched = currentKeys.size < revealedKeys.size || revealedKeys.indices.any { index -> currentKeys[index] != revealedKeys[index] }
+    if (mismatched) {
+      revealedMessages.clear()
+      revealedMessages.addAll(allMessages)
+      return@LaunchedEffect
+    }
+    revealedKeys.indices.forEach { index ->
+      val latest = allMessages[index]
+      if (revealedMessages[index] != latest) {
+        revealedMessages[index] = latest
+      }
+    }
+  }
+  LaunchedEffect(vm.currentSessionId, allMessageKeysFingerprint, mode, autoVoice, vm.debugLoading) {
     if (mode == "history") {
       revealedMessages.clear()
       revealedMessages.addAll(allMessages)
@@ -2743,47 +3066,76 @@ private fun PlayScene(
     }
     val newMessages = allMessages.drop(revealedKeys.size)
     for (message in newMessages) {
-      revealedMessages.add(message)
+      val messageKey = vm.messageUiKey(message)
+      revealedMessages.add(latestMessageByKey(messageKey) ?: message)
       if (revealedMessages.isNotEmpty()) {
         listState.scrollToItem(revealedMessages.lastIndex)
       }
-      if (vm.isRuntimeRetryMessage(message)) {
+      var currentMessage = latestMessageByKey(messageKey) ?: message
+      if (vm.isRuntimeRetryMessage(currentMessage)) {
         continue
       }
+      vm.setRuntimeMessageStatus(currentMessage.id, "revealing")
       var streamedSentenceCount = 0
-      var streamedVoicePlayed = false
-      if (vm.isStreamingRuntimeMessage(message)) {
-        while (vm.isStreamingRuntimeMessage(message)) {
-          val sentences = vm.streamingSentenceTexts(message)
-          while (autoVoice && streamedSentenceCount < sentences.size) {
+      val queuedVoiceSegments = mutableListOf<String>()
+      if (vm.isStreamingRuntimeMessage(currentMessage)) {
+        while (true) {
+          currentMessage = latestMessageByKey(messageKey) ?: break
+          if (!vm.isStreamingRuntimeMessage(currentMessage)) break
+          val sentences = vm.streamingSentenceTexts(currentMessage)
+          while (streamedSentenceCount < sentences.size) {
             val sentence = sentences[streamedSentenceCount]
             streamedSentenceCount += 1
             if (sentence.isBlank()) continue
-            val played = playMessageVoice(message, manual = false, waitForCompletion = false, overrideText = sentence)
-            streamedVoicePlayed = streamedVoicePlayed || played
+            if (autoVoice) {
+              queuedVoiceSegments += sentence
+            }
           }
           delay(120)
         }
-        val finalSentences = vm.streamingSentenceTexts(message)
-        while (autoVoice && streamedSentenceCount < finalSentences.size) {
+        currentMessage = latestMessageByKey(messageKey) ?: currentMessage
+        val finalSentences = vm.streamingSentenceTexts(currentMessage)
+        while (streamedSentenceCount < finalSentences.size) {
           val sentence = finalSentences[streamedSentenceCount]
           streamedSentenceCount += 1
           if (sentence.isBlank()) continue
-          val played = playMessageVoice(message, manual = false, waitForCompletion = false, overrideText = sentence)
-          streamedVoicePlayed = streamedVoicePlayed || played
+          if (autoVoice) {
+            queuedVoiceSegments += sentence
+          }
         }
       }
-      if (message.roleType == "player") {
+      currentMessage = latestMessageByKey(messageKey) ?: currentMessage
+      val displayContent = vm.displayContentForMessage(currentMessage)
+      if (currentMessage.roleType == "player") {
+        vm.setRuntimeMessageStatus(currentMessage.id, "waiting_player")
         delay(180)
         continue
       }
       if (!autoVoice) {
-        delay(estimateRevealDelayMs(message.content))
-      } else if (streamedVoicePlayed || streamedSentenceCount > 0) {
-        delay(260)
+        vm.setRuntimeMessageStatus(currentMessage.id, if (canPlayerSpeak) "waiting_player" else "waiting_next")
+        delay(estimateRevealDelayMs(displayContent))
       } else {
-        val played = playMessageVoice(message, manual = false, waitForCompletion = false)
-        delay(if (played) 260 else estimateRevealDelayMs(message.content))
+        val voiceSegments = if (queuedVoiceSegments.isNotEmpty()) {
+          queuedVoiceSegments.toList()
+        } else {
+          listOf(displayContent).filter { it.isNotBlank() }
+        }
+        if (voiceSegments.isNotEmpty()) {
+          vm.setRuntimeMessageStatus(currentMessage.id, "voicing")
+          val voiceTarget = currentMessage
+          voiceSegments.forEach { segment ->
+            val playable = sanitizeSpeakableText(segment)
+            if (playable.isBlank()) return@forEach
+            playMessageVoice(
+              voiceTarget,
+              manual = false,
+              waitForCompletion = true,
+              overrideText = playable,
+            )
+          }
+        }
+        vm.setRuntimeMessageStatus(currentMessage.id, if (canPlayerSpeak) "waiting_player" else "waiting_next")
+        delay(if (voiceSegments.isNotEmpty()) 260 else estimateRevealDelayMs(displayContent))
       }
     }
   }
@@ -2796,6 +3148,8 @@ private fun PlayScene(
     canPlayerSpeak,
     latestRevealedMessage?.let { vm.messageUiKey(it) } ?: "",
     latestRevealedMessage?.let { vm.isStreamingRuntimeMessage(it) } ?: false,
+    runtimeVoiceMessageKey,
+    runtimeVoicePhase,
   ) {
     if (!vm.debugMode || mode != "live" || vm.debugLoading || vm.debugEndDialog != null || canPlayerSpeak) {
       return@LaunchedEffect
@@ -2804,23 +3158,49 @@ private fun PlayScene(
     if (latest.roleType == "player" || vm.isRuntimeRetryMessage(latest) || vm.isStreamingRuntimeMessage(latest)) {
       return@LaunchedEffect
     }
+    val sameVoiceTarget = runtimeVoiceMessageKey == vm.messageUiKey(latest)
+    var latestStatus = vm.runtimeMessageStatus(latest)
+    if (!sameVoiceTarget && latestStatus in listOf("", "generated", "revealing", "voicing")) {
+      latestStatus = if (canPlayerSpeak) "waiting_player" else "waiting_next"
+      vm.setRuntimeMessageStatus(latest.id, latestStatus)
+    }
+    if (!debugAutoAdvancing && latestStatus == "auto_advancing") {
+      latestStatus = if (canPlayerSpeak) "waiting_player" else "waiting_next"
+      vm.setRuntimeMessageStatus(latest.id, latestStatus)
+    }
+    if (latestStatus != "waiting_next") {
+      return@LaunchedEffect
+    }
     val messageKey = vm.messageUiKey(latest)
-    if (messageKey == lastAutoAdvanceMessageKey || debugAutoAdvancing) {
+    if (messageKey.isBlank() || debugAutoAdvancing || debugAutoAdvanceJob?.isActive == true) {
       return@LaunchedEffect
     }
     debugAutoAdvancing = true
-    try {
-      val ok = vm.continueDebugNarrative()
-      if (ok) {
-        lastAutoAdvanceMessageKey = messageKey
+    val latestMessageId = latest.id
+    vm.setRuntimeMessageStatus(latestMessageId, "auto_advancing")
+    var launchedJob: Job? = null
+    launchedJob = scope.launch {
+      try {
+        val ok = vm.continueDebugNarrative()
+        if (!ok) {
+          vm.setRuntimeMessageStatus(latestMessageId, "error")
+        }
+      } finally {
+        if (debugAutoAdvanceJob === launchedJob) {
+          debugAutoAdvanceJob = null
+        }
+        debugAutoAdvancing = false
       }
-    } finally {
-      debugAutoAdvancing = false
     }
+    debugAutoAdvanceJob = launchedJob
   }
   LaunchedEffect(mode) {
     if (mode == "tips" || mode == "setting") {
+      debugAutoAdvanceJob?.cancel()
+      debugAutoAdvanceJob = null
+      debugAutoAdvancing = false
       selectedMessage = null
+      dialogMenuAnchorBounds = null
       onCloseDialogMenu()
       stopRuntimePlayback()
     }
@@ -2828,6 +3208,28 @@ private fun PlayScene(
   LaunchedEffect(autoVoice) {
     if (!autoVoice) {
       stopRuntimePlayback()
+    }
+  }
+  LaunchedEffect(
+    vm.currentSessionId,
+    mode,
+    vm.debugMode,
+    vm.debugLoading,
+    canPlayerSpeak,
+    vm.playSessionRefreshFingerprint(),
+  ) {
+    if (vm.debugMode || mode != "live" || vm.debugLoading || canPlayerSpeak || !vm.playShouldAutoRefreshWhileWaiting()) {
+      return@LaunchedEffect
+    }
+    repeat(6) {
+      delay(1800)
+      if (vm.debugMode || mode != "live" || vm.playCanPlayerSpeak() || !vm.playShouldAutoRefreshWhileWaiting()) {
+        return@LaunchedEffect
+      }
+      val changed = vm.refreshPlaySessionNow(showNoticeOnFailure = false)
+      if (changed || vm.playCanPlayerSpeak()) {
+        return@LaunchedEffect
+      }
     }
   }
 
@@ -2850,10 +3252,13 @@ private fun PlayScene(
     ?.let { vm.avatarPathForMessage(it).trim().ifBlank { null } }
   val closeDialogMenu = {
     selectedMessage = null
+    dialogMenuAnchorBounds = null
     onCloseDialogMenu()
   }
 
-  Box(modifier = Modifier.fillMaxSize().background(Color(0xFF15283F))) {
+  BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color(0xFF15283F))) {
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
     if (chapterBackgroundPath != null) {
       AsyncImage(
         model = chapterBackgroundPath,
@@ -2991,17 +3396,21 @@ private fun PlayScene(
                     modifier = Modifier.fillMaxWidth(),
                   )
                 } else {
-                  val loading = vm.isStreamingRuntimeMessage(msg) && msg.content.isBlank()
+                  val displayContent = vm.displayContentForMessage(msg)
+                  val loading = vm.isStreamingRuntimeMessage(msg) && displayContent.isBlank()
+                  val loadingText = vm.loadingHintForMessage(msg)
                   LiveStoryCard(
                     title = vm.displayNameForMessage(msg),
-                    content = msg.content.ifBlank { "（空消息）" },
+                    content = displayContent.ifBlank { "（空消息）" },
                     loading = loading,
+                    loadingText = loadingText,
                     roleType = msg.roleType,
                     reaction = vm.reactionForMessage(msg),
                     voiceTail = messageVoiceTail(msg),
                     voicePlaying = runtimeVoicePhase == "playing" && messageVoiceTail(msg).isNotBlank(),
-                    onOpenMenu = {
+                    onOpenMenu = { bounds ->
                       if (vm.isStreamingRuntimeMessage(msg)) return@LiveStoryCard
+                      dialogMenuAnchorBounds = bounds
                       selectedMessage = msg
                       onOpenDialogMenu()
                     },
@@ -3037,19 +3446,23 @@ private fun PlayScene(
                   modifier = Modifier.fillMaxWidth(),
                 )
               } else {
-                val loading = vm.isStreamingRuntimeMessage(msg) && msg.content.isBlank()
+                val displayContent = vm.displayContentForMessage(msg)
+                val loading = vm.isStreamingRuntimeMessage(msg) && displayContent.isBlank()
+                val loadingText = vm.loadingHintForMessage(msg)
                 Bubble(
                   title = vm.displayNameForMessage(msg),
-                  content = msg.content,
+                  content = displayContent,
                   loading = loading,
+                  loadingText = loadingText,
                   roleType = msg.roleType,
                   avatarPath = vm.avatarPathForMessage(msg).trim().ifBlank { if (msg.roleType == "player") playerAvatarPath else null },
                   avatarBgPath = vm.avatarBgPathForMessage(msg).trim().ifBlank { if (msg.roleType == "player") playerAvatarBgPath else null },
                   reaction = vm.reactionForMessage(msg),
                   voiceTail = messageVoiceTail(msg),
                   voicePlaying = runtimeVoicePhase == "playing" && messageVoiceTail(msg).isNotBlank(),
-                  onOpenMenu = {
+                  onOpenMenu = { bounds ->
                     if (vm.isStreamingRuntimeMessage(msg)) return@Bubble
+                    dialogMenuAnchorBounds = bounds
                     selectedMessage = msg
                     onOpenDialogMenu()
                   },
@@ -3091,41 +3504,110 @@ private fun PlayScene(
         }
 
         if (showDialogMenu && mode != "tips" && mode != "setting" && selectedMessage != null) {
-          DialogMenu(
-            message = selectedMessage!!,
-            reaction = vm.reactionForMessage(selectedMessage!!),
-            onCopy = {
-              clipboardManager.setText(AnnotatedString(selectedMessage!!.content))
-              vm.notice = "已复制对话内容"
-              closeDialogMenu()
-            },
-            onReplay = {
-              if (vm.isStreamingRuntimeMessage(selectedMessage!!)) {
-                vm.notice = "正文仍在生成中"
-                closeDialogMenu()
-                return@DialogMenu
-              }
-              val content = selectedMessage!!.content.trim()
-              if (content.isBlank()) {
-                vm.notice = "这条对话没有可重听内容"
+          val dialogMessage = selectedMessage!!
+          val anchorBounds = dialogMenuAnchorBounds
+          if (anchorBounds != null) {
+            val screenWidthPx = with(density) { configuration.screenWidthDp.dp.roundToPx() }
+            val screenHeightPx = with(density) { configuration.screenHeightDp.dp.roundToPx() }
+            val menuWidthPx = with(density) { 248.dp.roundToPx() }
+            val menuHeightPx = with(density) { 332.dp.roundToPx() }
+            val menuMarginPx = with(density) { 12.dp.roundToPx() }
+            val menuGapPx = with(density) { 12.dp.roundToPx() }
+            val menuMaxX = (screenWidthPx - menuWidthPx - menuMarginPx).coerceAtLeast(menuMarginPx)
+            val menuMaxY = (screenHeightPx - menuHeightPx - menuMarginPx).coerceAtLeast(menuMarginPx)
+            val preferredY = anchorBounds.top.toInt() - menuHeightPx - menuGapPx
+            val fallbackY = anchorBounds.bottom.toInt() + menuGapPx
+            val popupOffset = IntOffset(
+              x = anchorBounds.left.toInt().coerceIn(menuMarginPx, menuMaxX),
+              y = if (preferredY >= menuMarginPx) {
+                preferredY.coerceIn(menuMarginPx, menuMaxY)
               } else {
-                scope.launch { playMessageVoice(selectedMessage!!, manual = true) }
+                fallbackY.coerceIn(menuMarginPx, menuMaxY)
+              },
+            )
+            Popup(
+              alignment = Alignment.TopStart,
+              offset = popupOffset,
+              onDismissRequest = closeDialogMenu,
+              properties = PopupProperties(focusable = true),
+            ) {
+              DialogMenu(
+                message = dialogMessage,
+                reaction = vm.reactionForMessage(dialogMessage),
+                onCopy = {
+                  clipboardManager.setText(AnnotatedString(vm.displayContentForMessage(dialogMessage)))
+                  vm.notice = "已复制对话内容"
+                  closeDialogMenu()
+                },
+                onReplay = {
+                  if (vm.isStreamingRuntimeMessage(dialogMessage)) {
+                    vm.notice = "正文仍在生成中"
+                    closeDialogMenu()
+                    return@DialogMenu
+                  }
+                  val content = vm.displayContentForMessage(dialogMessage).trim()
+                  if (content.isBlank()) {
+                    vm.notice = "这条对话没有可重听内容"
+                  } else {
+                    scope.launch { playMessageVoice(dialogMessage, manual = true) }
+                  }
+                  closeDialogMenu()
+                },
+                onLike = {
+                  vm.setReactionForMessage(dialogMessage, "like")
+                  closeDialogMenu()
+                },
+                onDislike = {
+                  vm.setReactionForMessage(dialogMessage, "dislike")
+                  closeDialogMenu()
+                },
+                onRewrite = {
+                  vm.applyRewritePrompt(dialogMessage)
+                  if (dialogMessage.roleType == "player" && vm.canDeleteMessage(dialogMessage)) {
+                    vm.deleteMessage(dialogMessage)
+                  }
+                  closeDialogMenu()
+                },
+                onDelete = if (vm.canDeleteMessage(dialogMessage)) {
+                  {
+                    deletingMessage = dialogMessage
+                    closeDialogMenu()
+                  }
+                } else {
+                  null
+                },
+                onClose = closeDialogMenu,
+              )
+            }
+          }
+        }
+
+        deletingMessage?.let { targetMessage ->
+          AlertDialog(
+            onDismissRequest = { deletingMessage = null },
+            confirmButton = {
+              TextButton(
+                onClick = {
+                  deletingMessage = null
+                  vm.deleteMessage(targetMessage)
+                },
+              ) {
+                Text("删除", color = Color(0xFFFF8E8E), fontWeight = FontWeight.Bold)
               }
-              closeDialogMenu()
             },
-            onLike = {
-              vm.setReactionForMessage(selectedMessage!!, "like")
-              closeDialogMenu()
+            dismissButton = {
+              TextButton(onClick = { deletingMessage = null }) {
+                Text("取消", color = Color(0xFF7E8EA8))
+              }
             },
-            onDislike = {
-              vm.setReactionForMessage(selectedMessage!!, "dislike")
-              closeDialogMenu()
+            title = { Text("删除这条台词？", fontWeight = FontWeight.Bold) },
+            text = {
+              Text(
+                "当前只支持删除最后一条玩家台词。删除后会回到可重新输入的状态。",
+                color = Color(0xFF42546F),
+              )
             },
-            onRewrite = {
-              vm.applyRewritePrompt(selectedMessage!!)
-              closeDialogMenu()
-            },
-            onClose = closeDialogMenu,
+            containerColor = Color.White,
           )
         }
 
@@ -3160,10 +3642,19 @@ private fun PlayScene(
       FooterBar(
         mode = mode,
         miniGame = activeMiniGame,
+        debugMode = vm.debugMode,
+        runtimeChatDebug = vm.playLatestRuntimeChatDebug(),
+        debugPanelOpen = debugPanelOpen,
+        isSessionPlaybackMode = isSessionPlaybackMode,
+        playbackProgressLabel = playbackProgressLabel,
+        playbackCursor = playbackCursor,
+        playbackMaxIndex = playbackMaxIndex,
+        playbackPlaying = playbackPlaying,
+        playbackCanPlay = playbackMessages.isNotEmpty(),
         storyTitle = playTitle,
         storySubtitle = "@${vm.playStoryRoles().firstOrNull { it.roleType != "player" }?.name ?: "旁白"}",
         chapterObjectivePreview = chapterObjectivePreview,
-        canPlayerSpeak = vm.playCanPlayerSpeak(),
+        canPlayerInput = canPlayerInput,
         inputMode = inputMode,
         voiceListening = voiceListening,
         voiceTranscribing = voiceTranscribing,
@@ -3185,6 +3676,20 @@ private fun PlayScene(
         sendText = vm.sendText,
         onSendTextChange = { vm.sendText = it },
         onSend = { vm.sendMessage() },
+        onToggleDebugPanel = { debugPanelOpen = !debugPanelOpen },
+        onPlaybackCursorChange = { value ->
+          playbackCursor = value.coerceIn(0, playbackMaxIndex)
+          vm.sessionPlaybackStartIndex = playbackCursor
+          stopPlaybackSequence()
+        },
+        onTogglePlayback = {
+          if (playbackPlaying) {
+            stopPlaybackSequence()
+          } else {
+            scope.launch { startPlaybackSequence() }
+          }
+        },
+        onContinueFromPlayback = { continueFromPlayback() },
         onToggleInputMode = {
           inputMode = if (inputMode == "text") "voice" else "text"
           if (inputMode == "text") {
@@ -3197,7 +3702,7 @@ private fun PlayScene(
           }
         },
         onVoicePrimary = {
-          if (!vm.playCanPlayerSpeak()) {
+          if (!vm.playCanPlayerInput()) {
             vm.notice = vm.playTurnHint().ifBlank { "当前还没轮到用户发言" }
           } else if (voiceTranscribing) {
             Unit
@@ -3245,8 +3750,7 @@ private fun PlayScene(
           }
         },
         onMiniGameAction = {
-          vm.sendText = it
-          vm.sendMessage()
+          vm.sendMiniGameAction(it)
         },
       )
     }
@@ -3310,11 +3814,12 @@ private fun LiveStoryCard(
   title: String,
   content: String,
   loading: Boolean = false,
+  loadingText: String = "",
   roleType: String = "npc",
   reaction: String = "",
   voiceTail: String = "",
   voicePlaying: Boolean = false,
-  onOpenMenu: (() -> Unit)? = null,
+  onOpenMenu: ((Rect) -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
   val isPlayer = roleType == "player"
@@ -3323,15 +3828,10 @@ private fun LiveStoryCard(
     "dislike" -> "已点踩"
     else -> ""
   }
+  var bubbleBounds by remember { mutableStateOf<Rect?>(null) }
   Box(
     modifier = modifier
       .fillMaxWidth()
-      .pointerInput(onOpenMenu) {
-        detectTapGestures(
-          onDoubleTap = { onOpenMenu?.invoke() },
-          onLongPress = { onOpenMenu?.invoke() },
-        )
-      },
   ) {
     Card(
       modifier = Modifier
@@ -3343,11 +3843,25 @@ private fun LiveStoryCard(
       shape = RoundedCornerShape(22.dp),
     ) {
       Column(
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+        modifier = Modifier
+          .onGloballyPositioned { coordinates ->
+            bubbleBounds = coordinates.boundsInWindow()
+          }
+          .pointerInput(onOpenMenu) {
+            detectTapGestures(
+              onDoubleTap = { bubbleBounds?.let { bounds -> onOpenMenu?.invoke(bounds) } },
+              onLongPress = { bubbleBounds?.let { bounds -> onOpenMenu?.invoke(bounds) } },
+            )
+          }
+          .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
       ) {
         if (loading) {
-          MessageLoadingDots()
+          MessageLoadingDots(
+            text = loadingText,
+            textColor = if (isPlayer) Color(0xFFE2EEFF) else Color(0xFF4F6486),
+            dotColor = if (isPlayer) Color(0x99E2EEFF) else Color(0x8A57709C),
+          )
         } else {
           Text(
             text = buildAnnotatedString {
@@ -3466,13 +3980,14 @@ private fun Bubble(
   title: String,
   content: String,
   loading: Boolean = false,
+  loadingText: String = "",
   roleType: String = "npc",
   avatarPath: String? = null,
   avatarBgPath: String? = null,
   reaction: String = "",
   voiceTail: String = "",
   voicePlaying: Boolean = false,
-  onOpenMenu: (() -> Unit)? = null,
+  onOpenMenu: ((Rect) -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
   val isPlayer = roleType == "player"
@@ -3482,8 +3997,10 @@ private fun Bubble(
     else -> ""
   }
   val reactionIcon = if (reaction == "dislike") Icons.Outlined.ThumbDown else Icons.Outlined.ThumbUp
+  var bubbleBounds by remember { mutableStateOf<Rect?>(null) }
   Column(
-    modifier = modifier.fillMaxWidth(),
+    modifier = modifier
+      .fillMaxWidth(),
     horizontalAlignment = if (isPlayer) Alignment.End else Alignment.Start,
   ) {
     Text(
@@ -3510,10 +4027,13 @@ private fun Bubble(
       Card(
         modifier = Modifier
           .fillMaxWidth(0.84f)
+          .onGloballyPositioned { coordinates ->
+            bubbleBounds = coordinates.boundsInWindow()
+          }
           .pointerInput(onOpenMenu) {
             detectTapGestures(
-              onDoubleTap = { onOpenMenu?.invoke() },
-              onLongPress = { onOpenMenu?.invoke() },
+              onDoubleTap = { bubbleBounds?.let { bounds -> onOpenMenu?.invoke(bounds) } },
+              onLongPress = { bubbleBounds?.let { bounds -> onOpenMenu?.invoke(bounds) } },
             )
           },
         colors = CardDefaults.cardColors(containerColor = if (isPlayer) Color(0xB3274568) else Color(0xE6FFFFFF)),
@@ -3521,7 +4041,11 @@ private fun Bubble(
       ) {
         Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
           if (loading) {
-            MessageLoadingDots()
+            MessageLoadingDots(
+              text = loadingText,
+              textColor = if (isPlayer) Color(0xFFDCEBFF) else Color(0xFF4F6486),
+              dotColor = if (isPlayer) Color(0x99DCEBFF) else Color(0x8A57709C),
+            )
           } else {
             Text(
               buildAnnotatedString {
@@ -3580,7 +4104,11 @@ private fun Bubble(
 }
 
 @Composable
-private fun MessageLoadingDots() {
+private fun MessageLoadingDots(
+  text: String = "",
+  textColor: Color = Color(0xFF4F6486),
+  dotColor: Color = Color(0x8A57709C),
+) {
   val pulse = rememberInfiniteTransition(label = "message-loading")
   val scales = List(3) { index ->
     pulse.animateFloat(
@@ -3596,8 +4124,16 @@ private fun MessageLoadingDots() {
   Row(
     horizontalArrangement = Arrangement.spacedBy(8.dp),
     verticalAlignment = Alignment.CenterVertically,
-    modifier = Modifier.height(24.dp),
+    modifier = Modifier.defaultMinSize(minHeight = 24.dp),
   ) {
+    if (text.isNotBlank()) {
+      Text(
+        text = text,
+        color = textColor,
+        style = MaterialTheme.typography.bodySmall,
+        fontWeight = FontWeight.Medium,
+      )
+    }
     scales.forEach { scale ->
       Box(
         modifier = Modifier
@@ -3608,7 +4144,7 @@ private fun MessageLoadingDots() {
             alpha = 0.45f + ((scale.value - 0.72f) / 0.28f) * 0.55f
           }
           .clip(CircleShape)
-          .background(Color(0x8A57709C)),
+          .background(dotColor),
       )
     }
   }
@@ -3708,13 +4244,12 @@ private fun DialogMenu(
   onLike: () -> Unit,
   onDislike: () -> Unit,
   onRewrite: () -> Unit,
+  onDelete: (() -> Unit)?,
   onClose: () -> Unit,
+  modifier: Modifier = Modifier,
 ) {
   Card(
-    modifier = Modifier
-      .fillMaxWidth()
-      .padding(horizontal = 48.dp)
-      .offset(y = (-160).dp),
+    modifier = modifier.widthIn(min = 196.dp, max = 248.dp),
     colors = CardDefaults.cardColors(containerColor = Color(0xFF2D3748)),
     shape = RoundedCornerShape(12.dp),
   ) {
@@ -3745,6 +4280,9 @@ private fun DialogMenu(
         text = if (reaction == "dislike") "取消点踩" else "点踩",
         onClick = onDislike,
       )
+      if (onDelete != null) {
+        DialogMenuAction(icon = Icons.Outlined.Delete, text = "删除", onClick = onDelete, tint = Color(0xFFFFA0A0))
+      }
       DialogMenuAction(icon = Icons.Outlined.Edit, text = "改写", onClick = onRewrite)
       DialogMenuAction(icon = Icons.Outlined.Close, text = "关闭", onClick = onClose)
     }
@@ -3757,7 +4295,7 @@ private fun AiTipPanel(options: List<String>, onPick: (String) -> Unit, onBack: 
     modifier = Modifier
       .fillMaxWidth()
       .padding(horizontal = 10.dp)
-      .offset(y = (-80).dp),
+      .offset(y = (-18).dp),
     colors = CardDefaults.cardColors(containerColor = Color(0xFFF7FBFF)),
     shape = RoundedCornerShape(12.dp),
   ) {
@@ -3779,7 +4317,7 @@ private fun AiTipPanel(options: List<String>, onPick: (String) -> Unit, onBack: 
 }
 
 @Composable
-private fun DialogMenuAction(icon: ImageVector, text: String, onClick: () -> Unit) {
+private fun DialogMenuAction(icon: ImageVector, text: String, onClick: () -> Unit, tint: Color = Color.White) {
   Row(
     modifier = Modifier
       .fillMaxWidth()
@@ -3789,8 +4327,8 @@ private fun DialogMenuAction(icon: ImageVector, text: String, onClick: () -> Uni
     horizontalArrangement = Arrangement.spacedBy(8.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
-    Icon(imageVector = icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-    Text(text = text, color = Color.White, style = MaterialTheme.typography.bodySmall)
+    Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(16.dp))
+    Text(text = text, color = tint, style = MaterialTheme.typography.bodySmall)
   }
 }
 
@@ -3887,7 +4425,9 @@ private fun StorySettingPanel(
               Text("台词示例：${selectedRole.sample}", color = Color(0xFFD5EBFF), style = MaterialTheme.typography.bodySmall)
             }
             selectedRole.parameterCardJson?.let { card ->
-              Text("参数卡：${card}", color = Color(0xFFAFC6E9), style = MaterialTheme.typography.bodySmall, maxLines = 6, overflow = TextOverflow.Ellipsis)
+              Divider(color = Color(0x22FFFFFF))
+              Text("参数卡", color = Color.White, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+              ParameterCardDetail(card)
             }
           }
         }
@@ -3957,14 +4497,61 @@ private fun StorySettingPanel(
   }
 }
 
+private fun parameterCardTextValue(value: String): String = value.ifBlank { "未设定" }
+
+private fun parameterCardListValue(values: List<String>): String = if (values.isNotEmpty()) values.joinToString("、") else "未设定"
+
+private fun parameterCardOtherJson(values: List<String>): String = runCatching {
+  JSONArray(values).toString()
+}.getOrElse { "[]" }
+
+@Composable
+private fun ParameterCardField(label: String, value: String) {
+  Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    Text(label, color = Color(0xFF93A8C3), style = MaterialTheme.typography.labelSmall)
+    Text(value, color = Color(0xFFAFC6E9), style = MaterialTheme.typography.bodySmall)
+  }
+}
+
+@Composable
+private fun ParameterCardDetail(card: com.toonflow.game.data.RoleParameterCard) {
+  Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    ParameterCardField("角色名", parameterCardTextValue(card.name))
+    ParameterCardField("原始角色设定", parameterCardTextValue(card.rawSetting))
+    ParameterCardField("性别", parameterCardTextValue(card.gender))
+    ParameterCardField("年龄", card.age?.toString() ?: "未设定")
+    ParameterCardField("等级", card.level.toString())
+    ParameterCardField("等级称号", parameterCardTextValue(card.levelDesc))
+    ParameterCardField("性格", parameterCardTextValue(card.personality))
+    ParameterCardField("外貌", parameterCardTextValue(card.appearance))
+    ParameterCardField("音色特点", parameterCardTextValue(card.voice))
+    ParameterCardField("技能", parameterCardListValue(card.skills))
+    ParameterCardField("物品", parameterCardListValue(card.items))
+    ParameterCardField("装备", parameterCardListValue(card.equipment))
+    ParameterCardField("血量", card.hp.toString())
+    ParameterCardField("蓝量", card.mp.toString())
+    ParameterCardField("金钱", card.money.toString())
+    ParameterCardField("其他", parameterCardOtherJson(card.other))
+  }
+}
+
 @Composable
 private fun FooterBar(
   mode: String,
   miniGame: MainViewModel.RuntimeMiniGameView?,
+  debugMode: Boolean,
+  runtimeChatDebug: MainViewModel.RuntimeChatDebugItem?,
+  debugPanelOpen: Boolean,
+  isSessionPlaybackMode: Boolean,
+  playbackProgressLabel: String,
+  playbackCursor: Int,
+  playbackMaxIndex: Int,
+  playbackPlaying: Boolean,
+  playbackCanPlay: Boolean,
   storyTitle: String,
   storySubtitle: String,
   chapterObjectivePreview: String,
-  canPlayerSpeak: Boolean,
+  canPlayerInput: Boolean,
   inputMode: String,
   voiceListening: Boolean,
   voiceTranscribing: Boolean,
@@ -3978,13 +4565,21 @@ private fun FooterBar(
   sendText: String,
   onSendTextChange: (String) -> Unit,
   onSend: () -> Unit,
+  onToggleDebugPanel: () -> Unit,
+  onPlaybackCursorChange: (Int) -> Unit,
+  onTogglePlayback: () -> Unit,
+  onContinueFromPlayback: () -> Unit,
   onToggleInputMode: () -> Unit,
   onVoicePrimary: () -> Unit,
   onMiniGameAction: (String) -> Unit,
 ) {
+  val miniGameActive = miniGame != null && mode != "tips" && mode != "setting"
+  val playbackModeActive = mode == "history" && isSessionPlaybackMode
   Column(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    if (miniGame != null && mode != "tips" && mode != "setting") {
-      MiniGamePanel(miniGame = miniGame, onAction = onMiniGameAction)
+    if (miniGameActive) {
+      miniGame?.let { active ->
+        MiniGamePanel(miniGame = active, onAction = onMiniGameAction)
+      }
     }
     if (chapterObjectivePreview.isNotBlank() && mode != "history" && mode != "tips" && mode != "setting") {
       ObjectiveChip(
@@ -4024,6 +4619,23 @@ private fun FooterBar(
           color = Color(0xFFD7E7FF),
           style = MaterialTheme.typography.labelSmall,
         )
+        if (runtimeChatDebug != null) {
+          Spacer(modifier = Modifier.width(6.dp))
+          Box(
+            modifier = Modifier
+              .size(18.dp)
+              .border(BorderStroke(1.dp, Color(0x47D8E8FF)), CircleShape)
+              .clickable { onToggleDebugPanel() },
+            contentAlignment = Alignment.Center,
+          ) {
+            Icon(
+              imageVector = Icons.Outlined.Info,
+              contentDescription = if (debugPanelOpen) "隐藏调试状态" else "显示调试状态",
+              tint = Color(0xFFDCE9FF),
+              modifier = Modifier.size(11.dp),
+            )
+          }
+        }
       }
       Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Bottom) {
         StoryFooterAction(icon = Icons.Outlined.FavoriteBorder, label = "0", onClick = { })
@@ -4031,28 +4643,159 @@ private fun FooterBar(
         StoryFooterAction(icon = Icons.Outlined.ChatBubbleOutline, label = "评论", onClick = onComment)
         StoryFooterAction(
           icon = if (mode == "history") Icons.Outlined.ArrowBack else Icons.Outlined.History,
-          label = if (mode == "history") "返回" else "历史",
+          label = if (mode == "history") {
+            if (isSessionPlaybackMode) "继续聊" else "返回"
+          } else {
+            "历史"
+          },
           onClick = { onModeChange(if (mode == "history") "live" else "history") },
         )
+      }
+    }
+    if (runtimeChatDebug != null && debugPanelOpen) {
+      Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0x70122740)),
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, Color(0x33D8E8FF)),
+      ) {
+        Column(
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+          verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+          Text(
+            text = "会话 ${runtimeChatDebug.conversationId.take(10)}…  消息 ${runtimeChatDebug.messageId}  序号 ${runtimeChatDebug.lineIndex}",
+            color = Color(0xFFFFE2A0),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+          )
+          Text(
+            text = "${runtimeChatDebug.currentRole.ifBlank { "未知角色" }} · ${runtimeStatusLabel(runtimeChatDebug.currentStatus)} · 下一位 ${runtimeChatDebug.nextRole.ifBlank { "待定" }}",
+            color = Color(0xFFEAF3FF),
+            style = MaterialTheme.typography.labelSmall,
+          )
+        }
       }
     }
     if (turnHint.isNotBlank()) {
       Text(turnHint, color = Color(0xFFD7E7FF), style = MaterialTheme.typography.bodySmall)
     }
-    if (inputMode == "text") {
+    if (playbackModeActive) {
+      Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xCC132844)),
+        shape = RoundedCornerShape(14.dp),
+      ) {
+        Column(
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+          verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Text(
+              "剧情回放",
+              color = Color.White,
+              fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+              playbackProgressLabel,
+              color = Color(0xFFD7E7FF),
+              style = MaterialTheme.typography.labelSmall,
+            )
+          }
+          Slider(
+            value = playbackCursor.toFloat(),
+            onValueChange = { onPlaybackCursorChange(it.roundToInt()) },
+            valueRange = 0f..playbackMaxIndex.toFloat(),
+            enabled = playbackCanPlay && playbackMaxIndex > 0,
+          )
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+              onClick = onTogglePlayback,
+              enabled = playbackCanPlay,
+              shape = RoundedCornerShape(12.dp),
+              colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0x221C7DFF),
+                contentColor = Color.White,
+                disabledContainerColor = Color(0x33221E32),
+                disabledContentColor = Color(0x99D7E7FF),
+              ),
+            ) {
+              Icon(
+                imageVector = if (playbackPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+              )
+              Spacer(modifier = Modifier.width(6.dp))
+              Text(if (playbackPlaying) "暂停" else "播放")
+            }
+            Button(
+              onClick = onContinueFromPlayback,
+              enabled = playbackCanPlay,
+              shape = RoundedCornerShape(12.dp),
+              colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFFF7FBFF),
+                contentColor = Color(0xFF20304A),
+                disabledContainerColor = Color(0x66F7FBFF),
+                disabledContentColor = Color(0xFFE3EEFF),
+              ),
+            ) {
+              Text("继续聊")
+            }
+          }
+        }
+      }
+      Text(
+        "当前为剧情回放模式，拖动进度条或点击播放继续观看。",
+        color = Color(0xFFD7E7FF),
+        style = MaterialTheme.typography.bodySmall,
+      )
+    } else if (miniGameActive && miniGame?.acceptsTextInput != true) {
+      Text(
+        "小游戏进行中，请使用上方面板操作。",
+        color = Color(0xFFD7E7FF),
+        style = MaterialTheme.typography.bodySmall,
+      )
+    } else if (inputMode == "text") {
       Row(verticalAlignment = Alignment.CenterVertically) {
         OutlinedTextField(
           value = sendText,
           onValueChange = onSendTextChange,
           modifier = Modifier.weight(1f),
-          enabled = canPlayerSpeak,
+          enabled = canPlayerInput,
           placeholder = { Text(inputPlaceholder) },
           maxLines = 2,
+          colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = Color(0xFFBED6FF),
+            unfocusedBorderColor = Color(0x88BED6FF),
+            disabledBorderColor = Color(0x66BED6FF),
+            focusedTextColor = Color.White,
+            unfocusedTextColor = Color.White,
+            disabledTextColor = Color(0xFFD9E7FB),
+            focusedPlaceholderColor = Color(0xFFD9E7FB),
+            unfocusedPlaceholderColor = Color(0xBFD9E7FB),
+            disabledPlaceholderColor = Color(0xBFD9E7FB),
+            focusedContainerColor = Color(0x22111E32),
+            unfocusedContainerColor = Color(0x22111E32),
+            disabledContainerColor = Color(0x33111E32),
+            cursorColor = Color(0xFFFFD36A),
+          ),
         )
         Spacer(modifier = Modifier.width(8.dp))
         MiniBtn(text = "声", onClick = onToggleInputMode)
         Spacer(modifier = Modifier.width(8.dp))
-        Button(onClick = onSend, enabled = canPlayerSpeak, shape = RoundedCornerShape(12.dp)) {
+        Button(
+          onClick = onSend,
+          enabled = canPlayerInput,
+          shape = RoundedCornerShape(12.dp),
+          colors = ButtonDefaults.buttonColors(
+            containerColor = Color(0xFFF7FBFF),
+            contentColor = Color(0xFF20304A),
+            disabledContainerColor = Color(0x66F7FBFF),
+            disabledContentColor = Color(0xFFE3EEFF),
+          ),
+        ) {
           Text("发送")
         }
       }
@@ -4060,9 +4803,15 @@ private fun FooterBar(
       Row(verticalAlignment = Alignment.CenterVertically) {
         Button(
           onClick = onVoicePrimary,
-          enabled = canPlayerSpeak && !voiceTranscribing,
+          enabled = canPlayerInput && !voiceTranscribing,
           modifier = Modifier.weight(1f),
           shape = RoundedCornerShape(12.dp),
+          colors = ButtonDefaults.buttonColors(
+            containerColor = Color(0xFFF7FBFF),
+            contentColor = Color(0xFF20304A),
+            disabledContainerColor = Color(0x66F7FBFF),
+            disabledContentColor = Color(0xFFE3EEFF),
+          ),
         ) {
           Text(
             when {
@@ -4076,6 +4825,20 @@ private fun FooterBar(
         MiniBtn(text = "键", onClick = onToggleInputMode)
       }
     }
+  }
+}
+
+private fun runtimeStatusLabel(status: String): String {
+  return when (status.trim()) {
+    "waiting_next" -> "等待下一位"
+    "waiting_player" -> "等待玩家"
+    "auto_advancing" -> "自动推进中"
+    "revealing" -> "展示中"
+    "streaming" -> "流式生成中"
+    "generated" -> "已生成"
+    "voicing" -> "语音中"
+    "error" -> "异常"
+    else -> if (status.isBlank()) "未知" else status
   }
 }
 
@@ -4203,7 +4966,7 @@ private fun MiniGamePanel(
           style = MaterialTheme.typography.bodySmall,
         )
       }
-      if (miniGame.playerOptions.isNotEmpty()) {
+      if (!miniGame.pendingExit && miniGame.playerOptions.isNotEmpty()) {
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
           miniGame.playerOptions.forEach { option ->
             MiniBtn(
@@ -4244,7 +5007,11 @@ private fun StoryFooterAction(icon: ImageVector, label: String, onClick: () -> U
 }
 
 @Composable
-private fun ProfileScene(vm: MainViewModel, onPickAvatar: () -> Unit) {
+private fun ProfileScene(
+  vm: MainViewModel,
+  onPickAvatar: () -> Unit,
+  onPickAvatarVideoGif: () -> Unit,
+) {
   var showAvatarActionDialog by remember { mutableStateOf(false) }
   var showImageGenerateDialog by remember { mutableStateOf(false) }
   var showDraftListPage by remember { mutableStateOf(false) }
@@ -4439,6 +5206,7 @@ private fun ProfileScene(vm: MainViewModel, onPickAvatar: () -> Unit) {
             } else {
               "保存草稿后会显示在这里"
             },
+            metaLines = 2,
             onClick = { showDraftListPage = true },
           )
         }
@@ -4467,9 +5235,9 @@ private fun ProfileScene(vm: MainViewModel, onPickAvatar: () -> Unit) {
               }
             },
             meta = if (firstPublished != null) {
-              "${firstPublished.name.ifBlank { "未命名故事" }} · 浏览 ${firstPublished.sessionCount ?: 0}"
+              firstPublished.name.ifBlank { "未命名故事" }
             } else {
-              "发布后会在这里展示"
+              "暂无已发布故事"
             },
             onClick = null,
             actions = if (firstPublished != null) {
@@ -4498,7 +5266,7 @@ private fun ProfileScene(vm: MainViewModel, onPickAvatar: () -> Unit) {
                       .clickable { vm.startFromWorld(world) },
                   )
                 },
-                meta = "${world.name.ifBlank { "未命名故事" }} · 浏览 ${world.sessionCount ?: 0}",
+                meta = world.name.ifBlank { "未命名故事" },
                 onClick = null,
                 actions = {
                   ProfileActionBtn(text = "编辑", modifier = Modifier.fillMaxWidth()) { vm.reopenPublishedWorldAsDraft(world) }
@@ -4520,6 +5288,10 @@ private fun ProfileScene(vm: MainViewModel, onPickAvatar: () -> Unit) {
       onUpload = {
         showAvatarActionDialog = false
         onPickAvatar()
+      },
+      onUploadVideoGif = {
+        showAvatarActionDialog = false
+        onPickAvatarVideoGif()
       },
       onAiGenerate = {
         imageGeneratePrompt = vm.userName
@@ -4801,6 +5573,7 @@ private fun formatDraftDate(timestamp: Long): String {
 private fun ProfileWorkCard(
   cover: @Composable () -> Unit,
   meta: String,
+  metaLines: Int = 1,
   onClick: (() -> Unit)?,
   actions: (@Composable () -> Unit)? = null,
 ) {
@@ -4827,7 +5600,7 @@ private fun ProfileWorkCard(
           text = meta,
           color = Color(0xFF556B8A),
           style = MaterialTheme.typography.bodySmall,
-          maxLines = 2,
+          maxLines = metaLines,
           overflow = TextOverflow.Ellipsis,
         )
         if (actions != null) {
@@ -4844,6 +5617,7 @@ private fun ProfileWorkCard(
 private fun AvatarActionDialog(
   onDismiss: () -> Unit,
   onUpload: () -> Unit,
+  onUploadVideoGif: (() -> Unit)?,
   onAiGenerate: () -> Unit,
 ) {
   AlertDialog(
@@ -4856,6 +5630,14 @@ private fun AvatarActionDialog(
           text = "上传图片（支持 PNG / GIF）",
           onClick = onUpload,
         )
+        if (onUploadVideoGif != null) {
+          ProfileActionDialogRow(
+            icon = Icons.Outlined.PlayArrow,
+            text = "GIF 上传 MP4",
+            onClick = onUploadVideoGif,
+            glyph = "GIF",
+          )
+        }
         ProfileActionDialogRow(
           icon = Icons.Outlined.AutoAwesome,
           text = "AI 生成图片",
@@ -5836,7 +6618,7 @@ private fun ImageGenerateDialog(
                 enabled = !loading,
               )
               Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("还可输入 460 字", color = Color(0xFF9AA8BC), style = MaterialTheme.typography.bodySmall)
+                Text("还可输入 ${maxOf(0, 500 - prompt.length)} 字", color = Color(0xFF9AA8BC), style = MaterialTheme.typography.bodySmall)
                 Text("${prompt.length}/500", color = Color(0xFF9AA8BC), style = MaterialTheme.typography.bodySmall)
               }
             }
@@ -5966,7 +6748,7 @@ private fun ImageStyleCard(
 }
 
 @Composable
-private fun ProfileActionDialogRow(icon: ImageVector, text: String, onClick: () -> Unit) {
+private fun ProfileActionDialogRow(icon: ImageVector, text: String, onClick: () -> Unit, glyph: String? = null) {
   Button(
     onClick = onClick,
     modifier = Modifier.fillMaxWidth().height(38.dp),
@@ -5974,7 +6756,22 @@ private fun ProfileActionDialogRow(icon: ImageVector, text: String, onClick: () 
     shape = RoundedCornerShape(10.dp),
   ) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-      Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+      if (!glyph.isNullOrBlank()) {
+        Box(
+          modifier = Modifier
+            .defaultMinSize(minWidth = 30.dp)
+            .height(20.dp)
+            .clip(RoundedCornerShape(999.dp))
+            .background(Color(0xFFE8F0FF))
+            .border(1.dp, Color(0xFFD5E1F6), RoundedCornerShape(999.dp))
+            .padding(horizontal = 6.dp),
+          contentAlignment = Alignment.Center,
+        ) {
+          Text(glyph, style = MaterialTheme.typography.labelSmall, color = Color(0xFF3553A6), fontWeight = FontWeight.ExtraBold)
+        }
+      } else {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+      }
       Text(text, style = MaterialTheme.typography.bodySmall)
     }
   }

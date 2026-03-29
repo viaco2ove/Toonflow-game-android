@@ -17,6 +17,12 @@ class SettingsStore(context: Context) {
       prefs.edit().putString("token", value.trim()).apply()
     }
 
+  var autoVoiceEnabled: Boolean
+    get() = prefs.getBoolean("auto_voice_enabled", true)
+    set(value) {
+      prefs.edit().putBoolean("auto_voice_enabled", value).apply()
+    }
+
   fun getAvatarPath(userId: Long): String {
     if (userId <= 0) return ""
     return prefs.getString("avatar_path_user_$userId", "") ?: ""

@@ -54,3 +54,6 @@
 [system.yml](system/system.yml)
 
 # web端和安卓端同步修改
+
+# 设计要点
+按钮多用奥森字体图标而不是文字

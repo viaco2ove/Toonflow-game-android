@@ -20,6 +20,8 @@ data class RoleParameterCard(
   @SerializedName("raw_setting") val rawSetting: String = "",
   @SerializedName("gender") val gender: String = "",
   @SerializedName("age") val age: Int? = null,
+  @SerializedName("level") val level: Int = 1,
+  @SerializedName("level_desc") val levelDesc: String = "初入此界",
   @SerializedName("personality") val personality: String = "",
   @SerializedName("appearance") val appearance: String = "",
   @SerializedName("voice") val voice: String = "",
@@ -186,6 +188,7 @@ data class DebugNarrativePlan(
   @SerializedName("chapterOutcome") val chapterOutcome: String = "continue",
   @SerializedName("nextChapterId") val nextChapterId: Long? = null,
   @SerializedName("source") val source: String = "ai",
+  @SerializedName("triggerMemoryAgent") val triggerMemoryAgent: Boolean = false,
   @SerializedName("eventType") val eventType: String = "",
   @SerializedName("presetContent") val presetContent: String? = null,
 )

@@ -9,6 +9,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -35,11 +36,13 @@ import com.toonflow.game.data.StoryRole
 import com.toonflow.game.data.UploadedVoiceAudioResult
 import com.toonflow.game.data.AiModelMapItem
 import com.toonflow.game.data.DebugNarrativePlan
+import com.toonflow.game.data.DebugStepResult
 import com.toonflow.game.data.VoiceBindingDraft
 import com.toonflow.game.data.VoiceModelConfig
 import com.toonflow.game.data.VoiceMixItem
 import com.toonflow.game.data.VoicePresetItem
 import com.toonflow.game.data.WorldItem
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -89,9 +92,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val ruleSummary: String,
     val narration: String,
     val pendingExit: Boolean,
+    val acceptsTextInput: Boolean,
+    val inputHint: String,
     val stateItems: List<RuntimeMiniGameStateItem>,
     val playerOptions: List<RuntimeMiniGameAction>,
     val controlOptions: List<String>,
+  )
+
+  data class RuntimeChatDebugItem(
+    val conversationId: String,
+    val messageId: Long,
+    val lineIndex: Int,
+    val currentRole: String,
+    val currentRoleType: String,
+    val currentStatus: String,
+    val nextRole: String,
+    val nextRoleType: String,
+  )
+
+  private data class ParsedPlayerProfile(
+    val name: String = "",
+    val gender: String = "",
+    val age: Int? = null,
   )
 
   val baseTabs = listOf("主页", "创建", "聊过", "我的")
@@ -201,7 +223,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var quickInput by mutableStateOf("")
   var currentSessionId by mutableStateOf("")
   var sessionDetail by mutableStateOf<SessionDetail?>(null)
+  private val playChapters = mutableStateListOf<ChapterItem>()
+  private var playChapterWorldId by mutableStateOf(0L)
   val messages = mutableStateListOf<MessageItem>()
+  var sessionViewMode by mutableStateOf("live")
+  var sessionPlaybackStartIndex by mutableIntStateOf(0)
   private val messageReactions = mutableStateMapOf<String, String>()
   var sendText by mutableStateOf("")
 
@@ -286,8 +312,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  fun autoVoiceEnabled(): Boolean = settingsStore.autoVoiceEnabled
+
+  fun setAutoVoiceEnabled(enabled: Boolean) {
+    settingsStore.autoVoiceEnabled = enabled
+  }
+
   fun setTab(tab: String) {
     activeTab = tab
+    if (tab == "主页") {
+      refreshRecommendation()
+    }
     if (tab == "设置" && token.isNotBlank()) {
       ensureSettingsPanelData()
     }
@@ -1070,7 +1105,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       val chapterId = debugChapterId ?: return null
       return debugChapterSequence.firstOrNull { it.id == chapterId }
     }
-    return sessionDetail?.chapter
+    val activeChapterId = playRuntimeChapterId()
+    val sessionChapter = sessionDetail?.chapter
+    if (activeChapterId == null) return sessionChapter
+    if (sessionChapter?.id == activeChapterId) return sessionChapter
+    return playChapters.firstOrNull { it.id == activeChapterId }
+      ?: chapters.firstOrNull { it.id == activeChapterId }
+      ?: sessionChapter
   }
 
   fun playChapterTitle(): String {
@@ -1078,7 +1119,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       val chapter = playCurrentChapter()
       return normalizeChapterTitleLabel(debugChapterTitle.ifBlank { chapter?.title.orEmpty() }, chapter?.sort ?: 0).ifBlank { "未进入章节" }
     }
-    val chapter = sessionDetail?.chapter
+    val chapter = playCurrentChapter()
     return normalizeChapterTitleLabel(chapter?.title.orEmpty(), chapter?.sort ?: 0).ifBlank { "未进入章节" }
   }
 
@@ -1095,6 +1136,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private fun runtimeTurnStateRoot(): JsonObject? {
     return runtimeStateRoot()?.getAsJsonObject("turnState")
+  }
+
+  private fun playRuntimeChapterId(): Long? {
+    if (debugMode) return debugChapterId
+    val fromState = scalarRuntimeText(runtimeStateRoot()?.get("chapterId")).toLongOrNull()
+    if (fromState != null && fromState > 0L) return fromState
+    return sessionDetail?.chapterId?.takeIf { it > 0L }
   }
 
   private fun scalarRuntimeText(input: JsonElement?): String {
@@ -1117,24 +1165,287 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  private fun runtimeIntValue(input: JsonElement?): Int? {
+    val text = scalarRuntimeText(input)
+    if (text.isBlank() || !text.matches(Regex("^\\d{1,6}$"))) return null
+    return text.toIntOrNull()
+  }
+
+  private fun runtimeMixVoices(input: JsonElement?): List<VoiceMixItem> {
+    if (input == null || input.isJsonNull || !input.isJsonArray) return emptyList()
+    return input.asJsonArray.mapNotNull { item ->
+      if (!item.isJsonObject) return@mapNotNull null
+      val obj = item.asJsonObject
+      val voiceId = scalarRuntimeText(obj.get("voiceId"))
+      if (voiceId.isBlank()) return@mapNotNull null
+      VoiceMixItem(
+        voiceId = voiceId,
+        weight = scalarRuntimeText(obj.get("weight")).toDoubleOrNull() ?: 0.7,
+      )
+    }
+  }
+
+  private fun runtimeParameterCard(input: JsonElement?): RoleParameterCard? {
+    if (input == null || input.isJsonNull || !input.isJsonObject) return null
+    val obj = input.asJsonObject
+    fun arrayValues(key: String): List<String> {
+      val raw = obj.get(key)
+      if (raw == null || raw.isJsonNull || !raw.isJsonArray) return emptyList()
+      return raw.asJsonArray.mapNotNull { scalarRuntimeText(it).ifBlank { null } }
+    }
+    val card = RoleParameterCard(
+      name = scalarRuntimeText(obj.get("name")),
+      rawSetting = scalarRuntimeText(obj.get("raw_setting")).ifBlank { scalarRuntimeText(obj.get("rawSetting")) },
+      gender = scalarRuntimeText(obj.get("gender")),
+      age = runtimeIntValue(obj.get("age")),
+      level = runtimeIntValue(obj.get("level")) ?: 1,
+      levelDesc = scalarRuntimeText(obj.get("level_desc")).ifBlank { scalarRuntimeText(obj.get("levelDesc")) }.ifBlank { "初入此界" },
+      personality = scalarRuntimeText(obj.get("personality")),
+      appearance = scalarRuntimeText(obj.get("appearance")),
+      voice = scalarRuntimeText(obj.get("voice")),
+      skills = arrayValues("skills"),
+      items = arrayValues("items"),
+      equipment = arrayValues("equipment"),
+      hp = runtimeIntValue(obj.get("hp")) ?: 100,
+      mp = runtimeIntValue(obj.get("mp")) ?: 0,
+      money = runtimeIntValue(obj.get("money")) ?: 0,
+      other = arrayValues("other"),
+    )
+    val hasContent = card.name.isNotBlank()
+      || card.rawSetting.isNotBlank()
+      || card.gender.isNotBlank()
+      || card.age != null
+      || card.level > 1
+      || card.levelDesc.isNotBlank()
+      || card.personality.isNotBlank()
+      || card.appearance.isNotBlank()
+      || card.voice.isNotBlank()
+      || card.skills.isNotEmpty()
+      || card.items.isNotEmpty()
+      || card.equipment.isNotEmpty()
+      || card.other.isNotEmpty()
+    return if (hasContent) card else null
+  }
+
+  private fun fallbackRoleDescription(roleType: String, description: String): String {
+    if (description.isNotBlank()) return description
+    return when (roleType.trim()) {
+      "player" -> "用户在故事中的主视角角色"
+      "narrator" -> "负责环境推进、规则提示与节奏控制"
+      else -> ""
+    }
+  }
+
+  private fun fallbackRoleParameterCard(roleType: String, name: String, description: String, voice: String): RoleParameterCard? {
+    val normalizedRoleType = roleType.trim()
+    val resolvedName = name.ifBlank {
+      when (normalizedRoleType) {
+        "player" -> "用户"
+        "narrator" -> "旁白"
+        else -> ""
+      }
+    }
+    val resolvedDescription = fallbackRoleDescription(normalizedRoleType, description)
+    if (resolvedName.isBlank() && resolvedDescription.isBlank() && voice.isBlank()) return null
+    return RoleParameterCard(
+      name = resolvedName,
+      rawSetting = resolvedDescription,
+      voice = voice,
+      level = 1,
+      levelDesc = "初入此界",
+    )
+  }
+
+  private fun ensureRoleParameterCard(role: StoryRole): StoryRole {
+    if (role.parameterCardJson != null) return role
+    return role.copy(
+      parameterCardJson = fallbackRoleParameterCard(
+        roleType = role.roleType,
+        name = role.name,
+        description = role.description,
+        voice = role.voice,
+      ),
+    )
+  }
+
+  private fun runtimeRoleSnapshot(roleKey: String, fallbackRoleType: String): StoryRole? {
+    val raw = runtimeStateRoot()?.get(roleKey) ?: return null
+    if (raw.isJsonNull || !raw.isJsonObject) return null
+    val obj = raw.asJsonObject
+    return ensureRoleParameterCard(StoryRole(
+      id = scalarRuntimeText(obj.get("id")).ifBlank { roleKey },
+      roleType = scalarRuntimeText(obj.get("roleType")).ifBlank { fallbackRoleType },
+      name = scalarRuntimeText(obj.get("name")).ifBlank { if (fallbackRoleType == "player") "用户" else "旁白" },
+      avatarPath = scalarRuntimeText(obj.get("avatarPath")),
+      avatarBgPath = scalarRuntimeText(obj.get("avatarBgPath")),
+      description = scalarRuntimeText(obj.get("description")),
+      voice = scalarRuntimeText(obj.get("voice")),
+      voiceMode = scalarRuntimeText(obj.get("voiceMode")).ifBlank { "text" },
+      voiceConfigId = null,
+      voicePresetId = scalarRuntimeText(obj.get("voicePresetId")),
+      voiceReferenceAudioPath = scalarRuntimeText(obj.get("voiceReferenceAudioPath")),
+      voiceReferenceAudioName = scalarRuntimeText(obj.get("voiceReferenceAudioName")),
+      voiceReferenceText = scalarRuntimeText(obj.get("voiceReferenceText")),
+      voicePromptText = scalarRuntimeText(obj.get("voicePromptText")),
+      voiceMixVoices = runtimeMixVoices(obj.get("voiceMixVoices")),
+      sample = scalarRuntimeText(obj.get("sample")),
+      parameterCardJson = runtimeParameterCard(obj.get("parameterCardJson")),
+    ))
+  }
+
+  private fun mergeRoleSnapshot(base: StoryRole, runtime: StoryRole?): StoryRole {
+    if (runtime == null) return ensureRoleParameterCard(base)
+    return ensureRoleParameterCard(base.copy(
+      id = runtime.id.ifBlank { base.id },
+      roleType = runtime.roleType.ifBlank { base.roleType },
+      name = runtime.name.ifBlank { base.name },
+      avatarPath = runtime.avatarPath.ifBlank { base.avatarPath },
+      avatarBgPath = runtime.avatarBgPath.ifBlank { base.avatarBgPath },
+      description = runtime.description.ifBlank { base.description },
+      voice = runtime.voice.ifBlank { base.voice },
+      voiceMode = runtime.voiceMode.ifBlank { base.voiceMode },
+      voicePresetId = runtime.voicePresetId.ifBlank { base.voicePresetId },
+      voiceReferenceAudioPath = runtime.voiceReferenceAudioPath.ifBlank { base.voiceReferenceAudioPath },
+      voiceReferenceAudioName = runtime.voiceReferenceAudioName.ifBlank { base.voiceReferenceAudioName },
+      voiceReferenceText = runtime.voiceReferenceText.ifBlank { base.voiceReferenceText },
+      voicePromptText = runtime.voicePromptText.ifBlank { base.voicePromptText },
+      voiceMixVoices = if (runtime.voiceMixVoices.isNotEmpty()) runtime.voiceMixVoices else base.voiceMixVoices,
+      sample = runtime.sample.ifBlank { base.sample },
+      parameterCardJson = runtime.parameterCardJson ?: base.parameterCardJson,
+    ))
+  }
+
   fun playCanPlayerSpeak(): Boolean {
     return runtimeTurnStateRoot()?.get("canPlayerSpeak")?.asBoolean ?: true
+  }
+
+  fun playSessionStatus(): String {
+    if (debugMode) return "debug"
+    return sessionDetail?.status.orEmpty()
   }
 
   fun playExpectedSpeaker(): String {
     return scalarRuntimeText(runtimeTurnStateRoot()?.get("expectedRole")).ifBlank { "当前角色" }
   }
 
+  fun playCanPlayerInput(): Boolean {
+    if (playRuntimeMiniGame()?.acceptsTextInput == true) return true
+    val latest = conversationMessages().lastOrNull()
+    return PlaySessionHeuristics.shouldOfferInputFallback(
+      canPlayerSpeak = playCanPlayerSpeak(),
+      sessionStatus = playSessionStatus(),
+      latestRoleType = latest?.roleType.orEmpty(),
+      latestContent = latest?.let(::displayContentForMessage).orEmpty(),
+    )
+  }
+
+  fun playShouldAutoRefreshWhileWaiting(): Boolean {
+    if (debugMode || currentSessionId.isBlank() || playCanPlayerSpeak()) return false
+    val status = playSessionStatus().trim().lowercase()
+    if (status.isNotBlank() && status != "active") return false
+    val latest = conversationMessages().lastOrNull() ?: return true
+    return latest.roleType != "player"
+  }
+
   fun playInputPlaceholder(textMode: Boolean): String {
-    if (playCanPlayerSpeak()) {
-      return if (textMode) "输入一句话开始故事" else "按住说话"
+    playRuntimeMiniGame()?.takeIf { it.acceptsTextInput }?.let { miniGame ->
+      return miniGame.inputHint.ifBlank { "直接输入方案" }
     }
-    return "当前轮到${playExpectedSpeaker()}发言"
+    return PlaySessionHeuristics.buildInputPlaceholder(
+      textMode = textMode,
+      canPlayerSpeak = playCanPlayerSpeak(),
+      expectedSpeaker = playExpectedSpeaker(),
+      sessionStatus = playSessionStatus(),
+      allowFallback = playCanPlayerInput(),
+    )
   }
 
   fun playTurnHint(): String {
-    if (playCanPlayerSpeak()) return ""
-    return "当前还没轮到用户发言，等待${playExpectedSpeaker()}继续。"
+    if (playRuntimeMiniGame()?.acceptsTextInput == true) {
+      return "小游戏进行中，直接输入方案即可。"
+    }
+    return PlaySessionHeuristics.buildTurnHint(
+      canPlayerSpeak = playCanPlayerSpeak(),
+      expectedSpeaker = playExpectedSpeaker(),
+      sessionStatus = playSessionStatus(),
+      allowFallback = playCanPlayerInput(),
+    )
+  }
+
+  fun playLatestRuntimeChatDebug(): RuntimeChatDebugItem? {
+    val latest = conversationMessages().lastOrNull() ?: return null
+    val meta = latest.meta?.takeIf { it.isJsonObject }?.asJsonObject
+    val turnState = runtimeTurnStateRoot()
+    return RuntimeChatDebugItem(
+      conversationId = currentSessionId,
+      messageId = latest.id,
+      lineIndex = meta?.get("lineIndex")?.takeIf { !it.isJsonNull }?.asInt ?: conversationMessages().size,
+      currentRole = displayNameForMessage(latest),
+      currentRoleType = latest.roleType,
+      currentStatus = runtimeMessageStatus(latest),
+      nextRole = scalarRuntimeText(meta?.get("nextRole")).ifBlank { scalarRuntimeText(turnState?.get("expectedRole")) },
+      nextRoleType = scalarRuntimeText(meta?.get("nextRoleType")).ifBlank { scalarRuntimeText(turnState?.get("expectedRoleType")) },
+    )
+  }
+
+  private fun runtimeMiniGamePhaseLabel(gameType: String, phase: String, uiPhaseLabel: String): String {
+    if (uiPhaseLabel.isNotBlank()) return uiPhaseLabel
+    if (setOf("research_skill", "alchemy", "upgrade_equipment").contains(gameType)) {
+      return when (phase) {
+        "await_input" -> "等待方案"
+        "result" -> "已评估"
+        "settling" -> "已结束"
+        else -> phase.ifBlank { "进行中" }
+      }
+    }
+    return if (gameType == "fishing") {
+      when (phase) {
+        "prepare" -> "准备中"
+        "waiting" -> "等待结果"
+        "result" -> "本轮结束"
+        "settling" -> "已结束"
+        else -> phase.ifBlank { "进行中" }
+      }
+    } else {
+      phase.ifBlank { "进行中" }
+    }
+  }
+
+  private fun runtimeMiniGameStateItems(gameType: String, ui: JsonObject, publicState: JsonObject): List<RuntimeMiniGameStateItem> {
+    val uiStateItems = ui.get("state_items")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull { item ->
+      if (!item.isJsonObject) return@mapNotNull null
+      val obj = item.asJsonObject
+      val key = scalarRuntimeText(obj.get("key"))
+      val value = scalarRuntimeText(obj.get("value"))
+      if (key.isBlank() || value.isBlank()) return@mapNotNull null
+      RuntimeMiniGameStateItem(key, value)
+    }.orEmpty()
+    if (uiStateItems.isNotEmpty()) return uiStateItems
+    if (gameType == "fishing") {
+      return listOf(
+        RuntimeMiniGameStateItem("当前水域", scalarRuntimeText(publicState.get("site_name")).ifBlank { "当前水域" }),
+        RuntimeMiniGameStateItem("当前状态", scalarRuntimeText(publicState.get("current_status")).ifBlank { "准备抛竿" }),
+        RuntimeMiniGameStateItem("本轮结果", scalarRuntimeText(publicState.get("last_result")).ifBlank { "暂无" }),
+        RuntimeMiniGameStateItem("最近收获", scalarRuntimeText(publicState.get("last_reward")).ifBlank { "暂无" }),
+      )
+    }
+    return publicState.entrySet()
+      .mapNotNull { entry ->
+        val value = runtimeStringify(entry.value).trim()
+        if (value.isBlank()) null else RuntimeMiniGameStateItem(entry.key, value)
+      }
+      .take(10)
+  }
+
+  private fun runtimeMiniGameControlOptions(gameType: String, status: String, pendingExit: Boolean): List<String> {
+    if (gameType == "fishing") {
+      return if (pendingExit) listOf("继续钓鱼", "退出钓鱼") else listOf("退出钓鱼")
+    }
+    return when {
+      status == "suspended" -> listOf("恢复小游戏", "查看状态", "查看规则", "申请退出")
+      pendingExit -> listOf("确认退出", "继续", "查看状态")
+      else -> listOf("查看状态", "查看规则", "暂停", "申请退出")
+    }
   }
 
   fun playRuntimeMiniGame(): RuntimeMiniGameView? {
@@ -1162,29 +1473,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       )
     }
     val pendingExit = session.get("pending_exit")?.asBoolean ?: false
+    val acceptsTextInput = (ui.get("accepts_text_input")?.asBoolean == true) || setOf("research_skill", "alchemy", "upgrade_equipment").contains(gameType)
+    val inputHint = scalarRuntimeText(ui.get("input_hint"))
     val visibleStatuses = setOf("preparing", "active", "settling", "suspended")
     if (!visibleStatuses.contains(status) && playerOptions.isEmpty() && !pendingExit) return null
     val publicState = session.getAsJsonObject("public_state") ?: JsonObject()
-    val stateItems = publicState.entrySet()
-      .mapNotNull { entry ->
-        val value = runtimeStringify(entry.value).trim()
-        if (value.isBlank()) null else RuntimeMiniGameStateItem(entry.key, value)
-      }
-      .take(10)
-    val controlOptions = when {
-      status == "suspended" -> listOf("恢复小游戏", "查看状态", "查看规则", "申请退出")
-      pendingExit -> listOf("确认退出", "继续", "查看状态")
-      else -> listOf("查看状态", "查看规则", "暂停", "申请退出")
-    }
+    val stateItems = runtimeMiniGameStateItems(gameType, ui, publicState)
+    val controlOptions = runtimeMiniGameControlOptions(gameType, status, pendingExit)
     return RuntimeMiniGameView(
       gameType = gameType,
       displayName = scalarRuntimeText(root.getAsJsonObject("rulebook")?.get("displayName")).ifBlank { gameType },
       status = status.ifBlank { "active" },
-      phase = scalarRuntimeText(session.get("phase")),
+      phase = runtimeMiniGamePhaseLabel(gameType, scalarRuntimeText(session.get("phase")), scalarRuntimeText(ui.get("phase_label"))),
       round = runCatching { session.get("round")?.asInt ?: 0 }.getOrDefault(0),
       ruleSummary = scalarRuntimeText(ui.get("rule_summary")),
       narration = scalarRuntimeText(ui.get("narration")),
       pendingExit = pendingExit,
+      acceptsTextInput = acceptsTextInput,
+      inputHint = inputHint,
       stateItems = stateItems,
       playerOptions = playerOptions,
       controlOptions = controlOptions,
@@ -1212,6 +1518,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun playStoryRoles(): List<StoryRole> {
+    val runtimePlayer = runtimeRoleSnapshot("player", "player")
+    val runtimeNarrator = runtimeRoleSnapshot("narrator", "narrator")
+    val roles = mutableListOf<StoryRole>()
     if (debugMode) {
       val player = buildRole(
         id = "player",
@@ -1247,14 +1556,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         voiceMixVoices = narratorVoiceMixVoices,
         sample = "",
       )
-      return (listOf(player, narrator) + npcRoles.toList()).map(::resolveRoleMedia)
+      roles += mergeRoleSnapshot(player, runtimePlayer)
+      roles += mergeRoleSnapshot(narrator, runtimeNarrator)
+      roles += npcRoles.toList()
+    } else {
+      val world = sessionDetail?.world ?: return emptyList()
+      world.playerRole?.let { roles.add(mergeRoleSnapshot(it, runtimePlayer)) }
+      world.narratorRole?.let { roles.add(mergeRoleSnapshot(it, runtimeNarrator)) }
+      world.settings?.roles?.filter { it.roleType == "npc" }?.forEach { roles.add(it) }
+      if (roles.none { it.roleType == "player" } && runtimePlayer != null) {
+        roles += runtimePlayer
+      }
+      if (roles.none { it.roleType == "narrator" } && runtimeNarrator != null) {
+        roles += runtimeNarrator
+      }
     }
-    val world = sessionDetail?.world ?: return emptyList()
-    val roles = mutableListOf<StoryRole>()
-    world.playerRole?.let { roles.add(it) }
-    world.narratorRole?.let { roles.add(it) }
-    world.settings?.roles?.filter { it.roleType == "npc" }?.forEach { roles.add(it) }
-    return roles.map(::resolveRoleMedia).distinctBy { it.id.ifBlank { "${it.roleType}:${it.name}" } }
+    return roles
+      .map(::resolveRoleMedia)
+      .map(::ensureRoleParameterCard)
+      .distinctBy { it.id.ifBlank { "${it.roleType}:${it.name}" } }
   }
 
   fun closeDebugDialog(backToCreate: Boolean) {
@@ -1282,6 +1602,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     debugMessageSeed = 1L
     currentSessionId = ""
     sessionDetail = null
+    clearPlayChapterCache()
     messages.clear()
     sendText = ""
   }
@@ -1322,6 +1643,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  fun updateAccountAvatarFromVideoUri(rawUri: String) {
+    if (userId <= 0L) {
+      notice = "请先登录后再设置头像"
+      return
+    }
+    val uri = runCatching { Uri.parse(rawUri) }.getOrNull()
+    if (uri == null) {
+      notice = "视频选择失败"
+      return
+    }
+
+    viewModelScope.launch {
+      accountAvatarProcessing = true
+      try {
+        runCatching {
+          val saved = convertAvatarVideoToGif(uri, projectScoped = false)
+          accountAvatarPath = saved.foregroundPath
+          accountAvatarBgPath = saved.backgroundPath
+          val storedAvatarPath = normalizeStoredMediaPath(accountAvatarPath)
+          val storedAvatarBgPath = normalizeStoredMediaPath(accountAvatarBgPath)
+          settingsStore.setAvatarPath(userId, storedAvatarPath)
+          settingsStore.setAvatarBgPath(userId, storedAvatarBgPath)
+          repository.saveUser(
+            avatarPath = storedAvatarPath,
+            avatarBgPath = storedAvatarBgPath,
+          )
+          notice = "账号 GIF 头像已更新"
+        }.onFailure {
+          notice = "GIF 头像转换失败: ${it.message ?: "未知错误"}"
+        }
+      } finally {
+        accountAvatarProcessing = false
+      }
+    }
+  }
+
   fun updateStoryPlayerAvatarFromUri(rawUri: String) {
     val uri = runCatching { Uri.parse(rawUri) }.getOrNull()
     if (uri == null) {
@@ -1347,6 +1704,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  fun updateStoryPlayerAvatarFromVideoUri(rawUri: String) {
+    val uri = runCatching { Uri.parse(rawUri) }.getOrNull()
+    if (uri == null) {
+      notice = "视频选择失败"
+      return
+    }
+
+    viewModelScope.launch {
+      storyPlayerAvatarProcessing = true
+      try {
+        runCatching {
+          val saved = convertAvatarVideoToGif(uri, projectScoped = true)
+          userAvatarPath = saved.foregroundPath
+          userAvatarBgPath = saved.backgroundPath
+          notice = "GIF 头像已更新"
+        }.onFailure {
+          notice = "GIF 头像转换失败: ${it.message ?: "未知错误"}"
+        }
+      } finally {
+        storyPlayerAvatarProcessing = false
+      }
+    }
+  }
+
   fun importRoleAvatar(rawUri: String, storageKey: String, onSaved: (String, String) -> Unit) {
     val uri = runCatching { Uri.parse(rawUri) }.getOrNull()
     if (uri == null) {
@@ -1362,6 +1743,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           notice = "头像已更新"
         }.onFailure {
           notice = "头像更新失败: ${it.message ?: "未知错误"}"
+        }
+      } finally {
+        roleAvatarProcessing = false
+      }
+    }
+  }
+
+  fun importRoleAvatarVideoGif(rawUri: String, onSaved: (String, String) -> Unit) {
+    val uri = runCatching { Uri.parse(rawUri) }.getOrNull()
+    if (uri == null) {
+      notice = "视频选择失败"
+      return
+    }
+    viewModelScope.launch {
+      roleAvatarProcessing = true
+      try {
+        runCatching {
+          val saved = convertAvatarVideoToGif(uri, projectScoped = true)
+          onSaved(saved.foregroundPath, saved.backgroundPath)
+          notice = "GIF 头像已更新"
+        }.onFailure {
+          notice = "GIF 头像转换失败: ${it.message ?: "未知错误"}"
         }
       } finally {
         roleAvatarProcessing = false
@@ -1509,6 +1912,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val mime: String,
   )
 
+  private data class BinaryVideoSource(
+    val bytes: ByteArray,
+    val mime: String,
+    val fileName: String,
+  )
+
   private fun importSceneImage(rawUri: String, storageKey: String, onSaved: (String, String) -> Unit) {
     val uri = runCatching { Uri.parse(rawUri) }.getOrNull()
     if (uri == null) {
@@ -1591,6 +2000,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private suspend fun saveAvatarFiles(uri: Uri, storageKey: String, projectScoped: Boolean): SavedImagePaths {
     val imageSource = readImageSourceFromUri(uri)
     return separateAvatarWithImageModel(imageSource, storageKey, projectScoped)
+  }
+
+  private suspend fun convertAvatarVideoToGif(uri: Uri, projectScoped: Boolean): SavedImagePaths {
+    val source = readVideoSourceFromUri(uri)
+    val result = repository.convertAvatarVideoToGif(
+      projectId = if (projectScoped) selectedProjectId.takeIf { it > 0L } ?: error("请先选择项目后再上传 MP4") else null,
+      base64Data = bytesToBase64Payload(source.bytes, source.mime),
+      fileName = source.fileName.ifBlank { "avatar.mp4" },
+    )
+    val foregroundPath = resolveMediaPath(result.foregroundFilePath.ifBlank { result.foregroundPath })
+    val backgroundPath = resolveMediaPath(result.backgroundFilePath.ifBlank { result.backgroundPath })
+    if (foregroundPath.isBlank() || backgroundPath.isBlank()) {
+      error("MP4 转 GIF 失败，未返回主体或背景图片")
+    }
+    return SavedImagePaths(
+      foregroundPath = foregroundPath,
+      backgroundPath = backgroundPath,
+    )
   }
 
   private suspend fun separateAvatarWithImageModel(
@@ -1757,6 +2184,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  private fun normalizeVideoMime(displayName: String, rawMime: String): String {
+    val mime = rawMime.trim().lowercase()
+    if (mime == "video/mp4" || mime == "video/x-m4v" || mime == "video/quicktime") {
+      return mime
+    }
+    return when (displayName.substringAfterLast('.', "").trim().lowercase()) {
+      "m4v" -> "video/x-m4v"
+      "mov" -> "video/quicktime"
+      else -> "video/mp4"
+    }
+  }
+
   private fun readImageSourceFromUri(uri: Uri): BinaryImageSource {
     val app = getApplication<Application>()
     val resolver = app.contentResolver
@@ -1770,6 +2209,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       input.readBytes()
     }
     return BinaryImageSource(bytes = bytes, mime = mime)
+  }
+
+  private fun readVideoSourceFromUri(uri: Uri): BinaryVideoSource {
+    val app = getApplication<Application>()
+    val resolver = app.contentResolver
+    val displayName = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+      val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+      if (nameIdx >= 0 && cursor.moveToFirst()) cursor.getString(nameIdx) else null
+    }?.trim().orEmpty()
+    val mime = normalizeVideoMime(displayName, resolver.getType(uri).orEmpty())
+    if (mime != "video/mp4" && mime != "video/x-m4v" && mime != "video/quicktime") {
+      error("仅支持上传 MP4 视频转换 GIF")
+    }
+    val bytes = resolver.openInputStream(uri).use { input ->
+      if (input == null) error("无法读取所选视频")
+      input.readBytes()
+    }
+    return BinaryVideoSource(
+      bytes = bytes,
+      mime = mime,
+      fileName = displayName.ifBlank { "avatar.mp4" },
+    )
   }
 
   private fun loadRemoteImageSource(url: String): BinaryImageSource {
@@ -1831,7 +2292,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private fun worldsForRecommendation(): List<WorldItem> {
-    return worldsForSelectedProject().filter { (it.chapterCount ?: 0) > 0 && isWorldPublished(it) }
+    return worlds.filter { (it.chapterCount ?: 0) > 0 && isWorldPublished(it) }
   }
 
   fun refreshRecommendation() {
@@ -1900,7 +2361,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun filteredHallWorlds(): List<WorldItem> {
     val key = hallKeyword.trim().lowercase()
-    return worldsForSelectedProject().filter { item ->
+    return worlds.filter { item ->
       if (!isWorldPublished(item)) return@filter false
       val matchedKeyword = key.isBlank() || item.name.lowercase().contains(key) || item.intro.lowercase().contains(key)
       if (!matchedKeyword) return@filter false
@@ -1914,6 +2375,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .thenByDescending { it.chapterCount ?: 0 }
         .thenBy { it.name },
     )
+  }
+
+  fun canEditWorld(world: WorldItem?): Boolean {
+    if (world == null) return false
+    return projects.any { it.id == world.projectId }
   }
 
   private fun safeText(value: String?): String = value.orEmpty()
@@ -2009,7 +2475,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         },
       )
     }
-    val chapter = sessionDetail?.chapter ?: return ""
+    val chapter = playCurrentChapter() ?: return ""
     val extra = sessionDetail?.world?.settings?.chapterExtras?.firstOrNull {
       (chapter.id > 0L && it.chapterId == chapter.id) || (chapter.sort > 0 && it.sort == chapter.sort)
     }
@@ -2037,11 +2503,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return meta.get("kind")?.asString == "runtime_stream" && (meta.get("streaming")?.asBoolean == true)
   }
 
+  fun runtimeMessageStatus(message: MessageItem): String {
+    val meta = message.meta?.takeIf { it.isJsonObject }?.asJsonObject ?: return ""
+    return meta.get("status")?.asString?.trim().orEmpty()
+  }
+
   fun streamingSentenceTexts(message: MessageItem): List<String> {
     val meta = message.meta?.takeIf { it.isJsonObject }?.asJsonObject ?: return emptyList()
     val sentences = meta.getAsJsonArray("sentences") ?: return emptyList()
     return sentences.mapNotNull { item ->
       item?.takeIf { !it.isJsonNull }?.asString?.trim()?.takeIf { it.isNotBlank() }
+    }
+  }
+
+  fun displayContentForMessage(message: MessageItem): String {
+    return message.content.ifBlank {
+      streamingSentenceTexts(message).joinToString("")
+    }
+  }
+
+  fun loadingHintForMessage(message: MessageItem): String {
+    if (!isStreamingRuntimeMessage(message)) return ""
+    if (displayContentForMessage(message).isNotBlank()) return ""
+    val speaker = displayNameForMessage(message)
+    return when (runtimeMessageStatus(message)) {
+      "orchestrated", "auto_advancing", "waiting_next" -> "$speaker 正在准备下一句..."
+      "streaming", "revealing", "voicing" -> "$speaker 正在生成台词..."
+      else -> "$speaker 正在生成内容..."
     }
   }
 
@@ -2075,9 +2563,72 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun applyRewritePrompt(message: MessageItem) {
+    val content = displayContentForMessage(message).trim()
+    if (content.isBlank()) {
+      notice = "这条对话没有可改写内容"
+      return
+    }
+    if (message.roleType == "player") {
+      sendText = content
+      notice = "已填回原台词，可修改后重新发送"
+      return
+    }
     val speaker = displayNameForMessage(message)
-    sendText = "请将“${message.content.trim()}”改写成更自然、符合${speaker}当前处境的一句话。"
+    sendText = "请将“${content}”改写成更自然、符合${speaker}当前处境的一句话。"
     notice = "已把改写指令填入输入框"
+  }
+
+  fun canDeleteMessage(message: MessageItem): Boolean {
+    if (isRuntimeRetryMessage(message) || isStreamingRuntimeMessage(message)) return false
+    if (message.roleType != "player") return false
+    return conversationMessages().lastOrNull()?.id == message.id
+  }
+
+  private fun restoreDebugPlayerTurnAfterDeletion() {
+    val root = debugRuntimeState?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() ?: JsonObject()
+    val turnState = (root.getAsJsonObject("turnState") ?: JsonObject()).also { root.add("turnState", it) }
+    val previous = conversationMessages().lastOrNull()
+    val playerNode = root.getAsJsonObject("player")
+    val currentPlayerName = playerNode?.get("name")?.asString?.trim().orEmpty().ifBlank { playerName.ifBlank { "用户" } }
+    turnState.addProperty("canPlayerSpeak", true)
+    turnState.addProperty("expectedRoleType", "player")
+    turnState.addProperty("expectedRole", currentPlayerName)
+    turnState.addProperty("lastSpeakerRoleType", previous?.roleType.orEmpty())
+    turnState.addProperty("lastSpeaker", previous?.role.orEmpty())
+    val round = runCatching { root.get("round")?.asLong ?: 0L }.getOrDefault(0L)
+    root.addProperty("round", maxOf(0L, round - 1L))
+    val recentEvents = root.getAsJsonArray("recentEvents")
+    if (recentEvents != null && recentEvents.size() > 0) {
+      recentEvents.remove(recentEvents.size() - 1)
+    }
+    debugRuntimeState = root
+    updateDebugStatePreview()
+  }
+
+  fun deleteMessage(message: MessageItem) {
+    if (!canDeleteMessage(message)) {
+      notice = "当前只支持删除最后一条玩家台词"
+      return
+    }
+    viewModelScope.launch {
+      runCatching {
+        if (debugMode) {
+          messages.removeAll { it.id == message.id }
+          messageReactions.remove(messageUiKey(message))
+          restoreDebugPlayerTurnAfterDeletion()
+        } else {
+          if (currentSessionId.isBlank()) error("当前没有可删除的会话")
+          repository.deleteMessage(currentSessionId, message.id)
+          messageReactions.remove(messageUiKey(message))
+          refreshCurrentSession()
+        }
+      }.onSuccess {
+        notice = "已删除上一句玩家台词"
+      }.onFailure {
+        throwIfCancellation(it)
+        notice = "删除台词失败: ${it.message ?: "未知错误"}"
+      }
+    }
   }
 
   fun avatarPathForMessage(message: MessageItem): String {
@@ -2130,6 +2681,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private fun createStreamingMessage(plan: DebugNarrativePlan): MessageItem {
+    return createStreamingMessage(plan, conversationMessages().size + 1)
+  }
+
+  private fun createStreamingMessage(plan: DebugNarrativePlan, lineIndex: Int): MessageItem {
     val now = System.currentTimeMillis()
     return MessageItem(
       id = now,
@@ -2142,8 +2697,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         addProperty("kind", "runtime_stream")
         addProperty("streaming", true)
         add("sentences", JsonArray())
+        addProperty("lineIndex", lineIndex)
+        addProperty("status", "orchestrated")
+        addProperty("nextRole", plan.nextRole)
+        addProperty("nextRoleType", plan.nextRoleType)
       },
     )
+  }
+
+  private fun buildRuntimeStreamMeta(
+    current: JsonElement?,
+    status: String? = null,
+    streaming: Boolean? = null,
+    nextRole: String? = null,
+    nextRoleType: String? = null,
+  ): JsonObject {
+    val meta = current?.deepCopy()?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject().apply {
+      addProperty("kind", "runtime_stream")
+      addProperty("streaming", false)
+    }
+    if (!meta.has("kind")) meta.addProperty("kind", "runtime_stream")
+    if (!meta.has("streaming")) meta.addProperty("streaming", false)
+    if (status != null) meta.addProperty("status", status)
+    if (streaming != null) meta.addProperty("streaming", streaming)
+    if (nextRole != null) meta.addProperty("nextRole", nextRole)
+    if (nextRoleType != null) meta.addProperty("nextRoleType", nextRoleType)
+    return meta
+  }
+
+  fun setRuntimeMessageStatus(messageId: Long, status: String) {
+    val turnState = debugRuntimeState?.takeIf { it.isJsonObject }?.asJsonObject?.getAsJsonObject("turnState")
+    updateMessageById(messageId) { current ->
+      current.copy(
+        meta = buildRuntimeStreamMeta(
+          current.meta,
+          status = status,
+          nextRole = turnState?.get("expectedRole")?.asString.orEmpty(),
+          nextRoleType = turnState?.get("expectedRoleType")?.asString.orEmpty(),
+        ),
+      )
+    }
   }
 
   private fun clearRuntimeRetryMessage() {
@@ -2157,6 +2750,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     runtimeRetryTask = null
     runtimeRetryMessageText = ""
     clearRuntimeRetryMessage()
+  }
+
+  private fun throwIfCancellation(error: Throwable) {
+    if (error is CancellationException) {
+      throw error
+    }
   }
 
   private fun showRuntimeRetryMessage(message: String, task: suspend () -> Unit) {
@@ -2189,6 +2788,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       try {
         task()
       } catch (err: Throwable) {
+        throwIfCancellation(err)
         val nextMessage = retryMessage.ifBlank {
           "重试失败: ${err.message ?: "未知错误"}"
         }
@@ -2577,7 +3177,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ?.take(80)
         ?: chapterBody.take(80)
     }
-    return "进入章节《${chapter.title.ifBlank { "当前章节" }}》"
+    return ""
   }
 
   private fun buildEditorChapterSnapshot(): ChapterItem? {
@@ -2978,6 +3578,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun openWorldForEdit(world: WorldItem) {
+    if (!canEditWorld(world)) {
+      notice = "只能编辑自己的故事"
+      return
+    }
     if (selectedProjectId != world.projectId) {
       selectedProjectId = world.projectId
     }
@@ -2993,6 +3597,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun reopenPublishedWorldAsDraft(world: WorldItem) {
+    if (!canEditWorld(world)) {
+      notice = "只能编辑自己的故事"
+      return
+    }
     if (selectedProjectId != world.projectId) {
       selectedProjectId = world.projectId
     }
@@ -3152,6 +3760,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       runCatching {
         performDebugCurrentChapter()
       }.onFailure {
+        throwIfCancellation(it)
         debugLoading = false
         debugLoadingStage = ""
         activeTab = "游玩"
@@ -3258,14 +3867,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun startFromWorld(world: WorldItem, firstMessage: String = "") {
     if (debugMode) leaveDebugMode()
-    if ((world.chapterCount ?: 0) <= 0) {
-      notice = "该故事还没有章节，暂时无法游玩"
-      return
-    }
     viewModelScope.launch {
       runCatching {
+        val existingSessionId = repository.listSession(worldId = world.id)
+          .firstOrNull()
+          ?.sessionId
+          ?.trim()
+          .orEmpty()
+          .ifBlank { sessions.firstOrNull { it.worldId == world.id }?.sessionId?.trim().orEmpty() }
+        if (existingSessionId.isNotBlank()) {
+          sessionViewMode = "live"
+          sessionPlaybackStartIndex = 0
+          currentSessionId = existingSessionId
+          if (firstMessage.isNotBlank()) {
+            repository.addPlayerMessage(existingSessionId, playerName.ifBlank { "用户" }, firstMessage)
+          }
+          refreshCurrentSession()
+          loadSessions()
+          activeTab = "游玩"
+          return@runCatching
+        }
+        if ((world.chapterCount ?: 0) <= 0) {
+          error("该故事还没有章节，暂时无法游玩")
+        }
         val sid = repository.startSession(world.id, world.projectId, null)
         if (sid.isBlank()) error("未返回 sessionId")
+        sessionViewMode = "live"
+        sessionPlaybackStartIndex = 0
         currentSessionId = sid
         if (firstMessage.isNotBlank()) {
           repository.addPlayerMessage(sid, playerName.ifBlank { "用户" }, firstMessage)
@@ -3274,7 +3902,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadSessions()
         activeTab = "游玩"
       }.onFailure {
-        notice = "开始会话失败: ${it.message ?: "未知错误"}"
+        notice = "进入游玩失败: ${it.message ?: "未知错误"}"
+      }
+    }
+  }
+
+  fun continueSessionForWorld(worldId: Long, fallbackSessionId: String = "", playback: Boolean = false, playbackIndex: Int = 0) {
+    if (debugMode) leaveDebugMode()
+    clearRuntimeRetryState()
+    viewModelScope.launch {
+      runCatching {
+        val resolvedSessionId = repository.listSession(worldId = worldId)
+          .firstOrNull()
+          ?.sessionId
+          ?.trim()
+          .orEmpty()
+          .ifBlank { sessions.firstOrNull { it.worldId == worldId }?.sessionId?.trim().orEmpty() }
+          .ifBlank { fallbackSessionId.trim() }
+        if (resolvedSessionId.isBlank()) error("未找到会话")
+        sessionViewMode = if (playback) "playback" else "live"
+        sessionPlaybackStartIndex = playbackIndex.coerceAtLeast(0)
+        currentSessionId = resolvedSessionId
+        refreshCurrentSession()
+        loadSessions()
+        activeTab = "游玩"
+      }.onFailure {
+        notice = "打开会话失败: ${it.message ?: "未知错误"}"
       }
     }
   }
@@ -3293,9 +3946,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     startFromWorld(world)
   }
 
-  fun openSession(sessionId: String) {
+  fun openSession(sessionId: String, playback: Boolean = false, playbackIndex: Int = 0) {
     if (debugMode) leaveDebugMode()
     clearRuntimeRetryState()
+    sessionViewMode = if (playback) "playback" else "live"
+    sessionPlaybackStartIndex = playbackIndex.coerceAtLeast(0)
     currentSessionId = sessionId
     viewModelScope.launch {
       runCatching {
@@ -3321,11 +3976,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  fun deleteSession(sessionId: String) {
+    val normalized = sessionId.trim()
+    if (normalized.isBlank()) return
+    viewModelScope.launch {
+      runCatching {
+        repository.deleteSession(normalized)
+        sessions.removeAll { it.sessionId == normalized }
+        if (currentSessionId == normalized) {
+          clearRuntimeRetryState()
+          currentSessionId = ""
+          sessionDetail = null
+          messages.clear()
+          sessionViewMode = "live"
+          sessionPlaybackStartIndex = 0
+          activeTab = "聊过"
+        }
+      }.onFailure {
+        notice = "删除会话失败: ${it.message ?: "未知错误"}"
+      }
+    }
+  }
+
+  suspend fun refreshPlaySessionNow(showNoticeOnFailure: Boolean = true): Boolean {
+    if (debugMode) {
+      updateDebugStatePreview()
+      return true
+    }
+    return runCatching {
+      val before = playSessionRefreshFingerprint()
+      refreshCurrentSession()
+      before != playSessionRefreshFingerprint()
+    }.getOrElse {
+      throwIfCancellation(it)
+      if (showNoticeOnFailure) {
+        notice = "刷新会话失败: ${it.message ?: "未知错误"}"
+      }
+      false
+    }
+  }
+
   fun sendMessage() {
     val sid = currentSessionId
     val text = sendText.trim()
     if (sid.isBlank() || text.isBlank()) return
-    if (!playCanPlayerSpeak()) {
+    if (!playCanPlayerInput()) {
       notice = playTurnHint()
       return
     }
@@ -3340,7 +4035,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       runCatching {
         performSessionPlayerMessage(sid, text)
       }.onFailure {
-        showRuntimeRetryMessage("发送失败: ${it.message ?: "未知错误"}") {
+        val message = it.message ?: "未知错误"
+        if (message.contains("当前还没轮到用户发言") || message.contains("HTTP 409")) {
+          notice = message
+          refreshPlaySessionNow(showNoticeOnFailure = false)
+        } else {
+          showRuntimeRetryMessage("发送失败: $message") {
+            performSessionPlayerMessage(sid, text)
+          }
+        }
+      }
+    }
+  }
+
+  fun sendMiniGameAction(action: String) {
+    val sid = currentSessionId
+    val text = action.trim()
+    if (sid.isBlank() || text.isBlank()) return
+    sendText = text
+    if (debugMode) {
+      sendDebugMessage(text)
+      return
+    }
+    clearRuntimeRetryState()
+    viewModelScope.launch {
+      runCatching {
+        performSessionPlayerMessage(sid, text)
+      }.onFailure {
+        val message = it.message ?: "未知错误"
+        showRuntimeRetryMessage("小游戏操作失败: $message") {
           performSessionPlayerMessage(sid, text)
         }
       }
@@ -3371,7 +4094,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private suspend fun loadWorlds() {
-    val rows = repository.listWorlds()
+    val rows = repository.listWorlds(includePublicPublished = true)
     worlds.clear()
     worlds.addAll(rows)
   }
@@ -3414,11 +4137,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val detail = repository.getSession(currentSessionId)
     clearRuntimeRetryState()
     sessionDetail = detail
+    refreshPlayChapterCache(detail)
     messages.clear()
     if (detail.messages.isNotEmpty()) {
       messages.addAll(detail.messages)
     } else {
       messages.addAll(repository.getMessages(currentSessionId))
+    }
+  }
+
+  fun playSessionRefreshFingerprint(): String {
+    val latest = conversationMessages().lastOrNull()
+    val latestDisplayContent = latest?.let(::displayContentForMessage).orEmpty()
+    val turnState = runtimeTurnStateRoot()
+    return buildString {
+      append(currentSessionId.trim())
+      append('|').append(playSessionStatus())
+      append('|').append(playRuntimeChapterId() ?: 0L)
+      append('|').append(turnState?.get("canPlayerSpeak")?.asBoolean ?: true)
+      append('|').append(scalarRuntimeText(turnState?.get("expectedRole")))
+      append('|').append(messages.size)
+      append('|').append(latest?.id ?: 0L)
+      append('|').append(latest?.createTime ?: 0L)
+      append('|').append(latest?.roleType.orEmpty())
+      append('|').append(latestDisplayContent.trim())
     }
   }
 
@@ -3448,6 +4190,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       runCatching {
         performDebugPlayerMessage(text, appendPlayerMessage = true)
       }.onFailure {
+        throwIfCancellation(it)
         showRuntimeRetryMessage("调试发送失败: ${it.message ?: "未知错误"}") {
           performDebugPlayerMessage(text, appendPlayerMessage = false)
         }
@@ -3470,6 +4213,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       )
       sendText = ""
     }
+    applyLocalDebugPlayerProfile(text)
     val history = conversationMessages()
       .let { list ->
         val last = list.lastOrNull()
@@ -3485,7 +4229,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     clearRuntimeRetryState()
     applyDebugOrchestrationResult(result, playCurrentChapter())
     if (result.plan != null) {
-      streamDebugPlan(result.plan, conversationMessages(), text)
+      streamDebugPlanOrFallback(result.plan, conversationMessages(), text)
     }
     updateDebugStatePreview()
   }
@@ -3497,6 +4241,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       performContinueDebugNarrative()
       true
     }.getOrElse {
+      throwIfCancellation(it)
       showRuntimeRetryMessage("调试推进失败: ${it.message ?: "未知错误"}") {
         performContinueDebugNarrative()
       }
@@ -3520,15 +4265,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       clearRuntimeRetryState()
       applyDebugOrchestrationResult(result, playCurrentChapter())
       if (result.plan != null) {
-        streamDebugPlan(result.plan, history, null)
+        streamDebugPlanOrFallback(result.plan, history, null)
       }
       updateDebugStatePreview()
-      val canSpeak = try {
-        val turnState = debugRuntimeState?.asJsonObject?.getAsJsonObject("turnState")
-        turnState?.get("canPlayerSpeak")?.asBoolean ?: true
-      } catch (_: Throwable) {
-        true
-      }
+      val canSpeak = debugCanPlayerSpeakFromState()
       if (conversationMessages().size > beforeCount || debugEndDialog != null || canSpeak) {
         advanced = true
         break
@@ -3550,8 +4290,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     updateDebugStatePreview()
   }
 
+  private fun applyDebugStepResult(result: DebugStepResult, historyMessages: List<MessageItem>, fallbackChapter: ChapterItem?) {
+    debugRuntimeState = result.state
+    if (result.chapterId != null && result.chapterId > 0L) {
+      debugChapterId = result.chapterId
+    }
+    val activeChapter = chapters.firstOrNull { it.id == (result.chapterId ?: debugChapterId) } ?: fallbackChapter
+    debugChapterTitle = normalizeChapterTitleLabel(result.chapterTitle.ifBlank { activeChapter?.title.orEmpty() }, activeChapter?.sort ?: 0)
+    debugEndDialog = result.endDialog
+    val appendedMessages = DebugSessionHeuristics.stripKnownHistory(historyMessages, result.messages)
+    messages.clear()
+    messages.addAll(historyMessages)
+    messages.addAll(appendedMessages)
+    updateDebugStatePreview()
+  }
+
+  private fun debugCanPlayerSpeakFromState(state: JsonElement? = debugRuntimeState): Boolean {
+    return try {
+      val turnState = state?.takeIf { it.isJsonObject }?.asJsonObject?.getAsJsonObject("turnState")
+      turnState?.get("canPlayerSpeak")?.asBoolean ?: true
+    } catch (_: Throwable) {
+      true
+    }
+  }
+
+  private suspend fun streamDebugPlanOrFallback(
+    plan: DebugNarrativePlan,
+    historyMessages: List<MessageItem>,
+    playerContent: String?,
+  ) {
+    runCatching {
+      streamDebugPlan(plan, historyMessages, playerContent)
+    }.getOrElse { streamError ->
+      throwIfCancellation(streamError)
+      val fallbackResult = repository.debugStep(
+        worldId = worldId,
+        chapterId = debugChapterId,
+        state = debugRuntimeState,
+        messages = historyMessages,
+        playerContent = playerContent,
+      )
+      clearRuntimeRetryState()
+      applyDebugStepResult(fallbackResult, historyMessages, playCurrentChapter())
+      val advanced = conversationMessages().size > historyMessages.size || debugEndDialog != null || debugCanPlayerSpeakFromState(fallbackResult.state)
+      if (!advanced) {
+        throw streamError
+      }
+    }
+  }
+
   private suspend fun streamDebugPlan(plan: DebugNarrativePlan, historyMessages: List<MessageItem>, playerContent: String?) {
-    val placeholder = createStreamingMessage(plan)
+    val placeholder = createStreamingMessage(plan, historyMessages.size + 1)
     messages.clear()
     messages.addAll(historyMessages)
     messages.add(placeholder)
@@ -3577,10 +4366,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           val text = event.getAsJsonObject("data")?.get("text")?.asString.orEmpty().trim()
           if (text.isBlank()) return@streamDebugLines
           updateMessageById(placeholder.id) { current ->
-            val meta = current.meta?.deepCopy()?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject().apply {
-              addProperty("kind", "runtime_stream")
-              addProperty("streaming", true)
-            }
+            val meta = buildRuntimeStreamMeta(current.meta, status = "streaming", streaming = true)
             val sentences = meta.getAsJsonArray("sentences") ?: JsonArray().also { meta.add("sentences", it) }
             val exists = sentences.any { item -> item?.takeIf { !it.isJsonNull }?.asString == text }
             if (!exists) {
@@ -3601,7 +4387,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
               roleType = message?.get("roleType")?.asString ?: current.roleType,
               eventType = message?.get("eventType")?.asString ?: current.eventType,
               content = finalContent,
-              meta = JsonObject(),
+              meta = buildRuntimeStreamMeta(current.meta, status = "generated", streaming = false),
             )
           }
         }
@@ -3776,6 +4562,152 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }.toString()
   }
 
+  private fun normalizeDebugPlayerProfileGender(input: String): String {
+    return when (normalizeScalarEditorText(input).trim()) {
+      "男", "男性", "男生" -> "男"
+      "女", "女性", "女生" -> "女"
+      else -> ""
+    }
+  }
+
+  private fun normalizeDebugPlayerProfileAge(input: String): Int? {
+    val matched = Regex("(\\d{1,3})").find(normalizeScalarEditorText(input).trim()) ?: return null
+    val value = matched.groupValues.getOrNull(1)?.toIntOrNull() ?: return null
+    return value.takeIf { it in 1..150 }
+  }
+
+  private fun parseDebugPlayerProfileDraft(message: String, currentName: String): ParsedPlayerProfile {
+    val text = normalizeScalarEditorText(message)
+      .replace(Regex("[。！？!?\\r\\n]+"), " ")
+      .replace(Regex("\\s+"), " ")
+      .trim()
+    if (text.isBlank()) return ParsedPlayerProfile()
+
+    Regex("^([A-Za-z\\u4e00-\\u9fa5·•]{1,12}?)(男|女)(?:性|生)?(?:[，,、/\\s]+(\\d{1,3})(?:岁)?)?$")
+      .matchEntire(text)
+      ?.let { matched ->
+        return ParsedPlayerProfile(
+          name = normalizeScalarEditorText(matched.groupValues.getOrNull(1)),
+          gender = normalizeDebugPlayerProfileGender(matched.groupValues.getOrNull(2).orEmpty()),
+          age = normalizeDebugPlayerProfileAge(matched.groupValues.getOrNull(3).orEmpty()),
+        )
+      }
+
+    var name = ""
+    var gender = ""
+    var age: Int? = null
+
+    Regex("(?:我叫|我是|姓名(?:是|[:：])?|名字(?:是|[:：])?)\\s*([A-Za-z\\u4e00-\\u9fa5·•]{1,16})")
+      .find(text)
+      ?.groupValues
+      ?.getOrNull(1)
+      ?.let { name = normalizeScalarEditorText(it) }
+
+    Regex("(?:性别(?:是|[:：])?\\s*)?(男|女|男性|女性|男生|女生)")
+      .find(text)
+      ?.groupValues
+      ?.getOrNull(1)
+      ?.let { normalizeDebugPlayerProfileGender(it) }
+      ?.takeIf { it.isNotBlank() }
+      ?.let { gender = it }
+
+    Regex("(?:年龄(?:是|[:：])?\\s*|我今年|今年)\\s*(\\d{1,3})\\s*岁?")
+      .find(text)
+      ?.groupValues
+      ?.getOrNull(1)
+      ?.let { normalizeDebugPlayerProfileAge(it) }
+      ?.let { age = it }
+
+    if (name.isBlank() && text.length <= 24) {
+      val segments = text
+        .split(Regex("[，,、/|｜]"))
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+      val hasProfileSegment = segments.any { normalizeDebugPlayerProfileGender(it).isNotBlank() || normalizeDebugPlayerProfileAge(it) != null }
+      if (segments.size in 2..4 && hasProfileSegment) {
+        segments.firstOrNull {
+          Regex("^[A-Za-z\\u4e00-\\u9fa5·•]{1,16}$").matches(it)
+            && normalizeDebugPlayerProfileGender(it).isBlank()
+            && normalizeDebugPlayerProfileAge(it) == null
+        }?.let { name = normalizeScalarEditorText(it) }
+        if (gender.isBlank()) {
+          segments
+            .map { normalizeDebugPlayerProfileGender(it) }
+            .firstOrNull { it.isNotBlank() }
+            ?.let { gender = it }
+        }
+        if (age == null) {
+          segments
+            .mapNotNull { normalizeDebugPlayerProfileAge(it) }
+            .firstOrNull()
+            ?.let { age = it }
+        }
+      }
+    }
+
+    if (name == currentName) {
+      name = ""
+    }
+    return ParsedPlayerProfile(name = name, gender = gender, age = age)
+  }
+
+  private fun applyLocalDebugPlayerProfile(text: String) {
+    if (!debugMode) return
+    val displayName = playerName.ifBlank { "用户" }
+    val runtimePlayer = runtimeRoleSnapshot("player", "player") ?: buildRole(
+      id = "player",
+      roleType = "player",
+      name = displayName,
+      avatarPath = userAvatarPath,
+      avatarBgPath = userAvatarBgPath,
+      description = playerDesc.ifBlank { "用户在故事中的主视角角色" },
+      voice = playerVoice,
+      voiceMode = playerVoiceMode,
+      voicePresetId = playerVoicePresetId,
+      voiceReferenceAudioPath = playerVoiceReferenceAudioPath,
+      voiceReferenceAudioName = playerVoiceReferenceAudioName,
+      voiceReferenceText = playerVoiceReferenceText,
+      voicePromptText = playerVoicePromptText,
+      voiceMixVoices = playerVoiceMixVoices,
+      sample = "",
+    )
+    val currentCard = runtimePlayer.parameterCardJson ?: RoleParameterCard(
+      name = displayName,
+      rawSetting = runtimePlayer.description.ifBlank { "用户在故事中的主视角角色" },
+      voice = runtimePlayer.voice,
+    )
+    val parsed = parseDebugPlayerProfileDraft(text, currentCard.name.ifBlank { displayName })
+    if (parsed.name.isBlank() && parsed.gender.isBlank() && parsed.age == null) return
+    val updatedRole = runtimePlayer.copy(
+      name = displayName,
+      parameterCardJson = currentCard.copy(
+        name = parsed.name.ifBlank { currentCard.name.ifBlank { displayName } },
+        rawSetting = currentCard.rawSetting.ifBlank { runtimePlayer.description.ifBlank { "用户在故事中的主视角角色" } },
+        gender = parsed.gender.ifBlank { currentCard.gender },
+        age = parsed.age ?: currentCard.age,
+        voice = currentCard.voice.ifBlank { runtimePlayer.voice },
+      ),
+    )
+    val root = if (debugRuntimeState?.isJsonObject == true) {
+      debugRuntimeState!!.asJsonObject.deepCopy()
+    } else {
+      JsonObject()
+    }
+    root.add("player", repository.toJson(updatedRole))
+    val turnState = if (root.get("turnState")?.isJsonObject == true) {
+      root.getAsJsonObject("turnState").deepCopy()
+    } else {
+      JsonObject()
+    }
+    val expectedRoleType = scalarRuntimeText(turnState.get("expectedRoleType")).ifBlank { "player" }.lowercase(Locale.ROOT)
+    if (expectedRoleType == "player") {
+      turnState.addProperty("expectedRole", displayName)
+    }
+    root.add("turnState", turnState)
+    debugRuntimeState = root
+    updateDebugStatePreview()
+  }
+
   private fun parseChapterCondition(raw: String): JsonElement? {
     val text = normalizeScalarEditorText(raw).trim()
     if (text.isEmpty()) return null
@@ -3881,6 +4813,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     quickInput = ""
     currentSessionId = ""
     sessionDetail = null
+    clearPlayChapterCache()
     messages.clear()
     messageReactions.clear()
     sendText = ""
@@ -3907,6 +4840,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     settingsPanelLoaded = false
     settingsPanelLoading = false
     aiGenerating = false
+  }
+
+  private fun clearPlayChapterCache() {
+    playChapters.clear()
+    playChapterWorldId = 0L
+  }
+
+  private suspend fun refreshPlayChapterCache(detail: SessionDetail) {
+    val worldId = detail.world?.id?.takeIf { it > 0L } ?: run {
+      clearPlayChapterCache()
+      return
+    }
+    if (playChapterWorldId != worldId) {
+      playChapters.clear()
+      playChapterWorldId = worldId
+    }
+    val activeChapterId = playRuntimeChapterId()
+    val cacheReady = playChapterWorldId == worldId
+      && playChapters.isNotEmpty()
+      && (activeChapterId == null || playChapters.any { it.id == activeChapterId })
+    if (cacheReady) return
+    runCatching {
+      repository.getChapter(worldId)
+    }.onSuccess { rows ->
+      playChapters.clear()
+      playChapters.addAll(rows)
+      playChapterWorldId = worldId
+    }
   }
 
   private fun beginNewStoryDraft() {

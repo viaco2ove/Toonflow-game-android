@@ -5,17 +5,29 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.toonflow.game.api.ApiClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.logging.HttpLoggingInterceptor
+import java.io.InterruptedIOException
+import java.net.SocketTimeoutException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 class GameRepository(private val settingsStore: SettingsStore) {
   private val gson = Gson()
   private val roleAvatarTaskPollIntervalMs = 1000L
   private val roleAvatarTaskTimeoutMs = 180000L
+  private val debugStreamIdleTimeoutMs = 15000L
+  private val debugStreamWatchdogPollMs = 500L
 
   private fun api() = ApiClient.create(settingsStore)
 
@@ -96,9 +108,10 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return runCatching { api().getWorld(payload).data }.getOrNull()
   }
 
-  suspend fun listWorlds(projectId: Long? = null): List<WorldItem> {
+  suspend fun listWorlds(projectId: Long? = null, includePublicPublished: Boolean = false): List<WorldItem> {
     val payload = JsonObject().apply {
       if (projectId != null && projectId > 0L) addProperty("projectId", projectId)
+      if (includePublicPublished) addProperty("includePublicPublished", true)
     }
     return runCatching { api().listWorlds(payload).data }.getOrElse { emptyList() }
   }
@@ -156,6 +169,19 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return api().uploadImage(payload).data
   }
 
+  suspend fun convertAvatarVideoToGif(
+    projectId: Long? = null,
+    base64Data: String,
+    fileName: String = "avatar.mp4",
+  ): SeparatedRoleImageResult {
+    val payload = JsonObject().apply {
+      if (projectId != null && projectId > 0L) addProperty("projectId", projectId)
+      addProperty("base64Data", base64Data)
+      if (fileName.isNotBlank()) addProperty("fileName", fileName)
+    }
+    return api().convertAvatarVideoToGif(payload).data
+  }
+
   suspend fun separateRoleAvatar(
     projectId: Long? = null,
     base64Data: String,
@@ -208,10 +234,13 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return api().startSession(payload).data.get("sessionId")?.asString ?: ""
   }
 
-  suspend fun listSession(projectId: Long? = null): List<SessionItem> {
+  suspend fun listSession(projectId: Long? = null, worldId: Long? = null): List<SessionItem> {
     val payload = JsonObject().apply {
       if (projectId != null && projectId > 0L) {
         addProperty("projectId", projectId)
+      }
+      if (worldId != null && worldId > 0L) {
+        addProperty("worldId", worldId)
       }
       addProperty("limit", 60)
     }
@@ -224,6 +253,21 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("messageLimit", 120)
     }
     return api().getSession(payload).data
+  }
+
+  suspend fun deleteSession(sessionId: String) {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+    }
+    api().deleteSession(payload)
+  }
+
+  suspend fun deleteMessage(sessionId: String, messageId: Long) {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+      addProperty("messageId", messageId)
+    }
+    api().deleteMessage(payload)
   }
 
   suspend fun getMessages(sessionId: String): List<MessageItem> {
@@ -311,25 +355,58 @@ class GameRepository(private val settingsStore: SettingsStore) {
         if (token.isNotEmpty()) {
           header("Authorization", token)
         }
-      }
+    }
       .build()
+    val logger = HttpLoggingInterceptor().apply {
+      level = HttpLoggingInterceptor.Level.BASIC
+    }
     val client = OkHttpClient.Builder()
+      .addInterceptor(logger)
       .connectTimeout(20, TimeUnit.SECONDS)
       .readTimeout(0, TimeUnit.SECONDS)
       .writeTimeout(30, TimeUnit.SECONDS)
       .build()
-    client.newCall(request).execute().use { response ->
-      if (!response.isSuccessful) {
-        error("HTTP ${response.code}")
-      }
-      val body = response.body ?: error("未返回流式正文")
-      body.charStream().buffered().useLines { lines ->
-        lines.forEach { raw ->
-          val line = raw.trim()
-          if (line.isBlank()) return@forEach
-          val event = gson.fromJson(line, JsonObject::class.java)
-          onEvent(event)
+    coroutineScope {
+      val call = client.newCall(request)
+      val timedOut = AtomicBoolean(false)
+      val lastEventAt = AtomicLong(System.currentTimeMillis())
+      val watchdog = launch(Dispatchers.IO) {
+        while (isActive) {
+          delay(debugStreamWatchdogPollMs)
+          if (System.currentTimeMillis() - lastEventAt.get() < debugStreamIdleTimeoutMs) continue
+          timedOut.set(true)
+          call.cancel()
+          break
         }
+      }
+      try {
+        withContext(Dispatchers.IO) {
+          call.execute().use { response ->
+            if (!response.isSuccessful) {
+              error("HTTP ${response.code}")
+            }
+            val body = response.body ?: error("未返回流式正文")
+            val source = body.source()
+            source.timeout().timeout(debugStreamIdleTimeoutMs, TimeUnit.MILLISECONDS)
+            while (true) {
+              val raw = source.readUtf8Line() ?: break
+              val line = raw.trim()
+              if (line.isBlank()) continue
+              lastEventAt.set(System.currentTimeMillis())
+              val event = gson.fromJson(line, JsonObject::class.java)
+              withContext(Dispatchers.Main.immediate) {
+                onEvent(event)
+              }
+            }
+          }
+        }
+      } catch (err: Throwable) {
+        if (timedOut.get() || err is InterruptedIOException || err is SocketTimeoutException) {
+          error("调试台词流空闲超时")
+        }
+        throw err
+      } finally {
+        watchdog.cancel()
       }
     }
   }

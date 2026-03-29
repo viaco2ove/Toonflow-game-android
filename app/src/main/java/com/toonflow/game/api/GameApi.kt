@@ -61,6 +61,9 @@ interface GameApi {
   @POST("game/uploadImage")
   suspend fun uploadImage(@Body payload: JsonObject): ApiEnvelope<GeneratedImageResult>
 
+  @POST("game/convertAvatarVideoToGif")
+  suspend fun convertAvatarVideoToGif(@Body payload: JsonObject): ApiEnvelope<SeparatedRoleImageResult>
+
   @POST("game/separateRoleAvatar")
   suspend fun separateRoleAvatar(@Body payload: JsonObject): ApiEnvelope<RoleAvatarTaskResult>
 
@@ -81,6 +84,12 @@ interface GameApi {
 
   @POST("game/getSession")
   suspend fun getSession(@Body payload: JsonObject): ApiEnvelope<SessionDetail>
+
+  @POST("game/deleteSession")
+  suspend fun deleteSession(@Body payload: JsonObject): ApiEnvelope<JsonElement>
+
+  @POST("game/deleteMessage")
+  suspend fun deleteMessage(@Body payload: JsonObject): ApiEnvelope<JsonElement>
 
   @POST("game/getMessage")
   suspend fun getMessage(@Body payload: JsonObject): ApiEnvelope<List<MessageItem>>
