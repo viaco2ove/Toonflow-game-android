@@ -4557,7 +4557,18 @@ private fun parameterCardOtherJson(values: List<String>): String = runCatching {
 private fun ParameterCardField(label: String, value: String) {
   Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
     Text(label, color = Color(0xFF93A8C3), style = MaterialTheme.typography.labelSmall)
-    Text(value, color = Color(0xFFAFC6E9), style = MaterialTheme.typography.bodySmall)
+    val longText = value.length > 120 || label == "原始角色设定"
+    if (longText) {
+      Box(
+        modifier = Modifier
+          .heightIn(max = 132.dp)
+          .verticalScroll(rememberScrollState()),
+      ) {
+        Text(value, color = Color(0xFFAFC6E9), style = MaterialTheme.typography.bodySmall)
+      }
+    } else {
+      Text(value, color = Color(0xFFAFC6E9), style = MaterialTheme.typography.bodySmall)
+    }
   }
 }
 
