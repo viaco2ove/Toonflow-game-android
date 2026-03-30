@@ -31,6 +31,7 @@ import com.toonflow.game.data.PromptItem
 import com.toonflow.game.data.RoleParameterCard
 import com.toonflow.game.data.SessionDetail
 import com.toonflow.game.data.SessionItem
+import com.toonflow.game.data.SessionNarrativeResult
 import com.toonflow.game.data.SettingsStore
 import com.toonflow.game.data.StoryRole
 import com.toonflow.game.data.UploadedVoiceAudioResult
@@ -223,6 +224,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var quickInput by mutableStateOf("")
   var currentSessionId by mutableStateOf("")
   var sessionDetail by mutableStateOf<SessionDetail?>(null)
+  var sessionOpening by mutableStateOf(false)
   private val playChapters = mutableStateListOf<ChapterItem>()
   private var playChapterWorldId by mutableStateOf(0L)
   val messages = mutableStateListOf<MessageItem>()
@@ -1126,7 +1128,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun playStatePreview(): String {
     if (debugMode) return debugStatePreview.ifBlank { "{}" }
-    return sessionDetail?.state?.toString().orEmpty().ifBlank { "{}" }.take(320)
+    val source = sessionDetail?.state
+    return source?.toString().orEmpty().ifBlank { "{}" }.take(320)
   }
 
   private fun runtimeStateRoot(): JsonObject? {
@@ -1330,62 +1333,72 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun playCanPlayerInput(): Boolean {
+    if (sessionOpening) return false
     if (playRuntimeMiniGame()?.acceptsTextInput == true) return true
-    val latest = conversationMessages().lastOrNull()
-    return PlaySessionHeuristics.shouldOfferInputFallback(
-      canPlayerSpeak = playCanPlayerSpeak(),
-      sessionStatus = playSessionStatus(),
-      latestRoleType = latest?.roleType.orEmpty(),
-      latestContent = latest?.let(::displayContentForMessage).orEmpty(),
-    )
+    return playCanPlayerSpeak()
   }
 
   fun playShouldAutoRefreshWhileWaiting(): Boolean {
-    if (debugMode || currentSessionId.isBlank() || playCanPlayerSpeak()) return false
-    val status = playSessionStatus().trim().lowercase()
-    if (status.isNotBlank() && status != "active") return false
-    val latest = conversationMessages().lastOrNull() ?: return true
-    return latest.roleType != "player"
+    return false
   }
 
   fun playInputPlaceholder(textMode: Boolean): String {
+    if (sessionOpening) return "正在进入故事..."
     playRuntimeMiniGame()?.takeIf { it.acceptsTextInput }?.let { miniGame ->
       return miniGame.inputHint.ifBlank { "直接输入方案" }
     }
-    return PlaySessionHeuristics.buildInputPlaceholder(
-      textMode = textMode,
-      canPlayerSpeak = playCanPlayerSpeak(),
-      expectedSpeaker = playExpectedSpeaker(),
-      sessionStatus = playSessionStatus(),
-      allowFallback = playCanPlayerInput(),
-    )
+    val status = playSessionStatus().trim().lowercase()
+    if (playCanPlayerSpeak()) {
+      return if (textMode) "输入一句话继续故事" else "按住说话"
+    }
+    if (status in setOf("chapter_completed", "completed", "success", "finished")) {
+      return "当前章节已完成"
+    }
+    if (status in setOf("failed", "dead", "lose", "loss")) {
+      return "当前故事已失败"
+    }
+    return "当前轮到${playExpectedSpeaker()}发言"
   }
 
   fun playTurnHint(): String {
+    if (sessionOpening) return "正在进入故事..."
     if (playRuntimeMiniGame()?.acceptsTextInput == true) {
       return "小游戏进行中，直接输入方案即可。"
     }
-    return PlaySessionHeuristics.buildTurnHint(
-      canPlayerSpeak = playCanPlayerSpeak(),
-      expectedSpeaker = playExpectedSpeaker(),
-      sessionStatus = playSessionStatus(),
-      allowFallback = playCanPlayerInput(),
-    )
+    val status = playSessionStatus().trim().lowercase()
+    if (status in setOf("chapter_completed", "completed", "success", "finished")) {
+      return "当前章节已完成，可刷新或返回历史继续查看。"
+    }
+    if (status in setOf("failed", "dead", "lose", "loss")) {
+      return "当前故事已失败，可返回历史重新开始。"
+    }
+    if (playCanPlayerSpeak()) return ""
+    return "当前还没轮到用户发言，等待${playExpectedSpeaker()}继续。"
   }
 
   fun playLatestRuntimeChatDebug(): RuntimeChatDebugItem? {
     val latest = conversationMessages().lastOrNull() ?: return null
     val meta = latest.meta?.takeIf { it.isJsonObject }?.asJsonObject
     val turnState = runtimeTurnStateRoot()
+    val canPlayerSpeakNow = turnState?.get("canPlayerSpeak")?.asBoolean ?: true
+    val currentStatus = runtimeMessageStatus(latest).ifBlank {
+      if (canPlayerSpeakNow) "waiting_player" else "waiting_next"
+    }
     return RuntimeChatDebugItem(
       conversationId = currentSessionId,
       messageId = latest.id,
       lineIndex = meta?.get("lineIndex")?.takeIf { !it.isJsonNull }?.asInt ?: conversationMessages().size,
       currentRole = displayNameForMessage(latest),
       currentRoleType = latest.roleType,
-      currentStatus = runtimeMessageStatus(latest),
-      nextRole = scalarRuntimeText(meta?.get("nextRole")).ifBlank { scalarRuntimeText(turnState?.get("expectedRole")) },
-      nextRoleType = scalarRuntimeText(meta?.get("nextRoleType")).ifBlank { scalarRuntimeText(turnState?.get("expectedRoleType")) },
+      currentStatus = currentStatus,
+      nextRole =
+        scalarRuntimeText(meta?.get("nextRole")).ifBlank {
+          if (canPlayerSpeakNow || currentStatus == "waiting_player") "玩家" else scalarRuntimeText(turnState?.get("expectedRole")).ifBlank { "当前角色" }
+        },
+      nextRoleType =
+        scalarRuntimeText(meta?.get("nextRoleType")).ifBlank {
+          if (canPlayerSpeakNow || currentStatus == "waiting_player") "player" else scalarRuntimeText(turnState?.get("expectedRoleType")).ifBlank { "npc" }
+        },
     )
   }
 
@@ -2710,6 +2723,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     current: JsonElement?,
     status: String? = null,
     streaming: Boolean? = null,
+    lineIndex: Int? = null,
     nextRole: String? = null,
     nextRoleType: String? = null,
   ): JsonObject {
@@ -2719,6 +2733,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     if (!meta.has("kind")) meta.addProperty("kind", "runtime_stream")
     if (!meta.has("streaming")) meta.addProperty("streaming", false)
+    if (lineIndex != null && lineIndex > 0) meta.addProperty("lineIndex", lineIndex)
     if (status != null) meta.addProperty("status", status)
     if (streaming != null) meta.addProperty("streaming", streaming)
     if (nextRole != null) meta.addProperty("nextRole", nextRole)
@@ -2727,16 +2742,90 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun setRuntimeMessageStatus(messageId: Long, status: String) {
-    val turnState = debugRuntimeState?.takeIf { it.isJsonObject }?.asJsonObject?.getAsJsonObject("turnState")
+    val turnState = runtimeTurnStateRoot()
+    val canPlayerSpeakNow = turnState?.get("canPlayerSpeak")?.asBoolean ?: true
     updateMessageById(messageId) { current ->
       current.copy(
         meta = buildRuntimeStreamMeta(
           current.meta,
           status = status,
-          nextRole = turnState?.get("expectedRole")?.asString.orEmpty(),
-          nextRoleType = turnState?.get("expectedRoleType")?.asString.orEmpty(),
+          nextRole = if (status == "waiting_player" || canPlayerSpeakNow) "玩家" else turnState?.get("expectedRole")?.asString.orEmpty(),
+          nextRoleType = if (status == "waiting_player" || canPlayerSpeakNow) "player" else turnState?.get("expectedRoleType")?.asString.orEmpty(),
         ),
       )
+    }
+  }
+
+  private fun messageIdentity(message: MessageItem): String {
+    return "${message.id}_${message.createTime}"
+  }
+
+  private fun mergeConversationMessages(base: List<MessageItem>, incoming: List<MessageItem>): List<MessageItem> {
+    val next = base.toMutableList()
+    incoming.forEach { message ->
+      val identity = messageIdentity(message)
+      val index = next.indexOfFirst { messageIdentity(it) == identity }
+      if (index >= 0) {
+        next[index] = message
+      } else {
+        next += message
+      }
+    }
+    return next
+  }
+
+  private fun normalizeSessionRuntimeMessage(
+    message: MessageItem,
+    lineIndex: Int,
+    turnState: JsonObject?,
+  ): MessageItem {
+    if (message.roleType == "player" || isRuntimeRetryMessage(message)) return message
+    val canPlayerSpeakNow = turnState?.get("canPlayerSpeak")?.asBoolean ?: true
+    return message.copy(
+      meta = buildRuntimeStreamMeta(
+        current = message.meta,
+        status = "generated",
+        streaming = false,
+        lineIndex = lineIndex,
+        nextRole = if (canPlayerSpeakNow) "玩家" else scalarRuntimeText(turnState?.get("expectedRole")),
+        nextRoleType = if (canPlayerSpeakNow) "player" else scalarRuntimeText(turnState?.get("expectedRoleType")),
+      ),
+    )
+  }
+
+  private fun applySessionNarrativeResult(result: SessionNarrativeResult) {
+    val existingDetail = sessionDetail
+    val nextState = result.state ?: existingDetail?.state
+    val turnState = nextState?.takeIf { it.isJsonObject }?.asJsonObject?.getAsJsonObject("turnState")
+    val baseMessages = conversationMessages(messages.toList())
+    val incomingMessages = buildList {
+      result.message?.let(::add)
+      addAll(result.generatedMessages)
+    }
+    val lineStart = baseMessages.size
+    val normalizedIncoming = incomingMessages.mapIndexed { index, message ->
+      normalizeSessionRuntimeMessage(message, lineStart + index + 1, turnState)
+    }
+    val mergedMessages = mergeConversationMessages(baseMessages, normalizedIncoming)
+    sessionDetail = SessionDetail(
+      sessionId = result.sessionId.ifBlank { existingDetail?.sessionId.orEmpty() },
+      title = existingDetail?.title.orEmpty(),
+      status = result.status.ifBlank { existingDetail?.status.orEmpty() },
+      chapterId = result.chapterId ?: existingDetail?.chapterId,
+      state = nextState,
+      world = existingDetail?.world,
+      chapter = result.chapter ?: existingDetail?.chapter,
+      messages = mergedMessages,
+    )
+    messages.clear()
+    messages.addAll(mergedMessages)
+    result.chapter?.let { chapter ->
+      val index = playChapters.indexOfFirst { it.id == chapter.id }
+      if (index >= 0) {
+        playChapters[index] = chapter
+      } else {
+        playChapters.add(chapter)
+      }
     }
   }
 
@@ -3868,7 +3957,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun startFromWorld(world: WorldItem, firstMessage: String = "") {
     if (debugMode) leaveDebugMode()
+    activeTab = "游玩"
+    sessionOpening = true
+    sessionDetail = null
+    messages.clear()
     viewModelScope.launch {
+      notice = "正在进入故事..."
       runCatching {
         val existingSessionId = repository.listSession(worldId = world.id)
           .firstOrNull()
@@ -3880,12 +3974,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           sessionViewMode = "live"
           sessionPlaybackStartIndex = 0
           currentSessionId = existingSessionId
-          if (firstMessage.isNotBlank()) {
-            repository.addPlayerMessage(existingSessionId, playerName.ifBlank { "用户" }, firstMessage)
-          }
           refreshCurrentSession()
+          if (firstMessage.isNotBlank()) {
+            applySessionNarrativeResult(repository.addPlayerMessage(existingSessionId, playerName.ifBlank { "用户" }, firstMessage))
+          }
           loadSessions()
-          activeTab = "游玩"
           return@runCatching
         }
         if ((world.chapterCount ?: 0) <= 0) {
@@ -3896,14 +3989,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         sessionViewMode = "live"
         sessionPlaybackStartIndex = 0
         currentSessionId = sid
-        if (firstMessage.isNotBlank()) {
-          repository.addPlayerMessage(sid, playerName.ifBlank { "用户" }, firstMessage)
-        }
         refreshCurrentSession()
+        if (firstMessage.isNotBlank()) {
+          applySessionNarrativeResult(repository.addPlayerMessage(sid, playerName.ifBlank { "用户" }, firstMessage))
+        }
         loadSessions()
-        activeTab = "游玩"
       }.onFailure {
         notice = "进入游玩失败: ${it.message ?: "未知错误"}"
+      }.also {
+        sessionOpening = false
       }
     }
   }
@@ -3911,7 +4005,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun continueSessionForWorld(worldId: Long, fallbackSessionId: String = "", playback: Boolean = false, playbackIndex: Int = 0) {
     if (debugMode) leaveDebugMode()
     clearRuntimeRetryState()
+    activeTab = "游玩"
+    sessionOpening = true
+    sessionDetail = null
+    messages.clear()
     viewModelScope.launch {
+      notice = if (playback) "正在打开剧情回放..." else "正在进入故事..."
       runCatching {
         val resolvedSessionId = repository.listSession(worldId = worldId)
           .firstOrNull()
@@ -3926,9 +4025,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         currentSessionId = resolvedSessionId
         refreshCurrentSession()
         loadSessions()
-        activeTab = "游玩"
       }.onFailure {
         notice = "打开会话失败: ${it.message ?: "未知错误"}"
+      }.also {
+        sessionOpening = false
       }
     }
   }
@@ -3950,15 +4050,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun openSession(sessionId: String, playback: Boolean = false, playbackIndex: Int = 0) {
     if (debugMode) leaveDebugMode()
     clearRuntimeRetryState()
+    notice = if (playback) "正在打开剧情回放..." else "正在进入故事..."
     sessionViewMode = if (playback) "playback" else "live"
     sessionPlaybackStartIndex = playbackIndex.coerceAtLeast(0)
     currentSessionId = sessionId
+    activeTab = "游玩"
+    sessionOpening = true
+    sessionDetail = null
+    messages.clear()
     viewModelScope.launch {
       runCatching {
         refreshCurrentSession()
-        activeTab = "游玩"
       }.onFailure {
         notice = "打开会话失败: ${it.message ?: "未知错误"}"
+      }.also {
+        sessionOpening = false
       }
     }
   }
@@ -4178,11 +4284,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private suspend fun performSessionPlayerMessage(sessionId: String, text: String) {
-    repository.addPlayerMessage(sessionId, playerName.ifBlank { "用户" }, text)
+    val result = repository.addPlayerMessage(sessionId, playerName.ifBlank { "用户" }, text)
     sendText = ""
     clearRuntimeRetryState()
-    refreshCurrentSession()
+    applySessionNarrativeResult(result)
     loadSessions()
+  }
+
+  private suspend fun performContinueSessionNarrative() {
+    if (currentSessionId.isBlank()) return
+    val beforeCount = conversationMessages().size
+    val result = repository.continueSession(currentSessionId)
+    clearRuntimeRetryState()
+    applySessionNarrativeResult(result)
+    loadSessions()
+    val afterCount = conversationMessages().size
+    val latest = conversationMessages().lastOrNull()
+    val latestStatus = latest?.let(::runtimeMessageStatus).orEmpty()
+    val canPlayerSpeakNow = playCanPlayerSpeak()
+    if (afterCount <= beforeCount && !canPlayerSpeakNow && latestStatus != "waiting_player") {
+      error("自动推进没有产出新内容")
+    }
+  }
+
+  suspend fun continueSessionNarrative(): Boolean {
+    if (currentSessionId.isBlank()) return false
+    clearRuntimeRetryState()
+    return runCatching {
+      performContinueSessionNarrative()
+      true
+    }.getOrElse {
+      throwIfCancellation(it)
+      showRuntimeRetryMessage("继续剧情失败: ${it.message ?: "未知错误"}") {
+        performContinueSessionNarrative()
+      }
+      false
+    }
   }
 
   private fun sendDebugMessage(text: String) {

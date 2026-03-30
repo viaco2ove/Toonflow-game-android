@@ -205,13 +205,21 @@ private fun sanitizeSpeakableText(input: String): String {
     .trim()
 }
 
-private fun splitSpeakableSegments(input: String): List<String> {
+private fun normalizePlayableSpeakableText(input: String): String {
   val text = sanitizeSpeakableText(input).replace("\r", "").trim()
+  if (text.isBlank()) return ""
+  val compact = text.replace(Regex("\\s+"), "")
+  val meaningful = compact.replace(Regex("[0-9０-９.,!?;:，。！？；：、…·\"'“”‘’`~!@#$%^&*()\\-_=+\\[\\]{}<>/\\\\|]+"), "")
+  return if (meaningful.isBlank()) "" else text
+}
+
+private fun splitSpeakableSegments(input: String): List<String> {
+  val text = normalizePlayableSpeakableText(input)
   if (text.isBlank()) return emptyList()
   val result = mutableListOf<String>()
   val buffer = StringBuilder()
   fun flush() {
-    val value = buffer.toString().trim()
+    val value = normalizePlayableSpeakableText(buffer.toString())
     if (value.isNotBlank()) {
       result += value
     }
@@ -2865,7 +2873,7 @@ private fun PlayScene(
     waitForCompletion: Boolean = manual,
     overrideText: String? = null,
   ): Boolean {
-    val speakable = sanitizeSpeakableText(overrideText ?: vm.displayContentForMessage(message))
+    val speakable = normalizePlayableSpeakableText(overrideText ?: vm.displayContentForMessage(message))
     if (speakable.isBlank()) {
       if (manual) vm.notice = "这条对话没有可重听内容"
       return false
@@ -2907,6 +2915,9 @@ private fun PlayScene(
       if (systemPlayed) {
         return true
       }
+      if (!manual) {
+        vm.notice = "自动语音失败，已跳过"
+      }
       if (manual) {
         vm.notice = "重听失败: ${finalError.message ?: "未知错误"}"
       }
@@ -2928,7 +2939,7 @@ private fun PlayScene(
 
   fun launchRuntimeAutoVoice(message: MessageItem, segments: List<String>) {
     val speakableSegments = segments
-      .map(::sanitizeSpeakableText)
+      .map(::normalizePlayableSpeakableText)
       .filter { it.isNotBlank() }
     if (speakableSegments.isEmpty()) return
     stopRuntimeAutoVoiceQueue(invalidate = true)
@@ -3183,7 +3194,7 @@ private fun PlayScene(
     runtimeVoiceMessageKey,
     runtimeVoicePhase,
   ) {
-    if (!vm.debugMode || mode != "live" || vm.debugLoading || vm.debugEndDialog != null || canPlayerSpeak) {
+    if (mode != "live" || vm.debugLoading || vm.debugEndDialog != null) {
       return@LaunchedEffect
     }
     val latest = latestRevealedMessage ?: return@LaunchedEffect
@@ -3200,6 +3211,9 @@ private fun PlayScene(
       latestStatus = if (canPlayerSpeak) "waiting_player" else "waiting_next"
       vm.setRuntimeMessageStatus(latest.id, latestStatus)
     }
+    if (canPlayerSpeak) {
+      return@LaunchedEffect
+    }
     if (latestStatus != "waiting_next") {
       return@LaunchedEffect
     }
@@ -3213,7 +3227,7 @@ private fun PlayScene(
     var launchedJob: Job? = null
     launchedJob = scope.launch {
       try {
-        val ok = vm.continueDebugNarrative()
+        val ok = if (vm.debugMode) vm.continueDebugNarrative() else vm.continueSessionNarrative()
         if (!ok) {
           vm.setRuntimeMessageStatus(latestMessageId, "error")
         }
@@ -3240,28 +3254,6 @@ private fun PlayScene(
   LaunchedEffect(autoVoice) {
     if (!autoVoice) {
       stopRuntimeAutoVoiceQueue()
-    }
-  }
-  LaunchedEffect(
-    vm.currentSessionId,
-    mode,
-    vm.debugMode,
-    vm.debugLoading,
-    canPlayerSpeak,
-    vm.playSessionRefreshFingerprint(),
-  ) {
-    if (vm.debugMode || mode != "live" || vm.debugLoading || canPlayerSpeak || !vm.playShouldAutoRefreshWhileWaiting()) {
-      return@LaunchedEffect
-    }
-    repeat(6) {
-      delay(1800)
-      if (vm.debugMode || mode != "live" || vm.playCanPlayerSpeak() || !vm.playShouldAutoRefreshWhileWaiting()) {
-        return@LaunchedEffect
-      }
-      val changed = vm.refreshPlaySessionNow(showNoticeOnFailure = false)
-      if (changed || vm.playCanPlayerSpeak()) {
-        return@LaunchedEffect
-      }
     }
   }
 
@@ -3397,7 +3389,7 @@ private fun PlayScene(
       Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
         if (displayMessages.isEmpty()) {
           Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text("当前会话暂无消息，发送一句话开始。", color = Color(0xFFD5E6FF))
+            Text(if (vm.sessionOpening) "正在进入故事..." else "当前会话暂无消息，发送一句话开始。", color = Color(0xFFD5E6FF))
           }
         } else if (mode != "history") {
           val msg = displayMessages.last()
@@ -4728,7 +4720,7 @@ private fun FooterBar(
             fontWeight = FontWeight.Bold,
           )
           Text(
-            text = "${runtimeChatDebug.currentRole.ifBlank { "未知角色" }} · ${runtimeStatusLabel(runtimeChatDebug.currentStatus)} · 下一位 ${runtimeChatDebug.nextRole.ifBlank { "待定" }}",
+            text = "${runtimeChatDebug.currentRole.ifBlank { "未知角色" }} · ${runtimeStatusLabel(runtimeChatDebug.currentStatus)} · 下一位 ${runtimeChatDebug.nextRole.ifBlank { "当前角色" }}",
             color = Color(0xFFEAF3FF),
             style = MaterialTheme.typography.labelSmall,
           )
@@ -8256,10 +8248,10 @@ private fun MediumEditableAvatar(path: String?, backgroundPath: String?, fallbac
 private fun CircleGhostBtn(icon: ImageVector, contentDescription: String, onClick: () -> Unit) {
   Box(
     modifier = Modifier
-      .size(28.dp)
+      .size(38.dp)
       .clip(CircleShape)
-      .background(Color(0x66122133))
-      .border(1.dp, Color(0x70FFFFFF), CircleShape)
+      .background(Color(0xAD071425))
+      .border(1.dp, Color(0xE1F1F7FF), CircleShape)
       .clickable { onClick() },
     contentAlignment = Alignment.Center,
   ) {
@@ -8267,7 +8259,7 @@ private fun CircleGhostBtn(icon: ImageVector, contentDescription: String, onClic
       imageVector = icon,
       contentDescription = contentDescription,
       tint = Color.White,
-      modifier = Modifier.size(16.dp),
+      modifier = Modifier.size(18.dp),
     )
   }
 }

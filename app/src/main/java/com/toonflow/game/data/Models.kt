@@ -170,6 +170,21 @@ data class SessionDetail(
   @SerializedName("messages") val messages: List<MessageItem> = emptyList(),
 )
 
+data class SessionNarrativeResult(
+  @SerializedName("sessionId") val sessionId: String = "",
+  @SerializedName("status") val status: String = "",
+  @SerializedName("chapterId") val chapterId: Long? = null,
+  @SerializedName("chapter") val chapter: ChapterItem? = null,
+  @SerializedName("state") val state: JsonElement? = null,
+  @SerializedName("message") val message: MessageItem? = null,
+  @SerializedName("chapterSwitchMessage") val chapterSwitchMessage: MessageItem? = null,
+  @SerializedName("narrativeMessage") val narrativeMessage: MessageItem? = null,
+  @SerializedName("generatedMessages") val generatedMessages: List<MessageItem> = emptyList(),
+  @SerializedName("narrativePlan") val narrativePlan: DebugNarrativePlan? = null,
+  @SerializedName("snapshotSaved") val snapshotSaved: Boolean = false,
+  @SerializedName("snapshotReason") val snapshotReason: String = "",
+)
+
 data class DebugStepResult(
   @SerializedName("chapterId") val chapterId: Long? = null,
   @SerializedName("chapterTitle") val chapterTitle: String = "",

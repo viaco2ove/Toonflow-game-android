@@ -278,7 +278,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return api().getMessage(payload).data
   }
 
-  suspend fun addPlayerMessage(sessionId: String, role: String, content: String) {
+  suspend fun addPlayerMessage(sessionId: String, role: String, content: String): SessionNarrativeResult {
     val payload = JsonObject().apply {
       addProperty("sessionId", sessionId)
       addProperty("roleType", "player")
@@ -286,7 +286,14 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("content", content)
       addProperty("eventType", "on_message")
     }
-    api().addMessage(payload)
+    return api().addMessage(payload).data
+  }
+
+  suspend fun continueSession(sessionId: String): SessionNarrativeResult {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+    }
+    return api().continueSession(payload).data
   }
 
   suspend fun debugStep(

@@ -16,6 +16,7 @@ import com.toonflow.game.data.RoleAvatarTaskResult
 import com.toonflow.game.data.SeparatedRoleImageResult
 import com.toonflow.game.data.SessionDetail
 import com.toonflow.game.data.SessionItem
+import com.toonflow.game.data.SessionNarrativeResult
 import com.toonflow.game.data.UploadedVoiceAudioResult
 import com.toonflow.game.data.VoiceModelConfig
 import com.toonflow.game.data.WorldItem
@@ -95,7 +96,10 @@ interface GameApi {
   suspend fun getMessage(@Body payload: JsonObject): ApiEnvelope<List<MessageItem>>
 
   @POST("game/addMessage")
-  suspend fun addMessage(@Body payload: JsonObject): ApiEnvelope<JsonObject>
+  suspend fun addMessage(@Body payload: JsonObject): ApiEnvelope<SessionNarrativeResult>
+
+  @POST("game/continueSession")
+  suspend fun continueSession(@Body payload: JsonObject): ApiEnvelope<SessionNarrativeResult>
 
   @POST("game/debugStep")
   suspend fun debugStep(@Body payload: JsonObject): ApiEnvelope<DebugStepResult>
