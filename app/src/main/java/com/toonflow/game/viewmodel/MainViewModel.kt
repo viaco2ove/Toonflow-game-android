@@ -1374,7 +1374,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (sessionOpening) return "session_opening"
     if (playRuntimeMiniGame()?.acceptsTextInput == true) return "waiting_player"
     val latest = conversationMessages().lastOrNull()
-    val status = runtimeMessageStatus(latest)
+    val status = latest?.let { runtimeMessageStatus(it) }.orEmpty()
     if (status.isNotBlank()) return status
     return if (playCanPlayerSpeak()) "waiting_player" else "waiting_next"
   }
