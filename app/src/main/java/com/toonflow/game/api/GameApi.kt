@@ -1,5 +1,6 @@
 package com.toonflow.game.api
 
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.toonflow.game.data.ApiEnvelope
 import com.toonflow.game.data.AiModelMapItem
@@ -20,7 +21,6 @@ import com.toonflow.game.data.SessionNarrativeResult
 import com.toonflow.game.data.UploadedVoiceAudioResult
 import com.toonflow.game.data.VoiceModelConfig
 import com.toonflow.game.data.WorldItem
-import com.google.gson.JsonElement
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
@@ -54,7 +54,7 @@ interface GameApi {
   suspend fun saveWorld(@Body payload: JsonObject): ApiEnvelope<WorldItem>
 
   @POST("game/deleteWorld")
-  suspend fun deleteWorld(@Body payload: JsonObject): ApiEnvelope<JsonObject>
+  suspend fun deleteWorld(@Body payload: JsonObject): ApiEnvelope<JsonElement>
 
   @POST("game/generateImage")
   suspend fun generateImage(@Body payload: JsonObject): ApiEnvelope<GeneratedImageResult>

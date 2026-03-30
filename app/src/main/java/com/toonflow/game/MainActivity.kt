@@ -74,6 +74,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -119,7 +120,9 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.window.Dialog
@@ -213,6 +216,15 @@ private fun normalizePlayableSpeakableText(input: String): String {
   return if (meaningful.isBlank()) "" else text
 }
 
+private fun speakableUnitCount(input: String): Int {
+  val text = normalizePlayableSpeakableText(input)
+  if (text.isBlank()) return 0
+  return text
+    .replace(Regex("\\s+"), "")
+    .replace(Regex("[0-9０-９.,!?;:，。！？；：、…·\"'“”‘’`~!@#$%^&*()\\-_=+\\[\\]{}<>/\\\\|]+"), "")
+    .length
+}
+
 private fun splitSpeakableSegments(input: String): List<String> {
   val text = normalizePlayableSpeakableText(input)
   if (text.isBlank()) return emptyList()
@@ -220,7 +232,7 @@ private fun splitSpeakableSegments(input: String): List<String> {
   val buffer = StringBuilder()
   fun flush() {
     val value = normalizePlayableSpeakableText(buffer.toString())
-    if (value.isNotBlank()) {
+    if (value.isNotBlank() && speakableUnitCount(value) >= 2) {
       result += value
     }
     buffer.clear()
@@ -311,6 +323,13 @@ private val settingsManufacturers = listOf(
     label = "DeepSeek",
     website = "https://platform.deepseek.com",
     textBaseUrl = "https://api.deepseek.com/v1",
+  ),
+  // LM Studio 本地 OpenAI-Compatible 服务，默认模型按 qwen3.5-9b 兜底
+  SettingsManufacturerOption(
+    value = "lmstudio",
+    label = "LM Studio",
+    website = "https://lmstudio.ai",
+    textBaseUrl = "http://127.0.0.1:1234/v1",
   ),
   SettingsManufacturerOption(
     value = "openai",
@@ -417,10 +436,8 @@ private fun settingsManufacturersFor(type: String): List<SettingsManufacturerOpt
   if (type == "voice_design") {
     return settingsManufacturers.filter { it.value == "qwen" }
   }
-  return settingsManufacturers.filter {
-    if (type == "voice") {
-      it.value != "qwen"
-    } else {
+  if (type == "text") {
+    return settingsManufacturers.filter {
       it.value != "ai_voice_tts"
         && it.value != "aliyun"
         && it.value != "aliyun_direct"
@@ -429,6 +446,21 @@ private fun settingsManufacturersFor(type: String): List<SettingsManufacturerOpt
         && it.value != "tencent_ci"
         && it.value != "local_birefnet"
     }
+  }
+  if (type == "voice") {
+    return settingsManufacturers.filter {
+      it.value != "qwen" && it.value != "lmstudio"
+    }
+  }
+  return settingsManufacturers.filter {
+    it.value != "ai_voice_tts"
+      && it.value != "aliyun"
+      && it.value != "aliyun_direct"
+      && it.value != "bria"
+      && it.value != "aliyun_imageseg"
+      && it.value != "tencent_ci"
+      && it.value != "local_birefnet"
+      && it.value != "lmstudio"
   }
 }
 
@@ -496,6 +528,12 @@ private fun defaultSettingsBaseUrl(manufacturer: String, type: String, modelType
 }
 
 private fun defaultSettingsModelName(manufacturer: String, type: String, modelType: String = defaultSettingsModelType(type)): String {
+  if (type == "text" && manufacturer == "deepseek") {
+    return "deepseek-chat"
+  }
+  if (type == "text" && manufacturer == "lmstudio") {
+    return "qwen3.5-9b"
+  }
   if (type == "voice_design" && manufacturer == "qwen") {
     return "qwen3-tts-vd-2026-01-26"
   }
@@ -536,6 +574,7 @@ private fun defaultSettingsModelNameForSlot(
 
 private fun settingsApiKeyRequired(manufacturer: String, type: String): Boolean {
   return !(type == "voice" && manufacturer == "ai_voice_tts")
+    && !(type == "text" && manufacturer == "lmstudio")
     && !(type == "image" && manufacturer == "local_birefnet")
 }
 
@@ -595,6 +634,12 @@ private fun settingsModelTypeOptionLabel(slot: MainViewModel.SettingsModelSlot, 
 }
 
 private fun settingsApiKeyPlaceholder(slot: MainViewModel.SettingsModelSlot, manufacturer: String): String {
+  if (slot.configType == "text" && manufacturer == "lmstudio") {
+    return "本地 LM Studio 可留空"
+  }
+  if (slot.key == "storyAvatarMattingModel" && manufacturer == "local_birefnet") {
+    return "本地模型无需填写"
+  }
   if (!settingsApiKeyRequired(manufacturer, slot.configType)) return "本地 ai_voice_tts 可留空"
   if (slot.key == "storyAvatarMattingModel" && manufacturer == "aliyun_imageseg") {
     return "AccessKeyId|AccessKeySecret"
@@ -602,13 +647,13 @@ private fun settingsApiKeyPlaceholder(slot: MainViewModel.SettingsModelSlot, man
   if (slot.key == "storyAvatarMattingModel" && manufacturer == "tencent_ci") {
     return "SecretId|SecretKey"
   }
-  if (slot.key == "storyAvatarMattingModel" && manufacturer == "local_birefnet") {
-    return "本地模型无需填写"
-  }
   return "请输入 API Key"
 }
 
 private fun settingsApiKeyHint(slot: MainViewModel.SettingsModelSlot, manufacturer: String): String {
+  if (slot.configType == "text" && manufacturer == "lmstudio") {
+    return "LM Studio 运行在本机时不需要 API Key，Base URL 默认可填 http://127.0.0.1:1234/v1。"
+  }
   if (slot.key != "storyAvatarMattingModel") return ""
   return when (manufacturer) {
     "aliyun_imageseg" -> "阿里云视觉这里请填写 AccessKeyId|AccessKeySecret，或填写 {\"accessKeyId\":\"...\",\"accessKeySecret\":\"...\"}。"
@@ -2337,7 +2382,8 @@ private fun PlayScene(
   onCloseSetting: () -> Unit,
   onExitDebug: () -> Unit,
 ) {
-  if (vm.currentSessionId.isBlank()) {
+  // 允许从“我的/聊过”触发的异步进入流程先渲染加载态，避免 sessionId 还没落地就直接掉到空白提示页。
+  if (vm.currentSessionId.isBlank() && !vm.sessionOpening && vm.sessionOpenError.isBlank()) {
     Box(modifier = Modifier.fillMaxSize().background(pageGray), contentAlignment = Alignment.Center) {
       Text("请先从主页或聊过进入故事", color = Color(0xFF60708C))
     }
@@ -2916,7 +2962,7 @@ private fun PlayScene(
         return true
       }
       if (!manual) {
-        vm.notice = "自动语音失败，已跳过"
+        vm.notice = "自动语音失败，已跳过，可点重听重试"
       }
       if (manual) {
         vm.notice = "重听失败: ${finalError.message ?: "未知错误"}"
@@ -3390,7 +3436,14 @@ private fun PlayScene(
       Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
         if (displayMessages.isEmpty()) {
           Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(if (vm.sessionOpening) vm.sessionOpeningStage.ifBlank { "正在进入故事..." } else "当前会话暂无消息，发送一句话开始。", color = Color(0xFFD5E6FF))
+            Text(
+              when {
+                vm.sessionOpening -> vm.sessionOpeningStage.ifBlank { "正在进入故事..." }
+                vm.sessionOpenError.isNotBlank() -> "打开会话失败"
+                else -> "当前会话暂无消息"
+              },
+              color = Color(0xFFD5E6FF),
+            )
           }
         } else if (mode != "history") {
           val msg = displayMessages.last()
@@ -3424,6 +3477,7 @@ private fun PlayScene(
                   val displayContent = vm.displayContentForMessage(msg)
                   val loading = vm.isStreamingRuntimeMessage(msg) && displayContent.isBlank()
                   val loadingText = vm.loadingHintForMessage(msg)
+                  val pendingStatusText = vm.playerPendingStatusText(msg)
                   LiveStoryCard(
                     title = vm.displayNameForMessage(msg),
                     content = displayContent.ifBlank { "（空消息）" },
@@ -3433,6 +3487,10 @@ private fun PlayScene(
                     reaction = vm.reactionForMessage(msg),
                     voiceTail = messageVoiceTail(msg),
                     voicePlaying = runtimeVoicePhase == "playing" && messageVoiceTail(msg).isNotBlank(),
+                    pendingStatusText = pendingStatusText,
+                    pendingStatusIsError = pendingStatusText == "发送失败",
+                    onRetryPending = if (pendingStatusText == "发送失败") { { vm.retryFailedPlayerMessage(msg.id) } } else null,
+                    onRewritePending = if (pendingStatusText == "发送失败") { { vm.rewriteFailedPlayerMessage(msg.id) } } else null,
                     onOpenMenu = { bounds ->
                       if (vm.isStreamingRuntimeMessage(msg)) return@LiveStoryCard
                       dialogMenuAnchorBounds = bounds
@@ -3474,6 +3532,7 @@ private fun PlayScene(
                 val displayContent = vm.displayContentForMessage(msg)
                 val loading = vm.isStreamingRuntimeMessage(msg) && displayContent.isBlank()
                 val loadingText = vm.loadingHintForMessage(msg)
+                val pendingStatusText = vm.playerPendingStatusText(msg)
                 Bubble(
                   title = vm.displayNameForMessage(msg),
                   content = displayContent,
@@ -3485,6 +3544,10 @@ private fun PlayScene(
                   reaction = vm.reactionForMessage(msg),
                   voiceTail = messageVoiceTail(msg),
                   voicePlaying = runtimeVoicePhase == "playing" && messageVoiceTail(msg).isNotBlank(),
+                  pendingStatusText = pendingStatusText,
+                  pendingStatusIsError = pendingStatusText == "发送失败",
+                  onRetryPending = if (pendingStatusText == "发送失败") { { vm.retryFailedPlayerMessage(msg.id) } } else null,
+                  onRewritePending = if (pendingStatusText == "发送失败") { { vm.rewriteFailedPlayerMessage(msg.id) } } else null,
                   onOpenMenu = { bounds ->
                     if (vm.isStreamingRuntimeMessage(msg)) return@Bubble
                     dialogMenuAnchorBounds = bounds
@@ -3498,34 +3561,48 @@ private fun PlayScene(
         }
 
         if (mode == "tips") {
-          AiTipPanel(
-            options = tipOptions,
-            onPick = { option ->
-              vm.sendText = option
-              vm.sendMessage()
-              onModeChange("live")
-            },
-            onBack = { onModeChange("live") },
-          )
+          Box(
+            modifier = Modifier
+              .fillMaxSize()
+              .padding(bottom = 118.dp),
+            contentAlignment = Alignment.BottomCenter,
+          ) {
+            AiTipPanel(
+              options = tipOptions,
+              onPick = { option ->
+                vm.sendText = option
+                vm.sendMessage()
+                onModeChange("live")
+              },
+              onBack = { onModeChange("live") },
+            )
+          }
         }
 
         if (mode == "setting") {
-          StorySettingPanel(
-            worldName = vm.playWorldName(),
-            worldIntro = vm.playWorldIntro(),
-            globalBackground = vm.playGlobalBackground(),
-            chapterTitle = chapterTitle,
-            chapterOpeningRole = currentChapter?.openingRole.orEmpty(),
-            chapterOpeningLine = currentChapter?.openingText.orEmpty(),
-            chapterContent = currentChapter?.content?.ifBlank { "暂无章节内容" } ?: "暂无章节内容",
-            chapterCondition = vm.playChapterConditionText(),
-            roles = vm.playStoryRoles(),
-            allowRoleView = vm.playAllowRoleView(),
-            statePreview = statePreview,
-            showStorySettingDetail = showStorySettingDetail,
-            onToggleStorySettingDetail = onToggleStorySettingDetail,
-            onClose = onCloseSetting,
-          )
+          Box(
+            modifier = Modifier
+              .fillMaxSize()
+              .padding(bottom = 118.dp),
+            contentAlignment = Alignment.BottomCenter,
+          ) {
+            StorySettingPanel(
+              worldName = vm.playWorldName(),
+              worldIntro = vm.playWorldIntro(),
+              globalBackground = vm.playGlobalBackground(),
+              chapterTitle = chapterTitle,
+              chapterOpeningRole = currentChapter?.openingRole.orEmpty(),
+              chapterOpeningLine = currentChapter?.openingText.orEmpty(),
+              chapterContent = currentChapter?.content?.ifBlank { "暂无章节内容" } ?: "暂无章节内容",
+              chapterCondition = vm.playChapterConditionText(),
+              roles = vm.playStoryRoles(),
+              allowRoleView = vm.playAllowRoleView(),
+              statePreview = statePreview,
+              showStorySettingDetail = showStorySettingDetail,
+              onToggleStorySettingDetail = onToggleStorySettingDetail,
+              onClose = onCloseSetting,
+            )
+          }
         }
 
         if (showDialogMenu && mode != "tips" && mode != "setting" && selectedMessage != null) {
@@ -3658,6 +3735,51 @@ private fun PlayScene(
                   color = Color(0xFFD5E3F8),
                   style = MaterialTheme.typography.bodySmall,
                 )
+              }
+            }
+          }
+        }
+
+        if (!vm.debugMode && displayMessages.isEmpty() && (vm.sessionOpening || vm.sessionOpenError.isNotBlank())) {
+          Box(
+            modifier = Modifier.fillMaxSize().background(Color(0x800A1626)),
+            contentAlignment = Alignment.Center,
+          ) {
+            Card(
+              modifier = Modifier.fillMaxWidth(0.72f),
+              shape = RoundedCornerShape(20.dp),
+              colors = CardDefaults.cardColors(containerColor = Color(0xF0132740)),
+            ) {
+              Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 18.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+              ) {
+                if (vm.sessionOpening) {
+                  CircularProgressIndicator(color = Color(0xFFFFD84A), strokeWidth = 3.dp)
+                }
+                Text(
+                  if (vm.sessionOpening) "进入故事中" else "打开会话失败",
+                  color = Color.White,
+                  fontWeight = FontWeight.Bold,
+                )
+                Text(
+                  if (vm.sessionOpening) vm.sessionOpeningStage.ifBlank { "正在进入故事..." } else vm.sessionOpenError,
+                  color = Color(0xFFD5E3F8),
+                  style = MaterialTheme.typography.bodySmall,
+                )
+                if (vm.sessionOpenError.isNotBlank()) {
+                  Button(
+                    onClick = { vm.retryOpenCurrentSession() },
+                    colors = ButtonDefaults.buttonColors(
+                      containerColor = Color(0x22FFD84A),
+                      contentColor = Color(0xFFFFE17F),
+                    ),
+                    border = BorderStroke(1.dp, Color(0x66FFD84A)),
+                  ) {
+                    Text("重试打开")
+                  }
+                }
               }
             }
           }
@@ -3861,6 +3983,10 @@ private fun LiveStoryCard(
   reaction: String = "",
   voiceTail: String = "",
   voicePlaying: Boolean = false,
+  pendingStatusText: String = "",
+  pendingStatusIsError: Boolean = false,
+  onRetryPending: (() -> Unit)? = null,
+  onRewritePending: (() -> Unit)? = null,
   onOpenMenu: ((Rect) -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
@@ -3936,6 +4062,58 @@ private fun LiveStoryCard(
               style = MaterialTheme.typography.labelSmall,
               modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             )
+          }
+        }
+        if (pendingStatusText.isNotBlank()) {
+          Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+              text = pendingStatusText,
+              color = if (pendingStatusIsError) Color(0xFFE16E6E) else if (isPlayer) Color(0xFFDCEBFF) else Color(0xFF4F6486),
+              style = MaterialTheme.typography.labelSmall,
+              fontWeight = FontWeight.SemiBold,
+            )
+            if (pendingStatusIsError) {
+              Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (onRetryPending != null) {
+                  OutlinedButton(
+                    onClick = onRetryPending,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(999.dp),
+                    border = BorderStroke(1.dp, Color(0xFFE7B34A)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                      contentColor = Color(0xFFE7B34A),
+                    ),
+                  ) {
+                    Icon(
+                      imageVector = Icons.Outlined.Replay,
+                      contentDescription = null,
+                      modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("重试", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                  }
+                }
+                if (onRewritePending != null) {
+                  OutlinedButton(
+                    onClick = onRewritePending,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(999.dp),
+                    border = BorderStroke(1.dp, Color(0xFF5E7CE2)),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                      contentColor = Color(0xFF5E7CE2),
+                    ),
+                  ) {
+                    Icon(
+                      imageVector = Icons.Outlined.Edit,
+                      contentDescription = null,
+                      modifier = Modifier.size(14.dp),
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("改写", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -4029,6 +4207,10 @@ private fun Bubble(
   reaction: String = "",
   voiceTail: String = "",
   voicePlaying: Boolean = false,
+  pendingStatusText: String = "",
+  pendingStatusIsError: Boolean = false,
+  onRetryPending: (() -> Unit)? = null,
+  onRewritePending: (() -> Unit)? = null,
   onOpenMenu: ((Rect) -> Unit)? = null,
   modifier: Modifier = Modifier,
 ) {
@@ -4128,6 +4310,58 @@ private fun Bubble(
                 color = if (isPlayer) Color(0xFFD7E7FF) else Color(0xFF5F7190),
                 style = MaterialTheme.typography.labelSmall,
               )
+            }
+          }
+          if (pendingStatusText.isNotBlank()) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+              Text(
+                text = pendingStatusText,
+                color = if (pendingStatusIsError) Color(0xFFFFA68F) else if (isPlayer) Color(0xFFDCEBFF) else Color(0xFF4F6486),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+              )
+              if (pendingStatusIsError) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                  if (onRetryPending != null) {
+                    OutlinedButton(
+                      onClick = onRetryPending,
+                      contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                      shape = RoundedCornerShape(999.dp),
+                      border = BorderStroke(1.dp, Color(0xFFE7B34A)),
+                      colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFFE7B34A),
+                      ),
+                    ) {
+                      Icon(
+                        imageVector = Icons.Outlined.Replay,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                      )
+                      Spacer(modifier = Modifier.width(4.dp))
+                      Text("重试", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                    }
+                  }
+                  if (onRewritePending != null) {
+                    OutlinedButton(
+                      onClick = onRewritePending,
+                      contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                      shape = RoundedCornerShape(999.dp),
+                      border = BorderStroke(1.dp, Color(0xFF5E7CE2)),
+                      colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = Color(0xFF5E7CE2),
+                      ),
+                    ) {
+                      Icon(
+                        imageVector = Icons.Outlined.Edit,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                      )
+                      Spacer(modifier = Modifier.width(4.dp))
+                      Text("改写", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                    }
+                  }
+                }
+              }
             }
           }
         }
@@ -4557,11 +4791,7 @@ private fun parameterCardOtherJson(values: List<String>): String = runCatching {
 private fun ParameterCardDetail(card: com.toonflow.game.data.RoleParameterCard) {
   Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
     ParameterCardField("角色名", parameterCardTextValue(card.name))
-    ParameterCardField(
-      "原始角色设定",
-      parameterCardTextValue(card.rawSetting),
-      scrollable = true,
-    )
+    ParameterCardField("原始角色设定", parameterCardTextValue(card.rawSetting), scrollable = true, maxHeight = 260.dp)
     ParameterCardField("性别", parameterCardTextValue(card.gender))
     ParameterCardField("年龄", card.age?.toString() ?: "未设定")
     ParameterCardField("等级", card.level.toString())
@@ -4580,7 +4810,7 @@ private fun ParameterCardDetail(card: com.toonflow.game.data.RoleParameterCard) 
 }
 
 @Composable
-private fun ParameterCardField(label: String, value: String, scrollable: Boolean = false) {
+private fun ParameterCardField(label: String, value: String, scrollable: Boolean = false, maxHeight: Dp = 220.dp) {
   Column(
     modifier =
       Modifier
@@ -4597,7 +4827,7 @@ private fun ParameterCardField(label: String, value: String, scrollable: Boolean
         modifier =
           Modifier
             .fillMaxWidth()
-            .heightIn(max = 220.dp)
+            .heightIn(max = maxHeight)
             .verticalScroll(rememberScrollState()),
       ) {
         Text(value, color = Color(0xFFDCEEFF), style = MaterialTheme.typography.bodySmall)
@@ -4949,6 +5179,7 @@ private fun FooterBar(
 
 private fun runtimeStatusLabel(status: String): String {
   return when (status.trim()) {
+    "sending" -> "发送中"
     "waiting_next" -> "等待下一位"
     "waiting_player" -> "等待玩家"
     "auto_advancing" -> "自动推进中"
@@ -5142,13 +5373,20 @@ private fun ProfileScene(
   val allWorlds = vm.worldsForSelectedProject()
   val publishedWorlds = allWorlds.filter { vm.isWorldPublished(it) }
   val draftWorlds = allWorlds.filter { !vm.isWorldPublished(it) }
-  val latestDraft = draftWorlds.firstOrNull()
-  val firstPublished = publishedWorlds.firstOrNull()
-  val remainingPublished = publishedWorlds.drop(1)
-  val likeCount = publishedWorlds.sumOf { it.sessionCount ?: 0 }
-  val followCount = if (publishedWorlds.isEmpty()) 0 else 1
-  val fanCount = publishedWorlds.sumOf { it.chapterCount ?: 0 }
-  val tagSeeds = publishedWorlds.map { it.name }.filter { it.isNotBlank() }.take(3)
+  val projectNameSet = buildSet {
+    vm.projects.map { it.name.trim() }.filterTo(this) { it.isNotBlank() }
+    val currentProjectName = vm.selectedProjectName().trim()
+    if (currentProjectName.isNotBlank()) add(currentProjectName)
+  }
+  val visibleDraftWorlds = draftWorlds.filter { it.name.trim() !in projectNameSet }
+  val visiblePublishedWorlds = publishedWorlds.filter { it.name.trim() !in projectNameSet }
+  val latestDraft = visibleDraftWorlds.firstOrNull()
+  val firstPublished = visiblePublishedWorlds.firstOrNull()
+  val remainingPublished = visiblePublishedWorlds.drop(1)
+  val likeCount = visiblePublishedWorlds.sumOf { it.sessionCount ?: 0 }
+  val followCount = if (visiblePublishedWorlds.isEmpty()) 0 else 1
+  val fanCount = visiblePublishedWorlds.sumOf { it.chapterCount ?: 0 }
+  val tagSeeds = visiblePublishedWorlds.map { it.name }.filter { it.isNotBlank() }.take(3)
   val tags = tagSeeds
   val imageGenerateRefPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
     if (uris.isNotEmpty()) {
@@ -5164,7 +5402,7 @@ private fun ProfileScene(
   if (showDraftListPage) {
     ProfileDraftListPage(
       vm = vm,
-      draftWorlds = draftWorlds,
+      draftWorlds = visibleDraftWorlds,
       onBack = { showDraftListPage = false },
       onOpenDraftMenu = { draftMenuWorld = it },
     )
@@ -5273,7 +5511,7 @@ private fun ProfileScene(
         ProfileActionBtn(text = "编辑资料", modifier = Modifier.weight(1f)) { vm.setTab("设置") }
       }
 
-      Text("${publishedWorlds.size} 作品", fontWeight = FontWeight.ExtraBold, color = Color(0xFF313B4C))
+      Text("${visiblePublishedWorlds.size} 作品", fontWeight = FontWeight.ExtraBold, color = Color(0xFF313B4C))
       if (tags.isNotEmpty()) {
         Row(
           modifier = Modifier.horizontalScroll(rememberScrollState()),
