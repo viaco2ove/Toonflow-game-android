@@ -4554,29 +4554,14 @@ private fun parameterCardOtherJson(values: List<String>): String = runCatching {
 }.getOrElse { "[]" }
 
 @Composable
-private fun ParameterCardField(label: String, value: String) {
-  Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-    Text(label, color = Color(0xFF93A8C3), style = MaterialTheme.typography.labelSmall)
-    val longText = value.length > 120 || label == "原始角色设定"
-    if (longText) {
-      Box(
-        modifier = Modifier
-          .heightIn(max = 132.dp)
-          .verticalScroll(rememberScrollState()),
-      ) {
-        Text(value, color = Color(0xFFAFC6E9), style = MaterialTheme.typography.bodySmall)
-      }
-    } else {
-      Text(value, color = Color(0xFFAFC6E9), style = MaterialTheme.typography.bodySmall)
-    }
-  }
-}
-
-@Composable
 private fun ParameterCardDetail(card: com.toonflow.game.data.RoleParameterCard) {
   Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
     ParameterCardField("角色名", parameterCardTextValue(card.name))
-    ParameterCardField("原始角色设定", parameterCardTextValue(card.rawSetting))
+    ParameterCardField(
+      "原始角色设定",
+      parameterCardTextValue(card.rawSetting),
+      scrollable = true,
+    )
     ParameterCardField("性别", parameterCardTextValue(card.gender))
     ParameterCardField("年龄", card.age?.toString() ?: "未设定")
     ParameterCardField("等级", card.level.toString())
@@ -4591,6 +4576,35 @@ private fun ParameterCardDetail(card: com.toonflow.game.data.RoleParameterCard) 
     ParameterCardField("蓝量", card.mp.toString())
     ParameterCardField("金钱", card.money.toString())
     ParameterCardField("其他", parameterCardOtherJson(card.other))
+  }
+}
+
+@Composable
+private fun ParameterCardField(label: String, value: String, scrollable: Boolean = false) {
+  Column(
+    modifier =
+      Modifier
+        .fillMaxWidth()
+        .clip(RoundedCornerShape(10.dp))
+        .background(Color(0x14243A57))
+        .border(1.dp, Color(0x223B567A), RoundedCornerShape(10.dp))
+        .padding(horizontal = 10.dp, vertical = 8.dp),
+    verticalArrangement = Arrangement.spacedBy(4.dp),
+  ) {
+    Text(label, color = Color(0xFF8EA6C7), style = MaterialTheme.typography.labelSmall)
+    if (scrollable && value.length > 120) {
+      Box(
+        modifier =
+          Modifier
+            .fillMaxWidth()
+            .heightIn(max = 220.dp)
+            .verticalScroll(rememberScrollState()),
+      ) {
+        Text(value, color = Color(0xFFDCEEFF), style = MaterialTheme.typography.bodySmall)
+      }
+    } else {
+      Text(value, color = Color(0xFFDCEEFF), style = MaterialTheme.typography.bodySmall)
+    }
   }
 }
 

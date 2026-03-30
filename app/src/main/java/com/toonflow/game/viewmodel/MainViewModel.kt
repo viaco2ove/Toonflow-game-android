@@ -1232,52 +1232,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return if (hasContent) card else null
   }
 
-  private fun fallbackRoleDescription(roleType: String, description: String): String {
-    if (description.isNotBlank()) return description
-    return when (roleType.trim()) {
-      "player" -> "用户在故事中的主视角角色"
-      "narrator" -> "负责环境推进、规则提示与节奏控制"
-      else -> ""
-    }
-  }
-
-  private fun fallbackRoleParameterCard(roleType: String, name: String, description: String, voice: String): RoleParameterCard? {
-    val normalizedRoleType = roleType.trim()
-    val resolvedName = name.ifBlank {
-      when (normalizedRoleType) {
-        "player" -> "用户"
-        "narrator" -> "旁白"
-        else -> ""
-      }
-    }
-    val resolvedDescription = fallbackRoleDescription(normalizedRoleType, description)
-    if (resolvedName.isBlank() && resolvedDescription.isBlank() && voice.isBlank()) return null
-    return RoleParameterCard(
-      name = resolvedName,
-      rawSetting = resolvedDescription,
-      voice = voice,
-      level = 1,
-      levelDesc = "初入此界",
-    )
-  }
-
-  private fun ensureRoleParameterCard(role: StoryRole): StoryRole {
-    if (role.parameterCardJson != null) return role
-    return role.copy(
-      parameterCardJson = fallbackRoleParameterCard(
-        roleType = role.roleType,
-        name = role.name,
-        description = role.description,
-        voice = role.voice,
-      ),
-    )
-  }
-
   private fun runtimeRoleSnapshot(roleKey: String, fallbackRoleType: String): StoryRole? {
     val raw = runtimeStateRoot()?.get(roleKey) ?: return null
     if (raw.isJsonNull || !raw.isJsonObject) return null
     val obj = raw.asJsonObject
-    return ensureRoleParameterCard(StoryRole(
+    return StoryRole(
       id = scalarRuntimeText(obj.get("id")).ifBlank { roleKey },
       roleType = scalarRuntimeText(obj.get("roleType")).ifBlank { fallbackRoleType },
       name = scalarRuntimeText(obj.get("name")).ifBlank { if (fallbackRoleType == "player") "用户" else "旁白" },
@@ -1295,7 +1254,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       voiceMixVoices = runtimeMixVoices(obj.get("voiceMixVoices")),
       sample = scalarRuntimeText(obj.get("sample")),
       parameterCardJson = runtimeParameterCard(obj.get("parameterCardJson")),
-    ))
+    )
   }
 
   private fun runtimeNpcSnapshot(base: StoryRole): StoryRole? {
@@ -1308,7 +1267,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         (base.id.isNotBlank() && itemId.isNotBlank() && itemId == base.id) ||
           (base.name.isNotBlank() && itemName.isNotBlank() && itemName == base.name)
       } ?: return null
-    return ensureRoleParameterCard(StoryRole(
+    return StoryRole(
       id = scalarRuntimeText(matched.get("id")).ifBlank { base.id },
       roleType = scalarRuntimeText(matched.get("roleType")).ifBlank { base.roleType.ifBlank { "npc" } },
       name = scalarRuntimeText(matched.get("name")).ifBlank { base.name },
@@ -1326,12 +1285,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       voiceMixVoices = runtimeMixVoices(matched.get("voiceMixVoices")),
       sample = scalarRuntimeText(matched.get("sample")),
       parameterCardJson = runtimeParameterCard(matched.get("parameterCardJson")),
-    ))
+    )
   }
 
   private fun mergeRoleSnapshot(base: StoryRole, runtime: StoryRole?): StoryRole {
-    if (runtime == null) return ensureRoleParameterCard(base)
-    return ensureRoleParameterCard(base.copy(
+    if (runtime == null) return base
+    return base.copy(
       id = runtime.id.ifBlank { base.id },
       roleType = runtime.roleType.ifBlank { base.roleType },
       name = runtime.name.ifBlank { base.name },
@@ -1348,7 +1307,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       voiceMixVoices = if (runtime.voiceMixVoices.isNotEmpty()) runtime.voiceMixVoices else base.voiceMixVoices,
       sample = runtime.sample.ifBlank { base.sample },
       parameterCardJson = runtime.parameterCardJson ?: base.parameterCardJson,
-    ))
+    )
   }
 
   fun playCanPlayerSpeak(): Boolean {
@@ -1638,7 +1597,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     return roles
       .map(::resolveRoleMedia)
-      .map(::ensureRoleParameterCard)
       .distinctBy { it.id.ifBlank { "${it.roleType}:${it.name}" } }
   }
 
@@ -4928,22 +4886,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       voiceMixVoices = playerVoiceMixVoices,
       sample = "",
     )
-    val currentCard = runtimePlayer.parameterCardJson ?: RoleParameterCard(
-      name = displayName,
-      rawSetting = runtimePlayer.description.ifBlank { "用户在故事中的主视角角色" },
-      voice = runtimePlayer.voice,
-    )
+    val currentCard = runtimePlayer.parameterCardJson ?: RoleParameterCard()
     val parsed = parseDebugPlayerProfileDraft(text, currentCard.name.ifBlank { displayName })
     if (parsed.name.isBlank() && parsed.gender.isBlank() && parsed.age == null) return
+    val nextCard = currentCard.copy(
+      name = parsed.name.ifBlank { currentCard.name.ifBlank { displayName } },
+      rawSetting = currentCard.rawSetting,
+      gender = parsed.gender.ifBlank { currentCard.gender },
+      age = parsed.age ?: currentCard.age,
+      voice = currentCard.voice.ifBlank { runtimePlayer.voice },
+    )
     val updatedRole = runtimePlayer.copy(
       name = displayName,
-      parameterCardJson = currentCard.copy(
-        name = parsed.name.ifBlank { currentCard.name.ifBlank { displayName } },
-        rawSetting = currentCard.rawSetting.ifBlank { runtimePlayer.description.ifBlank { "用户在故事中的主视角角色" } },
-        gender = parsed.gender.ifBlank { currentCard.gender },
-        age = parsed.age ?: currentCard.age,
-        voice = currentCard.voice.ifBlank { runtimePlayer.voice },
-      ),
+      parameterCardJson = nextCard.takeIf {
+        it.name.isNotBlank()
+          || it.rawSetting.isNotBlank()
+          || it.gender.isNotBlank()
+          || it.age != null
+          || it.voice.isNotBlank()
+          || it.skills.isNotEmpty()
+          || it.items.isNotEmpty()
+          || it.equipment.isNotEmpty()
+          || it.other.isNotEmpty()
+      },
     )
     val root = if (debugRuntimeState?.isJsonObject == true) {
       debugRuntimeState!!.asJsonObject.deepCopy()
