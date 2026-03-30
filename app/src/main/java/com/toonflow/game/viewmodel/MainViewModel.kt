@@ -1372,6 +1372,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return playCanPlayerSpeak()
   }
 
+  private fun playWaitingForIdentityBinding(): Boolean {
+    if (!playCanPlayerSpeak()) return false
+    val latest = conversationMessages().lastOrNull() ?: return false
+    val latestContent = displayContentForMessage(latest).replace("\\s+".toRegex(), "")
+    if (latestContent.isBlank()) return false
+    val playerState = runtimePlayerRoot()
+    val playerCard = playerState?.get("parameterCardJson")?.takeIf { it.isJsonObject }?.asJsonObject
+    val runtimePlayerName = scalarRuntimeText(playerState?.get("name"))
+    val gender = scalarRuntimeText(playerCard?.get("gender"))
+    val age = playerCard?.get("age")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+    val playerNeedsIdentity = runtimePlayerName.isBlank() || runtimePlayerName == "玩家" || gender.isBlank() || age <= 0
+    if (!playerNeedsIdentity) return false
+    return Regex("(姓名|名字|名称).{0,20}(性别).{0,20}(年龄)|身份绑定|请先告诉我你的姓名|请提供你的姓名、性别与年龄|请输入你的名称、性别与年龄")
+      .containsMatchIn(latestContent)
+  }
+
   fun playShouldAutoRefreshWhileWaiting(): Boolean {
     return false
   }
@@ -1383,6 +1399,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     val status = playSessionStatus().trim().lowercase()
     if (playCanPlayerSpeak()) {
+      if (playWaitingForIdentityBinding()) {
+        return if (textMode) "请输入姓名、性别、年龄完成身份绑定" else "按住说出姓名、性别、年龄"
+      }
       return if (textMode) "输入一句话继续故事" else "按住说话"
     }
     if (status in setOf("chapter_completed", "completed", "success", "finished")) {
@@ -1406,7 +1425,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (status in setOf("failed", "dead", "lose", "loss")) {
       return "当前故事已失败，可返回历史重新开始。"
     }
-    if (playCanPlayerSpeak()) return ""
+    if (playCanPlayerSpeak()) {
+      return if (playWaitingForIdentityBinding()) "当前轮到你完成身份绑定，请输入姓名、性别、年龄。" else ""
+    }
     return "当前还没轮到用户发言，等待${playExpectedSpeaker()}继续。"
   }
 
@@ -4025,6 +4046,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sessionViewMode = if (playback) "playback" else "live"
     sessionPlaybackStartIndex = playbackIndex.coerceAtLeast(0)
     currentSessionId = sessionId
+    sessionOpeningStage = if (playback) "同步回放进度" else "同步游戏进度"
+    notice = if (playback) "正在同步回放进度..." else "正在同步游戏进度..."
     refreshCurrentSession()
     if (firstMessage.isNotBlank()) {
       applySessionNarrativeResult(repository.addPlayerMessage(sessionId, playerName.ifBlank { "用户" }, firstMessage))
@@ -4056,6 +4079,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           error("该故事还没有章节，暂时无法游玩")
         }
         sessionOpeningStage = "创建会话"
+        notice = "正在创建会话..."
         val sid = repository.startSession(world.id, world.projectId, null)
         if (sid.isBlank()) error("未返回 sessionId")
         openResolvedSession(sid, playback = false, playbackIndex = 0, firstMessage = firstMessage)
@@ -4121,6 +4145,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     activeTab = "游玩"
     sessionOpening = true
     sessionOpeningStage = if (playback) "读取回放数据" else "读取记忆"
+    notice = if (playback) "正在读取回放数据..." else "正在读取记忆..."
     sessionDetail = null
     messages.clear()
     viewModelScope.launch {

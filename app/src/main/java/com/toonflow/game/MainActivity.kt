@@ -4397,9 +4397,8 @@ private fun StorySettingPanel(
   Card(
     modifier = Modifier
       .fillMaxWidth()
-      .padding(horizontal = 10.dp)
-      .heightIn(max = 460.dp)
-      .offset(y = (-22).dp),
+      .padding(horizontal = 10.dp, vertical = 8.dp)
+      .heightIn(max = 520.dp),
     colors = CardDefaults.cardColors(containerColor = Color(0xDD0B1A2D)),
     shape = RoundedCornerShape(14.dp),
   ) {
