@@ -1366,10 +1366,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  private fun runtimePlayerStateRoot(): JsonObject? {
+    return runtimeStateRoot()?.getAsJsonObject("player")
+  }
+
+  private fun playCurrentRuntimeStatus(): String {
+    if (sessionOpening) return "session_opening"
+    if (playRuntimeMiniGame()?.acceptsTextInput == true) return "waiting_player"
+    val latest = conversationMessages().lastOrNull()
+    val status = runtimeMessageStatus(latest)
+    if (status.isNotBlank()) return status
+    return if (playCanPlayerSpeak()) "waiting_player" else "waiting_next"
+  }
+
   fun playCanPlayerInput(): Boolean {
     if (sessionOpening) return false
     if (playRuntimeMiniGame()?.acceptsTextInput == true) return true
-    return playCanPlayerSpeak()
+    return playCanPlayerSpeak() && playCurrentRuntimeStatus() == "waiting_player"
   }
 
   private fun playWaitingForIdentityBinding(): Boolean {
@@ -1377,7 +1390,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val latest = conversationMessages().lastOrNull() ?: return false
     val latestContent = displayContentForMessage(latest).replace("\\s+".toRegex(), "")
     if (latestContent.isBlank()) return false
-    val playerState = runtimePlayerRoot()
+    val playerState = runtimePlayerStateRoot()
     val playerCard = playerState?.get("parameterCardJson")?.takeIf { it.isJsonObject }?.asJsonObject
     val runtimePlayerName = scalarRuntimeText(playerState?.get("name"))
     val gender = scalarRuntimeText(playerCard?.get("gender"))
@@ -1397,8 +1410,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     playRuntimeMiniGame()?.takeIf { it.acceptsTextInput }?.let { miniGame ->
       return miniGame.inputHint.ifBlank { "直接输入方案" }
     }
+    val runtimeStatus = playCurrentRuntimeStatus()
     val status = playSessionStatus().trim().lowercase()
-    if (playCanPlayerSpeak()) {
+    if (runtimeStatus == "waiting_player" && playCanPlayerSpeak()) {
       if (playWaitingForIdentityBinding()) {
         return if (textMode) "请输入姓名、性别、年龄完成身份绑定" else "按住说出姓名、性别、年龄"
       }
@@ -1418,6 +1432,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (playRuntimeMiniGame()?.acceptsTextInput == true) {
       return "小游戏进行中，直接输入方案即可。"
     }
+    val runtimeStatus = playCurrentRuntimeStatus()
     val status = playSessionStatus().trim().lowercase()
     if (status in setOf("chapter_completed", "completed", "success", "finished")) {
       return "当前章节已完成，可刷新或返回历史继续查看。"
@@ -1425,8 +1440,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (status in setOf("failed", "dead", "lose", "loss")) {
       return "当前故事已失败，可返回历史重新开始。"
     }
-    if (playCanPlayerSpeak()) {
+    if (runtimeStatus == "waiting_player" && playCanPlayerSpeak()) {
       return if (playWaitingForIdentityBinding()) "当前轮到你完成身份绑定，请输入姓名、性别、年龄。" else ""
+    }
+    if (runtimeStatus == "voicing") {
+      return "正在朗读当前台词，稍后继续。"
+    }
+    if (runtimeStatus in setOf("streaming", "generated", "revealing", "auto_advancing")) {
+      return "正在生成下一句内容..."
     }
     return "当前还没轮到用户发言，等待${playExpectedSpeaker()}继续。"
   }
@@ -1436,9 +1457,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val meta = latest.meta?.takeIf { it.isJsonObject }?.asJsonObject
     val turnState = runtimeTurnStateRoot()
     val canPlayerSpeakNow = turnState?.get("canPlayerSpeak")?.asBoolean ?: true
-    val currentStatus = runtimeMessageStatus(latest).ifBlank {
-      if (canPlayerSpeakNow) "waiting_player" else "waiting_next"
-    }
+    val currentStatus = runtimeMessageStatus(latest).ifBlank { playCurrentRuntimeStatus() }
     return RuntimeChatDebugItem(
       conversationId = currentSessionId,
       messageId = latest.id,

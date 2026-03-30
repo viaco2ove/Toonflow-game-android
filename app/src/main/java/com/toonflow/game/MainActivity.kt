@@ -3168,7 +3168,7 @@ private fun PlayScene(
         continue
       }
       if (!autoVoice) {
-        vm.setRuntimeMessageStatus(currentMessage.id, if (canPlayerSpeak) "waiting_player" else "waiting_next")
+        vm.setRuntimeMessageStatus(currentMessage.id, if (vm.playCanPlayerSpeak()) "waiting_player" else "waiting_next")
         delay(estimateRevealDelayMs(displayContent))
       } else {
         val voiceSegments = if (queuedVoiceSegments.isNotEmpty()) queuedVoiceSegments.toList() else listOf(displayContent)
@@ -3177,7 +3177,7 @@ private fun PlayScene(
           vm.setRuntimeMessageStatus(currentMessage.id, "voicing")
           launchRuntimeAutoVoice(currentMessage, playableSegments)
         }
-        vm.setRuntimeMessageStatus(currentMessage.id, if (canPlayerSpeak) "waiting_player" else "waiting_next")
+        vm.setRuntimeMessageStatus(currentMessage.id, if (vm.playCanPlayerSpeak()) "waiting_player" else "waiting_next")
         delay(if (playableSegments.isNotEmpty()) 260 else estimateRevealDelayMs(displayContent))
       }
     }
@@ -3202,16 +3202,17 @@ private fun PlayScene(
       return@LaunchedEffect
     }
     val sameVoiceTarget = runtimeVoiceMessageKey == vm.messageUiKey(latest)
+    val canPlayerSpeakNow = vm.playCanPlayerSpeak()
     var latestStatus = vm.runtimeMessageStatus(latest)
     if (!sameVoiceTarget && latestStatus in listOf("", "generated", "revealing", "voicing")) {
-      latestStatus = if (canPlayerSpeak) "waiting_player" else "waiting_next"
+      latestStatus = if (canPlayerSpeakNow) "waiting_player" else "waiting_next"
       vm.setRuntimeMessageStatus(latest.id, latestStatus)
     }
     if (!debugAutoAdvancing && latestStatus == "auto_advancing") {
-      latestStatus = if (canPlayerSpeak) "waiting_player" else "waiting_next"
+      latestStatus = if (canPlayerSpeakNow) "waiting_player" else "waiting_next"
       vm.setRuntimeMessageStatus(latest.id, latestStatus)
     }
-    if (canPlayerSpeak) {
+    if (canPlayerSpeakNow) {
       return@LaunchedEffect
     }
     if (latestStatus != "waiting_next") {
