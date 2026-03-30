@@ -1366,10 +1366,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
-  private fun runtimePlayerStateRoot(): JsonObject? {
-    return runtimeStateRoot()?.getAsJsonObject("player")
-  }
-
   private fun playCurrentRuntimeStatus(): String {
     if (sessionOpening) return "session_opening"
     if (playRuntimeMiniGame()?.acceptsTextInput == true) return "waiting_player"
@@ -1385,22 +1381,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return playCanPlayerSpeak() && playCurrentRuntimeStatus() == "waiting_player"
   }
 
-  private fun playWaitingForIdentityBinding(): Boolean {
-    if (!playCanPlayerSpeak()) return false
-    val latest = conversationMessages().lastOrNull() ?: return false
-    val latestContent = displayContentForMessage(latest).replace("\\s+".toRegex(), "")
-    if (latestContent.isBlank()) return false
-    val playerState = runtimePlayerStateRoot()
-    val playerCard = playerState?.get("parameterCardJson")?.takeIf { it.isJsonObject }?.asJsonObject
-    val runtimePlayerName = scalarRuntimeText(playerState?.get("name"))
-    val gender = scalarRuntimeText(playerCard?.get("gender"))
-    val age = playerCard?.get("age")?.takeIf { !it.isJsonNull }?.asInt ?: 0
-    val playerNeedsIdentity = runtimePlayerName.isBlank() || runtimePlayerName == "玩家" || gender.isBlank() || age <= 0
-    if (!playerNeedsIdentity) return false
-    return Regex("(姓名|名字|名称).{0,20}(性别).{0,20}(年龄)|身份绑定|请先告诉我你的姓名|请提供你的姓名、性别与年龄|请输入你的名称、性别与年龄")
-      .containsMatchIn(latestContent)
-  }
-
   fun playShouldAutoRefreshWhileWaiting(): Boolean {
     return false
   }
@@ -1413,9 +1393,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val runtimeStatus = playCurrentRuntimeStatus()
     val status = playSessionStatus().trim().lowercase()
     if (runtimeStatus == "waiting_player" && playCanPlayerSpeak()) {
-      if (playWaitingForIdentityBinding()) {
-        return if (textMode) "请输入姓名、性别、年龄完成身份绑定" else "按住说出姓名、性别、年龄"
-      }
       return if (textMode) "输入一句话继续故事" else "按住说话"
     }
     if (status in setOf("chapter_completed", "completed", "success", "finished")) {
@@ -1441,7 +1418,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       return "当前故事已失败，可返回历史重新开始。"
     }
     if (runtimeStatus == "waiting_player" && playCanPlayerSpeak()) {
-      return if (playWaitingForIdentityBinding()) "当前轮到你完成身份绑定，请输入姓名、性别、年龄。" else ""
+      return ""
     }
     if (runtimeStatus == "voicing") {
       return "正在朗读当前台词，稍后继续。"
