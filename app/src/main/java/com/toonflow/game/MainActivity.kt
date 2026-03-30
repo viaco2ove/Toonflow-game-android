@@ -3389,7 +3389,7 @@ private fun PlayScene(
       Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
         if (displayMessages.isEmpty()) {
           Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(if (vm.sessionOpening) "正在进入故事..." else "当前会话暂无消息，发送一句话开始。", color = Color(0xFFD5E6FF))
+            Text(if (vm.sessionOpening) vm.sessionOpeningStage.ifBlank { "正在进入故事..." } else "当前会话暂无消息，发送一句话开始。", color = Color(0xFFD5E6FF))
           }
         } else if (mode != "history") {
           val msg = displayMessages.last()

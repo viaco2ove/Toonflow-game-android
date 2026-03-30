@@ -6,7 +6,7 @@ class SettingsStore(context: Context) {
   private val prefs = context.getSharedPreferences("toonflow_game_settings", Context.MODE_PRIVATE)
 
   var baseUrl: String
-    get() = prefs.getString("base_url", "http://10.0.2.2:60000") ?: "http://10.0.2.2:60000"
+    get() = prefs.getString("base_url", "http://10.0.2.2:60002") ?: "http://10.0.2.2:60002"
     set(value) {
       prefs.edit().putString("base_url", value.trim()).apply()
     }
