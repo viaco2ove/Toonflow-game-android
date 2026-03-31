@@ -2413,6 +2413,7 @@ private fun PlayScene(
   var systemTts by remember { mutableStateOf<TextToSpeech?>(null) }
   var systemTtsInit by remember { mutableStateOf<CompletableDeferred<TextToSpeech>?>(null) }
   val revealedMessages = remember(vm.currentSessionId) { mutableStateListOf<MessageItem>() }
+  val playbackMessages = remember(allMessages) { allMessages.filterNot(vm::isRuntimeRetryMessage) }
   var playbackCursor by remember(vm.currentSessionId) { mutableIntStateOf(0) }
   var playbackPlaying by remember(vm.currentSessionId) { mutableStateOf(false) }
   var playbackRunId by remember(vm.currentSessionId) { mutableIntStateOf(0) }
@@ -2465,6 +2466,12 @@ private fun PlayScene(
     runtimeVoiceAutoJob?.cancel()
     runtimeVoiceAutoJob = null
     stopRuntimePlayback(invalidate)
+  }
+
+  fun stopPlaybackSequence() {
+    playbackPlaying = false
+    playbackRunId += 1
+    stopRuntimeAutoVoiceQueue()
   }
 
   suspend fun ensureSystemTts(): TextToSpeech {
@@ -2979,12 +2986,6 @@ private fun PlayScene(
     }
   }
 
-  fun stopPlaybackSequence() {
-    playbackPlaying = false
-    playbackRunId += 1
-    stopRuntimeAutoVoiceQueue()
-  }
-
   fun launchRuntimeAutoVoice(message: MessageItem, segments: List<String>) {
     val speakableSegments = segments
       .map(::normalizePlayableSpeakableText)
@@ -3021,16 +3022,15 @@ private fun PlayScene(
   }
 
   suspend fun startPlaybackSequence() {
-    val playbackSequence = vm.messages.toList().filterNot(vm::isRuntimeRetryMessage)
-    if (playbackSequence.isEmpty()) return
+    if (playbackMessages.isEmpty()) return
     val runId = playbackRunId + 1
     playbackRunId = runId
     playbackPlaying = true
-    for (index in playbackCursor until playbackSequence.size) {
+    for (index in playbackCursor until playbackMessages.size) {
       if (runId != playbackRunId) return
       playbackCursor = index
       vm.sessionPlaybackStartIndex = index
-      val message = playbackSequence.getOrNull(index) ?: continue
+      val message = playbackMessages.getOrNull(index) ?: continue
       playMessageVoice(message, manual = false, waitForCompletion = true)
       if (runId != playbackRunId) return
       delay(120L)
@@ -3063,7 +3063,6 @@ private fun PlayScene(
   val sessionTitle = vm.playSessionTitle()
   val currentChapter = vm.playCurrentChapter()
   val allMessages = vm.messages.toList()
-  val playbackMessages = remember(allMessages) { allMessages.filterNot(vm::isRuntimeRetryMessage) }
   val allMessageKeysFingerprint = allMessages.map { vm.messageUiKey(it) }.joinToString("|")
   val allMessageProgressFingerprint = allMessages.joinToString("|") { message ->
     buildString {
@@ -3076,15 +3075,7 @@ private fun PlayScene(
     }
   }
   val isSessionPlaybackMode = !vm.debugMode && vm.sessionViewMode == "playback"
-  val playbackMaxIndex = maxOf(0, playbackMessages.lastIndex)
-  val playbackCurrentMessage = playbackMessages.getOrNull(playbackCursor)
-  val playbackProgressLabel = if (playbackMessages.isEmpty()) {
-    "暂无可回放台词"
-  } else {
-    "${playbackCursor + 1}/${playbackMessages.size} · ${vm.displayNameForMessage(playbackCurrentMessage ?: playbackMessages.last())}"
-  }
   val displayMessages = when {
-    mode == "history" && isSessionPlaybackMode -> playbackMessages.take(minOf(playbackCursor + 1, playbackMessages.size))
     mode == "history" -> allMessages
     else -> revealedMessages.takeLast(1).toList()
   }
@@ -3115,14 +3106,14 @@ private fun PlayScene(
   LaunchedEffect(vm.currentSessionId, vm.sessionViewMode, playbackMessages.size) {
     playbackCursor = vm.sessionPlaybackStartIndex.coerceIn(0, maxOf(0, playbackMessages.lastIndex))
   }
+  LaunchedEffect(mode, vm.sessionViewMode, vm.currentSessionId) {
+    if (mode != "history" || vm.sessionViewMode != "playback") {
+      stopPlaybackSequence()
+    }
+  }
   LaunchedEffect(vm.currentSessionId, autoVoice, mode) {
     if (!autoVoice || mode == "history" || mode == "tips" || mode == "setting") return@LaunchedEffect
     vm.playNarratorVoiceBinding()?.let { warmVoiceBinding(it) }
-  }
-  LaunchedEffect(mode, isSessionPlaybackMode, vm.currentSessionId) {
-    if (mode != "history" || !isSessionPlaybackMode) {
-      stopPlaybackSequence()
-    }
   }
   LaunchedEffect(vm.currentSessionId, allMessageProgressFingerprint, mode) {
     if (mode == "history") {
@@ -3795,9 +3786,13 @@ private fun PlayScene(
         runtimeChatDebug = vm.playLatestRuntimeChatDebug(),
         debugPanelOpen = debugPanelOpen,
         isSessionPlaybackMode = isSessionPlaybackMode,
-        playbackProgressLabel = playbackProgressLabel,
+        playbackProgressLabel = if (playbackMessages.isEmpty()) {
+          "暂无可回放台词"
+        } else {
+          "${playbackCursor + 1}/${playbackMessages.size} · ${vm.displayNameForMessage(playbackMessages.getOrElse(playbackCursor) { playbackMessages.last() })}"
+        },
         playbackCursor = playbackCursor,
-        playbackMaxIndex = playbackMaxIndex,
+        playbackMaxIndex = maxOf(0, playbackMessages.lastIndex),
         playbackPlaying = playbackPlaying,
         playbackCanPlay = playbackMessages.isNotEmpty(),
         storyTitle = playTitle,
@@ -3828,7 +3823,7 @@ private fun PlayScene(
         onSend = { vm.sendMessage() },
         onToggleDebugPanel = { debugPanelOpen = !debugPanelOpen },
         onPlaybackCursorChange = { value ->
-          playbackCursor = value.coerceIn(0, playbackMaxIndex)
+          playbackCursor = value.coerceIn(0, maxOf(0, playbackMessages.lastIndex))
           vm.sessionPlaybackStartIndex = playbackCursor
           stopPlaybackSequence()
         },
@@ -4996,66 +4991,56 @@ private fun FooterBar(
           modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
           verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-          Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            Text(
-              "剧情回放",
-              color = Color.White,
-              fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-              playbackProgressLabel,
-              color = Color(0xFFD7E7FF),
-              style = MaterialTheme.typography.labelSmall,
-            )
-          }
+          Text(
+            "剧情回放",
+            color = Color.White,
+            fontWeight = FontWeight.SemiBold,
+          )
+          Text(
+            "可像看电影一样拖动进度查看",
+            color = Color(0xFFD7E7FF),
+            style = MaterialTheme.typography.labelSmall,
+          )
+          Text(
+            playbackProgressLabel,
+            color = Color(0xFFFFE2A0),
+            style = MaterialTheme.typography.labelSmall,
+          )
           Slider(
             value = playbackCursor.toFloat(),
-            onValueChange = { onPlaybackCursorChange(it.roundToInt()) },
-            valueRange = 0f..playbackMaxIndex.toFloat(),
-            enabled = playbackCanPlay && playbackMaxIndex > 0,
+            onValueChange = { onPlaybackCursorChange(it.toInt()) },
+            valueRange = 0f..playbackMaxIndex.coerceAtLeast(0).toFloat(),
+            enabled = playbackCanPlay && !playbackPlaying,
           )
-          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-              onClick = onTogglePlayback,
-              enabled = playbackCanPlay,
-              shape = RoundedCornerShape(12.dp),
-              colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0x221C7DFF),
-                contentColor = Color.White,
-                disabledContainerColor = Color(0x33221E32),
-                disabledContentColor = Color(0x99D7E7FF),
-              ),
-            ) {
-              Icon(
-                imageVector = if (playbackPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-              )
-              Spacer(modifier = Modifier.width(6.dp))
-              Text(if (playbackPlaying) "暂停" else "播放")
-            }
-            Button(
-              onClick = onContinueFromPlayback,
-              enabled = playbackCanPlay,
-              shape = RoundedCornerShape(12.dp),
-              colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFFF7FBFF),
-                contentColor = Color(0xFF20304A),
-                disabledContainerColor = Color(0x66F7FBFF),
-                disabledContentColor = Color(0xFFE3EEFF),
-              ),
-            ) {
-              Text("继续聊")
-            }
+          Button(
+            onClick = onTogglePlayback,
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = Color(0xFFF7FBFF),
+              contentColor = Color(0xFF20304A),
+              disabledContainerColor = Color(0x66F7FBFF),
+              disabledContentColor = Color(0xFFE3EEFF),
+            ),
+            enabled = playbackCanPlay,
+          ) {
+            Text(if (playbackPlaying) "暂停回放" else "开始回放")
+          }
+          Button(
+            onClick = onContinueFromPlayback,
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = Color(0xFFF7FBFF),
+              contentColor = Color(0xFF20304A),
+              disabledContainerColor = Color(0x66F7FBFF),
+              disabledContentColor = Color(0xFFE3EEFF),
+            ),
+          ) {
+            Text("继续聊")
           }
         }
       }
       Text(
-        "当前为剧情回放模式，拖动进度条或点击播放继续观看。",
+        "当前为剧情回放模式，可像看电影一样浏览历史台词。",
         color = Color(0xFFD7E7FF),
         style = MaterialTheme.typography.bodySmall,
       )
