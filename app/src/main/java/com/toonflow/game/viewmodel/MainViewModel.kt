@@ -36,6 +36,7 @@ import com.toonflow.game.data.SettingsStore
 import com.toonflow.game.data.StoryRole
 import com.toonflow.game.data.UploadedVoiceAudioResult
 import com.toonflow.game.data.AiModelMapItem
+import com.toonflow.game.data.AiModelOptionItem
 import com.toonflow.game.data.DebugNarrativePlan
 import com.toonflow.game.data.DebugStepResult
 import com.toonflow.game.data.VoiceBindingDraft
@@ -200,6 +201,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   val settingsVoiceDesignConfigs = mutableStateListOf<ModelConfigItem>()
   val settingsVoiceConfigs = mutableStateListOf<VoiceModelConfig>()
   val settingsAiModelMap = mutableStateListOf<AiModelMapItem>()
+  val settingsTextModelList = mutableStateMapOf<String, List<AiModelOptionItem>>()
   val storyPrompts = mutableStateListOf<PromptItem>()
   private val voicePresetsCache = mutableStateMapOf<Long, List<VoicePresetItem>>()
   var voiceLoading by mutableStateOf(false)
@@ -233,6 +235,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   val messages = mutableStateListOf<MessageItem>()
   var sessionViewMode by mutableStateOf("live")
   var sessionPlaybackStartIndex by mutableIntStateOf(0)
+  var sessionResumeLatestOnOpen by mutableStateOf(false)
   private val messageReactions = mutableStateMapOf<String, String>()
   var sendText by mutableStateOf("")
   var sendPending by mutableStateOf(false)
@@ -713,6 +716,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val configs = repository.getModelConfigs()
         val voiceConfigs = repository.getVoiceModels()
         val bindings = repository.getAiModelMap()
+        val textModelList = repository.getAiModelList("text")
         val prompts = repository.getPrompts()
         settingsTextConfigs.clear()
         settingsTextConfigs.addAll(configs.filter { it.type == "text" }.sortedBy { it.id })
@@ -724,6 +728,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         settingsVoiceConfigs.addAll(voiceConfigs.filter { (it.type.ifBlank { "voice" }) == "voice" }.sortedBy { it.id })
         settingsAiModelMap.clear()
         settingsAiModelMap.addAll(bindings.filter { item -> settingsModelSlots.any { it.key == item.key } }.sortedBy { it.id })
+        settingsTextModelList.clear()
+        settingsTextModelList.putAll(textModelList)
         storyPrompts.clear()
         storyPrompts.addAll(prompts.filter { it.code in storyPromptCodes }.sortedBy { it.id })
         settingsPanelLoaded = true
@@ -1339,7 +1345,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun playExpectedSpeaker(): String {
     return scalarRuntimeText(runtimeTurnStateRoot()?.get("expectedRole")).ifBlank {
-      if (playCanPlayerSpeak()) "玩家" else "当前角色"
+      if (playCanPlayerSpeak()) "用户" else "当前角色"
     }
   }
 
@@ -1449,7 +1455,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       currentStatus = currentStatus,
       nextRole =
         scalarRuntimeText(meta?.get("nextRole")).ifBlank {
-          if (playCanPlayerSpeak() || canPlayerSpeakNow || currentStatus == "waiting_player") "玩家" else scalarRuntimeText(turnState?.get("expectedRole")).ifBlank { "当前角色" }
+          if (playCanPlayerSpeak() || canPlayerSpeakNow || currentStatus == "waiting_player") "用户" else scalarRuntimeText(turnState?.get("expectedRole")).ifBlank { "当前角色" }
         },
       nextRoleType =
         scalarRuntimeText(meta?.get("nextRoleType")).ifBlank {
@@ -2860,7 +2866,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         meta = buildRuntimeStreamMeta(
           current.meta,
           status = status,
-          nextRole = if (status == "waiting_player" || canPlayerSpeakNow) "玩家" else turnState?.get("expectedRole")?.asString.orEmpty(),
+          nextRole = if (status == "waiting_player" || canPlayerSpeakNow) "用户" else turnState?.get("expectedRole")?.asString.orEmpty(),
           nextRoleType = if (status == "waiting_player" || canPlayerSpeakNow) "player" else turnState?.get("expectedRoleType")?.asString.orEmpty(),
         ),
       )
@@ -2898,7 +2904,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         status = "generated",
         streaming = false,
         lineIndex = lineIndex,
-        nextRole = if (canPlayerSpeakNow) "玩家" else scalarRuntimeText(turnState?.get("expectedRole")),
+        nextRole = if (canPlayerSpeakNow) "用户" else scalarRuntimeText(turnState?.get("expectedRole")),
         nextRoleType = if (canPlayerSpeakNow) "player" else scalarRuntimeText(turnState?.get("expectedRoleType")),
       ),
     )
@@ -2923,7 +2929,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
               status = if (canPlayerSpeakNow) "waiting_player" else "waiting_next",
               streaming = false,
               lineIndex = latestIndex + 1,
-              nextRole = if (canPlayerSpeakNow) "玩家" else scalarRuntimeText(turnState.get("expectedRole")).ifBlank { "当前角色" },
+              nextRole = if (canPlayerSpeakNow) "用户" else scalarRuntimeText(turnState.get("expectedRole")).ifBlank { "当前角色" },
               nextRoleType = if (canPlayerSpeakNow) "player" else scalarRuntimeText(turnState.get("expectedRoleType")).ifBlank { "npc" },
             ),
         )
@@ -4099,9 +4105,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     playback: Boolean = false,
     playbackIndex: Int = 0,
     firstMessage: String = "",
+    resumeLatest: Boolean = false,
   ) {
     sessionViewMode = if (playback) "playback" else "live"
     sessionPlaybackStartIndex = playbackIndex.coerceAtLeast(0)
+    sessionResumeLatestOnOpen = resumeLatest && !playback
     currentSessionId = sessionId
     sessionOpenError = ""
     sessionOpeningStage = if (playback) "同步回放进度" else "同步游戏进度"
@@ -4120,6 +4128,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sessionOpeningStage = "初始化会话"
     sessionOpenError = ""
     sessionRuntimeStage = ""
+    sessionResumeLatestOnOpen = false
     sessionDetail = null
     messages.clear()
     viewModelScope.launch {
@@ -4132,7 +4141,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           .orEmpty()
           .ifBlank { sessions.firstOrNull { it.worldId == world.id }?.sessionId?.trim().orEmpty() }
         if (existingSessionId.isNotBlank()) {
-          openResolvedSession(existingSessionId, playback = false, playbackIndex = 0, firstMessage = firstMessage)
+          openResolvedSession(existingSessionId, playback = false, playbackIndex = 0, firstMessage = firstMessage, resumeLatest = true)
           return@runCatching
         }
         if ((world.chapterCount ?: 0) <= 0) {
@@ -4142,7 +4151,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         notice = "正在创建会话..."
         val sid = repository.startSession(world.id, world.projectId, null)
         if (sid.isBlank()) error("未返回 sessionId")
-        openResolvedSession(sid, playback = false, playbackIndex = 0, firstMessage = firstMessage)
+        openResolvedSession(sid, playback = false, playbackIndex = 0, firstMessage = firstMessage, resumeLatest = false)
       }.onFailure {
         val message = it.message ?: "未知错误"
         sessionOpenError = message
@@ -4175,7 +4184,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           .ifBlank { sessions.firstOrNull { it.worldId == worldId }?.sessionId?.trim().orEmpty() }
           .ifBlank { fallbackSessionId.trim() }
         if (resolvedSessionId.isBlank()) error("未找到会话")
-        openResolvedSession(resolvedSessionId, playback = playback, playbackIndex = playbackIndex)
+        openResolvedSession(
+          resolvedSessionId,
+          playback = playback,
+          playbackIndex = playbackIndex,
+          resumeLatest = !playback,
+        )
       }.onFailure {
         val message = it.message ?: "未知错误"
         sessionOpenError = message
@@ -4207,6 +4221,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     notice = if (playback) "正在打开剧情回放..." else "正在进入故事..."
     sessionViewMode = if (playback) "playback" else "live"
     sessionPlaybackStartIndex = playbackIndex.coerceAtLeast(0)
+    sessionResumeLatestOnOpen = !playback
     currentSessionId = sessionId
     activeTab = "游玩"
     sessionOpening = true
@@ -4218,7 +4233,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     messages.clear()
     viewModelScope.launch {
       runCatching {
-        openResolvedSession(sessionId, playback = playback, playbackIndex = playbackIndex)
+        openResolvedSession(sessionId, playback = playback, playbackIndex = playbackIndex, resumeLatest = !playback)
       }.onFailure {
         val message = it.message ?: "未知错误"
         sessionOpenError = message
@@ -4458,7 +4473,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 status = if (canPlayerSpeakNow) "waiting_player" else "waiting_next",
                 streaming = false,
                 lineIndex = latestIndex + 1,
-                nextRole = if (canPlayerSpeakNow) "玩家" else scalarRuntimeText(turnState.get("expectedRole")).ifBlank { "当前角色" },
+                nextRole = if (canPlayerSpeakNow) "用户" else scalarRuntimeText(turnState.get("expectedRole")).ifBlank { "当前角色" },
                 nextRoleType = if (canPlayerSpeakNow) "player" else scalarRuntimeText(turnState.get("expectedRoleType")).ifBlank { "npc" },
               ),
           )

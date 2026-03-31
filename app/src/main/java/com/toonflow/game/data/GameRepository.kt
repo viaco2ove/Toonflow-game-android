@@ -478,6 +478,13 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return runCatching { api().getAiModelMap().data }.getOrElse { emptyList() }
   }
 
+  suspend fun getAiModelList(type: String): Map<String, List<AiModelOptionItem>> {
+    val payload = JsonObject().apply {
+      addProperty("type", type)
+    }
+    return runCatching { api().getAiModelList(payload).data }.getOrElse { emptyMap() }
+  }
+
   suspend fun bindModelConfig(id: Long, configId: Long) {
     val payload = JsonObject().apply {
       addProperty("id", id)

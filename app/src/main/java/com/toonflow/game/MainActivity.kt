@@ -332,6 +332,12 @@ private val settingsManufacturers = listOf(
     textBaseUrl = "http://127.0.0.1:1234/v1",
   ),
   SettingsManufacturerOption(
+    value = "autodl_chat",
+    label = "AutoDL",
+    website = "https://www.autodl.art/docs/DeepSeek-V3.2/",
+    textBaseUrl = "https://www.autodl.art/api/v1",
+  ),
+  SettingsManufacturerOption(
     value = "openai",
     label = "OpenAI",
     website = "https://platform.openai.com/api-keys",
@@ -421,6 +427,10 @@ private fun isVoiceDesignManufacturer(value: String): Boolean {
   return value.trim().equals("qwen", ignoreCase = true)
 }
 
+private fun isAutoDlTextManufacturer(value: String): Boolean {
+  return value.trim().equals("autodl_chat", ignoreCase = true)
+}
+
 private fun isVoiceDesignModelName(model: String): Boolean {
   val normalized = model.trim().lowercase(Locale.ROOT)
   return normalized.isNotBlank() && (
@@ -449,7 +459,7 @@ private fun settingsManufacturersFor(type: String): List<SettingsManufacturerOpt
   }
   if (type == "voice") {
     return settingsManufacturers.filter {
-      it.value != "qwen" && it.value != "lmstudio"
+      it.value != "qwen" && it.value != "lmstudio" && it.value != "autodl_chat"
     }
   }
   return settingsManufacturers.filter {
@@ -461,6 +471,7 @@ private fun settingsManufacturersFor(type: String): List<SettingsManufacturerOpt
       && it.value != "tencent_ci"
       && it.value != "local_birefnet"
       && it.value != "lmstudio"
+      && it.value != "autodl_chat"
   }
 }
 
@@ -530,6 +541,9 @@ private fun defaultSettingsBaseUrl(manufacturer: String, type: String, modelType
 private fun defaultSettingsModelName(manufacturer: String, type: String, modelType: String = defaultSettingsModelType(type)): String {
   if (type == "text" && manufacturer == "deepseek") {
     return "deepseek-chat"
+  }
+  if (type == "text" && manufacturer == "autodl_chat") {
+    return "DeepSeek-R1-0528"
   }
   if (type == "text" && manufacturer == "lmstudio") {
     return "qwen3.5-9b"
@@ -2413,7 +2427,6 @@ private fun PlayScene(
   var systemTts by remember { mutableStateOf<TextToSpeech?>(null) }
   var systemTtsInit by remember { mutableStateOf<CompletableDeferred<TextToSpeech>?>(null) }
   val revealedMessages = remember(vm.currentSessionId) { mutableStateListOf<MessageItem>() }
-  val playbackMessages = remember(allMessages) { allMessages.filterNot(vm::isRuntimeRetryMessage) }
   var playbackCursor by remember(vm.currentSessionId) { mutableIntStateOf(0) }
   var playbackPlaying by remember(vm.currentSessionId) { mutableStateOf(false) }
   var playbackRunId by remember(vm.currentSessionId) { mutableIntStateOf(0) }
@@ -2593,6 +2606,10 @@ private fun PlayScene(
     val roleName = message.role.trim()
     (roleName.isNotBlank() && (role.name == roleName || role.id == roleName)) || (roleName.isBlank() && role.roleType == message.roleType)
   } ?: vm.playStoryRoles().firstOrNull { it.roleType == message.roleType }
+
+  fun currentPlaybackMessages(): List<MessageItem> {
+    return vm.messages.toList().filterNot(vm::isRuntimeRetryMessage)
+  }
 
   fun resolveFallbackVoiceBinding(message: MessageItem, originalBinding: VoiceBindingDraft?): VoiceBindingDraft? {
     if (message.roleType == "player") return null
@@ -3022,6 +3039,7 @@ private fun PlayScene(
   }
 
   suspend fun startPlaybackSequence() {
+    val playbackMessages = currentPlaybackMessages()
     if (playbackMessages.isEmpty()) return
     val runId = playbackRunId + 1
     playbackRunId = runId
@@ -3063,6 +3081,7 @@ private fun PlayScene(
   val sessionTitle = vm.playSessionTitle()
   val currentChapter = vm.playCurrentChapter()
   val allMessages = vm.messages.toList()
+  val playbackMessages = remember(allMessages) { allMessages.filterNot(vm::isRuntimeRetryMessage) }
   val allMessageKeysFingerprint = allMessages.map { vm.messageUiKey(it) }.joinToString("|")
   val allMessageProgressFingerprint = allMessages.joinToString("|") { message ->
     buildString {
@@ -3125,6 +3144,12 @@ private fun PlayScene(
       revealedMessages.clear()
       return@LaunchedEffect
     }
+    if (mode == "live" && vm.sessionResumeLatestOnOpen) {
+      revealedMessages.clear()
+      revealedMessages.addAll(allMessages)
+      vm.sessionResumeLatestOnOpen = false
+      return@LaunchedEffect
+    }
     val currentKeys = allMessages.map { vm.messageUiKey(it) }
     val revealedKeys = revealedMessages.map { vm.messageUiKey(it) }
     val mismatched = currentKeys.size < revealedKeys.size || revealedKeys.indices.any { index -> currentKeys[index] != revealedKeys[index] }
@@ -3149,6 +3174,12 @@ private fun PlayScene(
     if (mode == "tips" || mode == "setting" || vm.debugLoading) return@LaunchedEffect
     if (allMessages.isEmpty()) {
       revealedMessages.clear()
+      return@LaunchedEffect
+    }
+    if (mode == "live" && vm.sessionResumeLatestOnOpen) {
+      revealedMessages.clear()
+      revealedMessages.addAll(allMessages)
+      vm.sessionResumeLatestOnOpen = false
       return@LaunchedEffect
     }
     val currentKeys = allMessages.map { vm.messageUiKey(it) }
@@ -7918,6 +7949,7 @@ private fun SettingsModelEditorDialog(
     mutableStateOf(initial?.baseUrl?.ifBlank { defaultSettingsBaseUrl(manufacturer, slot.configType, modelType) } ?: defaultSettingsBaseUrl(manufacturer, slot.configType, modelType))
   }
   var apiKey by remember(initial?.id) { mutableStateOf(initial?.apiKey.orEmpty()) }
+  var autodlPresetExpanded by remember { mutableStateOf(false) }
   var manufacturerExpanded by remember { mutableStateOf(false) }
   var modelTypeExpanded by remember { mutableStateOf(false) }
   var previousManufacturer by remember(initial?.id, slot.key) { mutableStateOf(normalizedInitialManufacturer) }
@@ -7930,6 +7962,16 @@ private fun SettingsModelEditorDialog(
   val modelTypeOptions = remember(slot.key, slot.configType) { settingsModelTypeOptionsForSlot(slot) }
   val usesLocalAvatarMatting = remember(slot.key, manufacturer) {
     slot.key == "storyAvatarMattingModel" && manufacturer == "local_birefnet"
+  }
+  val autodlTextModelOptions = remember(vm.settingsTextModelList, manufacturer) {
+    if (slot.configType == "text" && isAutoDlTextManufacturer(manufacturer)) {
+      vm.settingsTextModelList["autodl_chat"].orEmpty()
+    } else {
+      emptyList()
+    }
+  }
+  val autodlPresetLabel = remember(model, autodlTextModelOptions) {
+    autodlTextModelOptions.firstOrNull { it.value == model.trim() }?.label ?: "手动输入模型标识"
   }
 
   fun applyManufacturerDefaults(nextManufacturer: String, nextModelType: String) {
@@ -8074,7 +8116,47 @@ private fun SettingsModelEditorDialog(
           }
         }
 
-        OutlinedTextField(value = model, onValueChange = { model = it }, label = { Text("模型") }, modifier = Modifier.fillMaxWidth())
+        if (slot.configType == "text" && isAutoDlTextManufacturer(manufacturer)) {
+          Text("模型", fontWeight = FontWeight.Bold, color = Color(0xFF25324A))
+          Box {
+            MiniBtn(
+              text = autodlPresetLabel,
+              full = true,
+              onClick = { autodlPresetExpanded = true },
+            )
+            DropdownMenu(expanded = autodlPresetExpanded, onDismissRequest = { autodlPresetExpanded = false }) {
+              DropdownMenuItem(
+                text = { Text("手动输入模型标识") },
+                onClick = {
+                  autodlPresetExpanded = false
+                },
+              )
+              autodlTextModelOptions.forEach { item ->
+                DropdownMenuItem(
+                  text = { Text(item.label) },
+                  onClick = {
+                    model = item.value
+                    autodlPresetExpanded = false
+                  },
+                )
+              }
+            }
+          }
+          OutlinedTextField(
+            value = model,
+            onValueChange = { model = it },
+            label = { Text("模型标识") },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("也可直接输入 AutoDL 模型标识") },
+          )
+          Text(
+            "可先从下拉框选预设模型，也可以直接手动输入 AutoDL 支持的模型标识。",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF6A7F9F),
+          )
+        } else {
+          OutlinedTextField(value = model, onValueChange = { model = it }, label = { Text("模型") }, modifier = Modifier.fillMaxWidth())
+        }
         if (usesLocalAvatarMatting) {
           Column(
             modifier = Modifier

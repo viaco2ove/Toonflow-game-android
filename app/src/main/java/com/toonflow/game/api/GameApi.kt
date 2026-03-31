@@ -3,6 +3,7 @@ package com.toonflow.game.api
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.toonflow.game.data.ApiEnvelope
+import com.toonflow.game.data.AiModelOptionItem
 import com.toonflow.game.data.AiModelMapItem
 import com.toonflow.game.data.ChapterItem
 import com.toonflow.game.data.DebugOrchestrationResult
@@ -124,6 +125,9 @@ interface GameApi {
 
   @POST("setting/getAiModelMap")
   suspend fun getAiModelMap(@Body payload: JsonObject = JsonObject()): ApiEnvelope<List<AiModelMapItem>>
+
+  @POST("setting/getAiModelList")
+  suspend fun getAiModelList(@Body payload: JsonObject): ApiEnvelope<Map<String, List<AiModelOptionItem>>>
 
   @POST("setting/configurationModel")
   suspend fun bindModelConfig(@Body payload: JsonObject): ApiEnvelope<String>

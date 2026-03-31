@@ -281,6 +281,11 @@ data class AiModelMapItem(
   @SerializedName("manufacturer") val manufacturer: String? = null,
 )
 
+data class AiModelOptionItem(
+  @SerializedName("label") val label: String = "",
+  @SerializedName("value") val value: String = "",
+)
+
 data class PromptItem(
   @SerializedName("id") val id: Long,
   @SerializedName("code") val code: String = "",
