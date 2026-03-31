@@ -148,7 +148,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var loading by mutableStateOf(false)
 
   var userName by mutableStateOf("")
+  var userNickname by mutableStateOf("")
+  var userIntro by mutableStateOf("")
   var userId by mutableStateOf(0L)
+  var settingsPageMode by mutableStateOf("settings")
+  var profileNicknameDraft by mutableStateOf("")
+  var profileIntroDraft by mutableStateOf("")
+  var profileSaving by mutableStateOf(false)
   var accountAvatarPath by mutableStateOf("")
   var accountAvatarBgPath by mutableStateOf("")
   var userAvatarPath by mutableStateOf("")
@@ -193,6 +199,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var allowRoleView by mutableStateOf(true)
   var allowChatShare by mutableStateOf(true)
   var worldPublishStatus by mutableStateOf("draft")
+  var storyPublishPending by mutableStateOf(false)
   val npcRoles = mutableStateListOf<StoryRole>()
   val chapterExtras = mutableStateListOf<ChapterExtra>()
   val voiceModels = mutableStateListOf<VoiceModelConfig>()
@@ -315,7 +322,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (token.isBlank()) {
       resetRuntimeData()
       notice = "请先登录账号"
-      activeTab = "设置"
+      openSettingsPanel()
     } else {
       reloadAll()
     }
@@ -328,11 +335,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun setTab(tab: String) {
+    if (tab != "设置") {
+      settingsPageMode = "settings"
+    }
     activeTab = tab
     if (tab == "主页") {
       refreshRecommendation()
     }
     if (tab == "设置" && token.isNotBlank()) {
+      settingsPageMode = "settings"
       ensureSettingsPanelData()
     }
   }
@@ -342,14 +353,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun openSettings() {
-    activeTab = "设置"
-    if (token.isNotBlank()) {
-      ensureSettingsPanelData()
-    }
+    openSettingsPanel()
+    if (token.isNotBlank()) ensureSettingsPanelData()
   }
 
   fun backToMy() {
-    activeTab = "我的"
+    closeSettingsPanel()
   }
 
   fun voicePresets(configId: Long?): List<VoicePresetItem> {
@@ -1101,7 +1110,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     settingsAiModelMap.clear()
     storyPrompts.clear()
     resetRuntimeData()
-    activeTab = "设置"
+    openSettingsPanel()
     notice = "已退出登录"
   }
 
@@ -2390,12 +2399,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return projects.firstOrNull { it.id == selectedProjectId }?.name?.ifBlank { "未命名项目" } ?: "未选择项目"
   }
 
+  fun profileDisplayName(): String {
+    return userNickname.ifBlank { userName }.ifBlank { "未登录" }
+  }
+
+  fun openSettingsPanel() {
+    settingsPageMode = "settings"
+    activeTab = "设置"
+  }
+
+  fun openProfileEditor() {
+    if (token.isBlank()) {
+      notice = "请先登录账号"
+      openSettingsPanel()
+      return
+    }
+    settingsPageMode = "profile"
+    syncProfileEditorDrafts()
+    activeTab = "设置"
+  }
+
+  fun closeSettingsPanel() {
+    settingsPageMode = "settings"
+    activeTab = "我的"
+  }
+
+  fun saveProfile() {
+    if (token.isBlank()) {
+      notice = "请先登录账号"
+      openSettingsPanel()
+      return
+    }
+    if (profileSaving) return
+    viewModelScope.launch {
+      profileSaving = true
+      val nextNickname = profileNicknameDraft.trim()
+      val nextIntro = profileIntroDraft.trim()
+      runCatching {
+        repository.saveUser(
+          nickname = nextNickname,
+          intro = nextIntro,
+        )
+        userNickname = nextNickname
+        userIntro = nextIntro
+        settingsStore.setProfileNickname(userId, nextNickname)
+        settingsStore.setProfileIntro(userId, nextIntro)
+        syncProfileEditorDrafts()
+      }.onSuccess {
+        notice = "资料已保存"
+        closeSettingsPanel()
+      }.onFailure {
+        notice = "保存资料失败: ${it.message ?: "未知错误"}"
+      }
+      profileSaving = false
+    }
+  }
+
   fun reloadAll() {
     viewModelScope.launch {
       if (token.isBlank()) {
         resetRuntimeData()
         notice = "请先登录账号"
-        activeTab = "设置"
+        openSettingsPanel()
         return@launch
       }
       loading = true
@@ -2416,7 +2481,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       }.onFailure {
         resetRuntimeData()
         notice = if ((it.message ?: "").contains("401")) "登录已失效，请重新登录" else "加载失败: ${it.message ?: "未知错误"}"
-        activeTab = "设置"
+        openSettingsPanel()
       }
       loading = false
     }
@@ -2458,6 +2523,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private fun safeText(value: String?): String = value.orEmpty()
+
+  private fun readUserText(user: JsonObject, vararg keys: String): String {
+    keys.forEach { key ->
+      val value = runCatching { user.get(key)?.asString?.trim().orEmpty() }.getOrDefault("")
+      if (value.isNotBlank()) return value
+    }
+    return ""
+  }
+
+  private fun syncProfileEditorDrafts() {
+    profileNicknameDraft = userNickname
+    profileIntroDraft = userIntro
+  }
 
   private fun normalizeBaseUrlValue(value: String): String {
     return value.trim().trimEnd('/')
@@ -3770,9 +3848,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       add("playerRole", repository.toJson(playerRole))
       add("narratorRole", repository.toJson(narratorRole))
     }
+    payload.addProperty("publishStatus", targetStatus)
     val saved = repository.saveWorld(payload)
     worldId = saved.id
-    worldPublishStatus = targetStatus
+    worldPublishStatus = safeText(saved.publishStatus).ifBlank {
+      safeText(saved.settings?.publishStatus).ifBlank { targetStatus }
+    }
     return saved
   }
 
@@ -3906,17 +3987,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     viewModelScope.launch {
+      if (publish == true) {
+        storyPublishPending = true
+        notice = "发布中，正在生成角色参数和章节快照..."
+      }
       runCatching {
+        if (worldId <= 0L) {
+          saveWorldInternal(false)
+        }
         val targetStatus = when (publish) {
           true -> "published"
           false -> "draft"
           else -> worldPublishStatus.ifBlank { "draft" }
         }
+        val chapterStatus = if (targetStatus == "published") "published" else "draft"
+        val savedChapter = saveEditorChapterInternal(chapterStatus)
         saveWorldInternal(publish)
-        val savedChapter = saveEditorChapterInternal(targetStatus)
-        if (savedChapter != null) {
-          saveWorldInternal(publish)
-        }
         refreshStoryData()
         when {
           startNextDraft -> beginNewChapterDraft()
@@ -3927,7 +4013,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           notice = successNotice
         }
       }.onFailure {
+        if (publish == true) {
+          runCatching { refreshStoryData() }
+        }
         notice = "保存失败: ${it.message ?: "未知错误"}"
+      }.also {
+        if (publish == true) {
+          storyPublishPending = false
+        }
       }
     }
   }
@@ -4388,8 +4481,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private suspend fun loadUser() {
     runCatching {
       val user = repository.getUser()
-      userName = user.get("name")?.asString ?: ""
+      userName = readUserText(user, "name", "username", "userName")
       userId = user.get("id")?.asLong ?: 0L
+      val remoteNickname = readUserText(user, "nickname", "nickName", "displayName")
+      val remoteIntro = readUserText(user, "intro", "description", "bio", "profile")
+      // 资料字段优先取服务端，服务端暂未回传时退回本地缓存，避免编辑后立即丢失。
+      userNickname = remoteNickname.ifBlank { settingsStore.getProfileNickname(userId) }
+      userIntro = remoteIntro.ifBlank { settingsStore.getProfileIntro(userId) }
+      settingsStore.setProfileNickname(userId, userNickname)
+      settingsStore.setProfileIntro(userId, userIntro)
+      syncProfileEditorDrafts()
       val remoteAvatarPath = user.get("avatarPath")?.asString?.trim().orEmpty()
       val remoteAvatarBgPath = user.get("avatarBgPath")?.asString?.trim().orEmpty()
       val storedAvatarPath = remoteAvatarPath.ifBlank { settingsStore.getAvatarPath(userId) }
@@ -4400,7 +4501,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       accountAvatarBgPath = resolveMediaPath(storedAvatarBgPath)
     }.onFailure {
       userName = ""
+      userNickname = ""
+      userIntro = ""
       userId = 0L
+      syncProfileEditorDrafts()
       accountAvatarPath = ""
       accountAvatarBgPath = ""
       userAvatarPath = ""
@@ -5184,7 +5288,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private fun resetRuntimeData() {
     loading = false
     userName = ""
+    userNickname = ""
+    userIntro = ""
     userId = 0L
+    settingsPageMode = "settings"
+    profileNicknameDraft = ""
+    profileIntroDraft = ""
+    profileSaving = false
     accountAvatarPath = ""
     accountAvatarBgPath = ""
     userAvatarPath = ""

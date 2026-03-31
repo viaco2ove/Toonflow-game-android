@@ -1843,9 +1843,9 @@ private fun CreateScene(
         )
       }
       Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        MiniBtn(text = "返回", onClick = onBackToStory)
-        MiniBtn(text = "存草稿", onClick = { vm.saveStoryEditor(publish = false, successNotice = "故事草稿已保存") })
-        MiniBtn(text = "发布", primary = true, onClick = {
+        MiniBtn(text = "返回", enabled = !vm.storyPublishPending, onClick = onBackToStory)
+        MiniBtn(text = "存草稿", enabled = !vm.storyPublishPending, onClick = { vm.saveStoryEditor(publish = false, successNotice = "故事草稿已保存") })
+        MiniBtn(text = if (vm.storyPublishPending) "发布中..." else "发布", primary = true, enabled = !vm.storyPublishPending, onClick = {
           vm.saveStoryEditor(publish = true, successNotice = "故事已发布并可游玩")
         })
       }
@@ -1862,7 +1862,7 @@ private fun CreateScene(
     verticalArrangement = Arrangement.spacedBy(10.dp),
   ) {
     HeaderTitle(title = "故事设定", rightText = "下一步") {
-      vm.saveStoryEditor(publish = false, successNotice = null)
+      vm.saveStoryEditor(publish = null, successNotice = null)
       onNext()
     }
     if (vm.canUndoStoryAutoPersist()) {
@@ -2100,7 +2100,7 @@ private fun CreateScene(
     Card(
       modifier = Modifier
         .fillMaxWidth()
-        .clickable { vm.saveStoryEditor(publish = false, startNextDraft = true, successNotice = "当前章节已保存，并已新建下一章节草稿") },
+        .clickable { vm.saveStoryEditor(publish = null, startNextDraft = true, successNotice = "当前章节已保存，并已新建下一章节草稿") },
       colors = CardDefaults.cardColors(containerColor = Color.White),
       shape = RoundedCornerShape(12.dp),
     ) {
@@ -2219,7 +2219,7 @@ private fun CreateScene(
 
     Button(
       onClick = {
-        vm.saveStoryEditor(publish = false, successNotice = null)
+        vm.saveStoryEditor(publish = null, successNotice = null)
         onNext()
       },
       modifier = Modifier.fillMaxWidth().height(44.dp),
@@ -5401,6 +5401,8 @@ private fun ProfileScene(
   val latestDraft = visibleDraftWorlds.firstOrNull()
   val firstPublished = visiblePublishedWorlds.firstOrNull()
   val remainingPublished = visiblePublishedWorlds.drop(1)
+  val profileDisplayName = vm.profileDisplayName()
+  val profileIntro = vm.userIntro.trim()
   val likeCount = visiblePublishedWorlds.sumOf { it.sessionCount ?: 0 }
   val followCount = if (visiblePublishedWorlds.isEmpty()) 0 else 1
   val fanCount = visiblePublishedWorlds.sumOf { it.chapterCount ?: 0 }
@@ -5445,7 +5447,7 @@ private fun ProfileScene(
             .clip(CircleShape)
             .background(Color.White)
             .border(1.dp, Color(0xFFC4D0E3), CircleShape)
-            .clickable { vm.setTab("设置") },
+            .clickable { vm.openSettingsPanel() },
           contentAlignment = Alignment.Center,
         ) {
           Icon(
@@ -5472,7 +5474,7 @@ private fun ProfileScene(
           borderColor = Color(0xFFCCD8EA),
           fallback = {
             Text(
-              text = vm.userName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
+              text = profileDisplayName.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "?",
               color = Color(0xFF7D8CA5),
               fontWeight = FontWeight.Bold,
             )
@@ -5510,12 +5512,21 @@ private fun ProfileScene(
             }
           },
         )
-        Text(
-          vm.userName.ifBlank { "未登录" },
-          fontSize = MaterialTheme.typography.headlineSmall.fontSize,
-          fontWeight = FontWeight.ExtraBold,
-          color = Color(0xFF1F2A3F),
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+          Text(
+            profileDisplayName,
+            fontSize = MaterialTheme.typography.headlineSmall.fontSize,
+            fontWeight = FontWeight.ExtraBold,
+            color = Color(0xFF1F2A3F),
+          )
+          if (profileIntro.isNotBlank()) {
+            Text(
+              profileIntro,
+              style = MaterialTheme.typography.bodySmall,
+              color = Color(0xFF70829F),
+            )
+          }
+        }
       }
 
       Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -5526,7 +5537,7 @@ private fun ProfileScene(
 
       Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         ProfileActionBtn(text = "新建故事", modifier = Modifier.weight(1f)) { vm.startNewStoryDraft() }
-        ProfileActionBtn(text = "编辑资料", modifier = Modifier.weight(1f)) { vm.setTab("设置") }
+        ProfileActionBtn(text = "编辑资料", modifier = Modifier.weight(1f)) { vm.openProfileEditor() }
       }
 
       Text("${visiblePublishedWorlds.size} 作品", fontWeight = FontWeight.ExtraBold, color = Color(0xFF313B4C))
@@ -7172,6 +7183,7 @@ private fun SettingsScene(vm: MainViewModel) {
   val promptDrafts = remember { mutableStateMapOf<String, String>() }
   var showModelManager by remember { mutableStateOf(false) }
   var activeModelSlot by remember { mutableStateOf<MainViewModel.SettingsModelSlot?>(null) }
+  val isProfileEditor = vm.settingsPageMode == "profile"
 
   fun openAccountDialog(mode: String) {
     accountMode = mode
@@ -7191,8 +7203,8 @@ private fun SettingsScene(vm: MainViewModel) {
     showModelManager = true
   }
 
-  LaunchedEffect(vm.token, vm.activeTab) {
-    if (vm.activeTab == "设置" && vm.token.isNotBlank()) {
+  LaunchedEffect(vm.token, vm.activeTab, isProfileEditor) {
+    if (vm.activeTab == "设置" && vm.token.isNotBlank() && !isProfileEditor) {
       vm.ensureSettingsPanelData()
     }
   }
@@ -7207,7 +7219,7 @@ private fun SettingsScene(vm: MainViewModel) {
       .fillMaxSize()
       .background(pageGray),
   ) {
-    HeaderTitle(title = "设置", rightText = "返回") { vm.setTab("我的") }
+    HeaderTitle(title = if (isProfileEditor) "编辑资料" else "设置", rightText = "返回") { vm.closeSettingsPanel() }
 
     Column(
       modifier = Modifier
@@ -7216,7 +7228,40 @@ private fun SettingsScene(vm: MainViewModel) {
         .padding(12.dp),
       verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-      SettingsSectionCard(title = "请求地址配置") {
+      if (isProfileEditor) {
+        SettingsSectionCard(title = "基础资料") {
+          Text(
+            "用户名：${vm.userName.ifBlank { "未登录" }}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color(0xFF31445E),
+          )
+          OutlinedTextField(
+            value = vm.profileNicknameDraft,
+            onValueChange = { vm.profileNicknameDraft = it },
+            label = { Text("昵称") },
+            modifier = Modifier.fillMaxWidth(),
+          )
+          Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("个人简介", style = MaterialTheme.typography.labelMedium, color = Color(0xFF5F7391))
+            ScrollableOutlinedTextField(
+              value = vm.profileIntroDraft,
+              onValueChange = { vm.profileIntroDraft = it },
+              modifier = Modifier.fillMaxWidth(),
+              minLines = 4,
+              placeholder = { Text("介绍一下你自己或创作方向") },
+            )
+          }
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MiniBtn(
+              text = if (vm.profileSaving) "保存中..." else "保存资料",
+              primary = true,
+              onClick = { vm.saveProfile() },
+            )
+            MiniBtn(text = "取消", onClick = { vm.closeSettingsPanel() })
+          }
+        }
+      } else {
+        SettingsSectionCard(title = "请求地址配置") {
         OutlinedTextField(
           value = vm.baseUrl,
           onValueChange = { vm.baseUrl = it },
@@ -7345,6 +7390,7 @@ private fun SettingsScene(vm: MainViewModel) {
 
       SettingsSectionCard(title = "其他") {
         MiniBtn(text = "检查更新", onClick = { vm.notice = "当前为开发版，暂未接入在线更新" })
+      }
       }
     }
   }
@@ -8723,9 +8769,10 @@ private fun ScrollableOutlinedTextField(
 }
 
 @Composable
-private fun MiniBtn(text: String, primary: Boolean = false, full: Boolean = false, onClick: () -> Unit) {
+private fun MiniBtn(text: String, primary: Boolean = false, full: Boolean = false, enabled: Boolean = true, onClick: () -> Unit) {
   Button(
     onClick = onClick,
+    enabled = enabled,
     modifier = (if (full) Modifier.fillMaxWidth() else Modifier).height(32.dp),
     shape = RoundedCornerShape(10.dp),
     colors = ButtonDefaults.buttonColors(

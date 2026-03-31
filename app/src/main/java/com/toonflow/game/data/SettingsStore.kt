@@ -43,6 +43,26 @@ class SettingsStore(context: Context) {
     prefs.edit().putString("avatar_bg_path_user_$userId", path.trim()).apply()
   }
 
+  fun getProfileNickname(userId: Long): String {
+    if (userId <= 0) return ""
+    return prefs.getString("profile_nickname_user_$userId", "") ?: ""
+  }
+
+  fun setProfileNickname(userId: Long, nickname: String) {
+    if (userId <= 0) return
+    prefs.edit().putString("profile_nickname_user_$userId", nickname.trim()).apply()
+  }
+
+  fun getProfileIntro(userId: Long): String {
+    if (userId <= 0) return ""
+    return prefs.getString("profile_intro_user_$userId", "") ?: ""
+  }
+
+  fun setProfileIntro(userId: Long, intro: String) {
+    if (userId <= 0) return
+    prefs.edit().putString("profile_intro_user_$userId", intro.trim()).apply()
+  }
+
   fun getMessageReaction(sessionId: String, messageId: Long, createTime: Long): String {
     if (sessionId.isBlank() || messageId <= 0L || createTime <= 0L) return ""
     return prefs.getString(messageReactionKey(sessionId, messageId, createTime), "") ?: ""

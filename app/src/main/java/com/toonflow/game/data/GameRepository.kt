@@ -71,12 +71,16 @@ class GameRepository(private val settingsStore: SettingsStore) {
 
   suspend fun saveUser(
     name: String? = null,
+    nickname: String? = null,
+    intro: String? = null,
     password: String? = null,
     avatarPath: String? = null,
     avatarBgPath: String? = null,
   ) {
     val payload = JsonObject().apply {
       if (!name.isNullOrBlank()) addProperty("name", name)
+      if (nickname != null) addProperty("nickname", nickname)
+      if (intro != null) addProperty("intro", intro)
       if (!password.isNullOrBlank()) addProperty("password", password)
       if (avatarPath != null) addProperty("avatarPath", avatarPath)
       if (avatarBgPath != null) addProperty("avatarBgPath", avatarBgPath)
