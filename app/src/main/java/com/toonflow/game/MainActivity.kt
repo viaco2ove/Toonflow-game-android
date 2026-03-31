@@ -1286,7 +1286,7 @@ private fun CreateScene(
       append(role.voiceReferenceAudioName).append(':')
       append(role.voiceReferenceText).append(':')
       append(role.voicePromptText).append(':')
-      append(role.voiceMixVoices.joinToString(";") { "${it.voiceId}:${it.weight}" }).append(':')
+    append(role.voiceMixVoices.orEmpty().joinToString(";") { "${it.voiceId}:${it.weight}" }).append(':')
       append(role.sample).append('|')
     }
   }
@@ -1896,7 +1896,7 @@ private fun CreateScene(
                 npcVoiceReferenceAudioName = role.voiceReferenceAudioName
                 npcVoiceReferenceText = role.voiceReferenceText
                 npcVoicePromptText = role.voicePromptText
-                npcVoiceMixVoices = role.voiceMixVoices.ifEmpty { listOf(VoiceMixItem(weight = 0.7)) }
+                npcVoiceMixVoices = role.voiceMixVoices.orEmpty().ifEmpty { listOf(VoiceMixItem(weight = 0.7)) }
                 npcSample = role.sample
                 editingNpcIndex = index
                 onOpenNpcEditor()
@@ -2163,6 +2163,8 @@ private fun CreateScene(
             onDismiss = { showNarratorVoiceDialog = false },
             onConfirm = { binding ->
               vm.setNarratorVoiceBinding(binding)
+              // 旁白音色确认后立即保存，避免后续调试仍读到旧的旁白配置。
+              vm.saveWorldConfig(null, "旁白音色已保存")
               showNarratorVoiceDialog = false
             },
           )

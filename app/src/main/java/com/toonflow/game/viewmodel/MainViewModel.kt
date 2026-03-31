@@ -304,7 +304,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private fun StoryRole.withoutVoiceConfigId(): StoryRole {
     return copy(
       voiceConfigId = null,
-      voiceMixVoices = voiceMixVoices.map { it.copy() },
+      voiceMixVoices = voiceMixVoices.orEmpty().map { it.copy() },
     )
   }
 
@@ -581,7 +581,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     copy(
       playerVoiceMixVoices = playerVoiceMixVoices.map { it.copy() },
       narratorVoiceMixVoices = narratorVoiceMixVoices.map { it.copy() },
-      npcRoles = npcRoles.map { it.copy(voiceMixVoices = it.voiceMixVoices.map { voice -> voice.copy() }) },
+      npcRoles = npcRoles.map { it.copy(voiceMixVoices = it.voiceMixVoices.orEmpty().map { voice -> voice.copy() }) },
       chapters = chapters.map { it.copy() },
       chapterExtras = chapterExtras.map { it.copy() },
     )
@@ -890,7 +890,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private fun safeRoleMixVoices(role: StoryRole?): List<VoiceMixItem> {
     if (role == null) return emptyList()
-    return runCatching { role.voiceMixVoices }.getOrElse { emptyList() }
+    // 反序列化后的对象可能绕过构造器，把字段直接塞成 null；这里直接读底层字段，不信任 getter。
+    val rawMixVoices: Any? = runCatching {
+      val field = role.javaClass.getDeclaredField("voiceMixVoices")
+      field.isAccessible = true
+      field.get(role)
+    }.getOrNull()
+    @Suppress("UNCHECKED_CAST")
+    return (rawMixVoices as? List<VoiceMixItem>).orEmpty()
   }
 
   fun ensureVoiceModels() {
@@ -3707,7 +3714,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           voiceReferenceAudioName = role.voiceReferenceAudioName,
           voiceReferenceText = role.voiceReferenceText,
           voicePromptText = role.voicePromptText,
-          voiceMixVoices = role.voiceMixVoices,
+          voiceMixVoices = role.voiceMixVoices.orEmpty(),
           sample = role.sample,
         ),
       )

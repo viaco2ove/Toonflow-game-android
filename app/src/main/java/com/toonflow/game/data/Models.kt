@@ -49,7 +49,7 @@ data class StoryRole(
   @SerializedName("voiceReferenceAudioName") val voiceReferenceAudioName: String = "",
   @SerializedName("voiceReferenceText") val voiceReferenceText: String = "",
   @SerializedName("voicePromptText") val voicePromptText: String = "",
-  @SerializedName("voiceMixVoices") val voiceMixVoices: List<VoiceMixItem> = emptyList(),
+  @SerializedName("voiceMixVoices") val voiceMixVoices: List<VoiceMixItem>? = emptyList(),
   @SerializedName("sample") val sample: String = "",
   @SerializedName("parameterCardJson") val parameterCardJson: RoleParameterCard? = null,
 )
