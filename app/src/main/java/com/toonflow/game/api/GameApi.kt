@@ -19,6 +19,7 @@ import com.toonflow.game.data.SeparatedRoleImageResult
 import com.toonflow.game.data.SessionDetail
 import com.toonflow.game.data.SessionItem
 import com.toonflow.game.data.SessionNarrativeResult
+import com.toonflow.game.data.SessionOrchestrationResult
 import com.toonflow.game.data.UploadedVoiceAudioResult
 import com.toonflow.game.data.VoiceModelConfig
 import com.toonflow.game.data.WorldItem
@@ -99,6 +100,9 @@ interface GameApi {
   @POST("game/addMessage")
   suspend fun addMessage(@Body payload: JsonObject): ApiEnvelope<SessionNarrativeResult>
 
+  @POST("game/commitNarrativeTurn")
+  suspend fun commitNarrativeTurn(@Body payload: JsonObject): ApiEnvelope<SessionNarrativeResult>
+
   @POST("game/continueSession")
   suspend fun continueSession(@Body payload: JsonObject): ApiEnvelope<SessionNarrativeResult>
 
@@ -107,6 +111,9 @@ interface GameApi {
 
   @POST("game/orchestration")
   suspend fun orchestrateDebug(@Body payload: JsonObject): ApiEnvelope<DebugOrchestrationResult>
+
+  @POST("game/orchestration")
+  suspend fun orchestrateSession(@Body payload: JsonObject): ApiEnvelope<SessionOrchestrationResult>
 
   @POST("setting/getVoiceModelList")
   suspend fun getVoiceModelList(@Body payload: JsonObject = JsonObject()): ApiEnvelope<List<VoiceModelConfig>>

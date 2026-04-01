@@ -159,12 +159,17 @@ data class SessionItem(
   @SerializedName("latestMessage") val latestMessage: MessageItem? = null,
 )
 
+data class SessionSnapshot(
+  @SerializedName("state") val state: JsonElement? = null,
+)
+
 data class SessionDetail(
   @SerializedName("sessionId") val sessionId: String = "",
   @SerializedName("title") val title: String = "",
   @SerializedName("status") val status: String = "",
   @SerializedName("chapterId") val chapterId: Long? = null,
   @SerializedName("state") val state: JsonElement? = null,
+  @SerializedName("latestSnapshot") val latestSnapshot: SessionSnapshot? = null,
   @SerializedName("world") val world: WorldItem? = null,
   @SerializedName("chapter") val chapter: ChapterItem? = null,
   @SerializedName("messages") val messages: List<MessageItem> = emptyList(),
@@ -183,6 +188,15 @@ data class SessionNarrativeResult(
   @SerializedName("narrativePlan") val narrativePlan: DebugNarrativePlan? = null,
   @SerializedName("snapshotSaved") val snapshotSaved: Boolean = false,
   @SerializedName("snapshotReason") val snapshotReason: String = "",
+)
+
+data class SessionOrchestrationResult(
+  @SerializedName("sessionId") val sessionId: String = "",
+  @SerializedName("status") val status: String = "",
+  @SerializedName("chapterId") val chapterId: Long? = null,
+  @SerializedName("expectedRole") val expectedRole: String = "",
+  @SerializedName("expectedRoleType") val expectedRoleType: String = "",
+  @SerializedName("plan") val plan: DebugNarrativePlan? = null,
 )
 
 data class DebugStepResult(

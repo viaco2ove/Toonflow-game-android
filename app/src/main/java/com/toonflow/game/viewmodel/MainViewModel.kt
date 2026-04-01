@@ -32,6 +32,7 @@ import com.toonflow.game.data.RoleParameterCard
 import com.toonflow.game.data.SessionDetail
 import com.toonflow.game.data.SessionItem
 import com.toonflow.game.data.SessionNarrativeResult
+import com.toonflow.game.data.SessionOrchestrationResult
 import com.toonflow.game.data.SettingsStore
 import com.toonflow.game.data.StoryRole
 import com.toonflow.game.data.UploadedVoiceAudioResult
@@ -44,6 +45,7 @@ import com.toonflow.game.data.VoiceModelConfig
 import com.toonflow.game.data.VoiceMixItem
 import com.toonflow.game.data.VoicePresetItem
 import com.toonflow.game.data.WorldItem
+import com.toonflow.game.util.VueTagLogger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -56,6 +58,7 @@ import java.util.Locale
 class MainViewModel(application: Application) : AndroidViewModel(application) {
   private val settingsStore = SettingsStore(application)
   private val repository = GameRepository(settingsStore)
+  private val runtimeChatStorageLimit = 24
   private val avatarStdSize = 512
   private val avatarBgSize = 768
   private val coverStdWidth = 1280
@@ -117,6 +120,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val gender: String = "",
     val age: Int? = null,
   )
+
+  private enum class SaveWorldStatusMode {
+    PRESERVE,
+    DRAFT,
+    PUBLISHED,
+  }
 
   val baseTabs = listOf("主页", "创建", "聊过", "我的")
   val settingsModelSlots = listOf(
@@ -230,6 +239,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
 
   val sessions = mutableStateListOf<SessionItem>()
+  var sessionListError by mutableStateOf("")
   var quickInput by mutableStateOf("")
   var currentSessionId by mutableStateOf("")
   var sessionDetail by mutableStateOf<SessionDetail?>(null)
@@ -246,6 +256,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private val messageReactions = mutableStateMapOf<String, String>()
   var sendText by mutableStateOf("")
   var sendPending by mutableStateOf(false)
+  private var continueSessionNarrativeJob: Job? = null
 
   var debugMode by mutableStateOf(false)
   var debugSessionTitle by mutableStateOf("")
@@ -341,6 +352,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     activeTab = tab
     if (tab == "主页") {
       refreshRecommendation()
+    }
+    if (tab == "聊过" && token.isNotBlank()) {
+      viewModelScope.launch {
+        runCatching {
+          loadSessions()
+        }.onFailure {
+          sessionListError = it.message ?: "未知错误"
+          notice = "加载会话列表失败: ${sessionListError}"
+        }
+      }
     }
     if (tab == "设置" && token.isNotBlank()) {
       settingsPageMode = "settings"
@@ -551,10 +572,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       val previous = lastPersistedStoryEditorSnapshot?.copyDeep()
       storyEditorPersistMuted = true
       runCatching {
-        saveWorldInternal(false)
+        saveWorldInternal(SaveWorldStatusMode.PRESERVE)
         val savedChapter = saveEditorChapterInternal("draft")
         if (savedChapter != null) {
-          saveWorldInternal(false)
+          saveWorldInternal(SaveWorldStatusMode.PRESERVE)
         }
         refreshStoryData()
         lastPersistedStoryEditorSnapshot = captureStoryEditorSnapshot()
@@ -574,10 +595,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       storyEditorPersistMuted = true
       runCatching {
         applyStoryEditorSnapshot(snapshot)
-        saveWorldInternal(false)
+        saveWorldInternal(SaveWorldStatusMode.PRESERVE)
         val savedChapter = saveEditorChapterInternal("draft")
         if (savedChapter != null) {
-          saveWorldInternal(false)
+          saveWorldInternal(SaveWorldStatusMode.PRESERVE)
         }
         refreshStoryData()
         notice = "已撤回到上一次自动保存前"
@@ -1163,13 +1184,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private fun runtimeStateRoot(): JsonObject? {
-    val source = if (debugMode) debugRuntimeState else sessionDetail?.state
-    if (source == null || source.isJsonNull || !source.isJsonObject) return null
-    return source.asJsonObject
+    if (debugMode) {
+      val source = debugRuntimeState
+      if (source == null || source.isJsonNull || !source.isJsonObject) return null
+      return source.asJsonObject
+    }
+    val currentState = sessionDetail?.state?.takeIf { it.isJsonObject }?.asJsonObject
+    val latestState = sessionDetail?.latestSnapshot?.state?.takeIf { it.isJsonObject }?.asJsonObject
+    return when {
+      currentState?.get("turnState")?.isJsonObject == true -> currentState
+      latestState?.get("turnState")?.isJsonObject == true -> latestState
+      currentState != null -> currentState
+      else -> latestState
+    }
   }
 
   private fun runtimeTurnStateRoot(): JsonObject? {
     return runtimeStateRoot()?.getAsJsonObject("turnState")
+  }
+
+  private fun sessionTurnStateRoot(detail: SessionDetail?): JsonObject? {
+    val latestState = detail?.latestSnapshot?.state?.takeIf { it.isJsonObject }?.asJsonObject
+    val currentState = detail?.state?.takeIf { it.isJsonObject }?.asJsonObject
+    return latestState?.getAsJsonObject("turnState") ?: currentState?.getAsJsonObject("turnState")
   }
 
   private fun playRuntimeChapterId(): Long? {
@@ -1365,10 +1402,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val latest = conversationMessages().lastOrNull()
     val status = latest?.let { runtimeMessageStatus(it) }.orEmpty()
     if (status == "sending") return "sending"
+    if (status == "orchestrated") return if (playCanPlayerSpeak()) "waiting_player" else "waiting_next"
     if (
       playCanPlayerSpeak() &&
       status.isNotBlank() &&
-      status !in setOf("streaming", "generated", "revealing", "voicing", "auto_advancing", "sending")
+      status !in setOf("streaming", "generated", "revealing", "voicing", "auto_advancing", "sending", "orchestrated")
     ) {
       return "waiting_player"
     }
@@ -1443,7 +1481,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (runtimeStatus == "voicing") {
       return "正在朗读当前台词，稍后继续。"
     }
-    if (runtimeStatus in setOf("streaming", "generated", "revealing", "auto_advancing")) {
+    if (runtimeStatus in setOf("streaming", "generated", "revealing", "auto_advancing", "orchestrated")) {
       return "正在生成下一句内容..."
     }
     return "当前还没轮到用户发言，等待${playExpectedSpeaker()}继续。"
@@ -1471,6 +1509,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           if (playCanPlayerSpeak() || canPlayerSpeakNow || currentStatus == "waiting_player") "player" else scalarRuntimeText(turnState?.get("expectedRoleType")).ifBlank { "npc" }
         },
     )
+  }
+
+  private fun runtimeConversationId(): String {
+    val sessionId = currentSessionId.trim()
+    if (sessionId.isNotBlank()) {
+      return "session:$sessionId"
+    }
+    if (debugMode) {
+      return "debug:world:${worldId}:chapter:${debugChapterId ?: 0L}"
+    }
+    return "world:${worldId}:chapter:${playRuntimeChapterId() ?: 0L}"
+  }
+
+  private fun syncRuntimeChatTraceLog() {
+    val conversationId = runtimeConversationId()
+    if (conversationId.isBlank()) return
+    val history = conversationMessages(messages.toList()).filterNot(::isRuntimeRetryMessage)
+    val previousJson = settingsStore.getRuntimeChatTraceJson().ifBlank { "[]" }
+    val previousRows = runCatching {
+      JsonParser.parseString(previousJson).takeIf { it.isJsonArray }?.asJsonArray ?: JsonArray()
+    }.getOrElse { JsonArray() }
+    val nextRows = JsonArray()
+    previousRows.forEach { item ->
+      val row = item.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
+      if (scalarRuntimeText(row.get("conversationId")) != conversationId) {
+        nextRows.add(row)
+      }
+    }
+    val latest = history.lastOrNull()
+    if (latest != null) {
+      val meta = latest.meta?.takeIf { it.isJsonObject }?.asJsonObject
+      val turnState = runtimeTurnStateRoot()
+      val canPlayerSpeakNow = turnState?.get("canPlayerSpeak")?.asBoolean ?: true
+      val currentStatus = runtimeMessageStatus(latest).ifBlank {
+        if (canPlayerSpeakNow) "waiting_player" else "waiting_next"
+      }
+      val row = JsonObject().apply {
+        addProperty("conversationId", conversationId)
+        addProperty("messageId", latest.id)
+        addProperty("lineIndex", meta?.get("lineIndex")?.takeIf { !it.isJsonNull }?.asInt ?: history.size)
+        addProperty("currentRole", displayNameForMessage(latest))
+        addProperty("currentRoleType", latest.roleType)
+        addProperty("currentStatus", currentStatus)
+        addProperty(
+          "nextRole",
+          scalarRuntimeText(meta?.get("nextRole")).ifBlank {
+            if (playCanPlayerSpeak() || canPlayerSpeakNow || currentStatus == "waiting_player") "用户" else scalarRuntimeText(turnState?.get("expectedRole")).ifBlank { "当前角色" }
+          },
+        )
+        addProperty(
+          "nextRoleType",
+          scalarRuntimeText(meta?.get("nextRoleType")).ifBlank {
+            if (playCanPlayerSpeak() || canPlayerSpeakNow || currentStatus == "waiting_player") "player" else scalarRuntimeText(turnState?.get("expectedRoleType")).ifBlank { "npc" }
+          },
+        )
+        addProperty("updateTime", System.currentTimeMillis())
+      }
+      nextRows.add(row)
+      while (nextRows.size() > runtimeChatStorageLimit) {
+        nextRows.remove(0)
+      }
+    }
+    val nextJson = nextRows.toString()
+    if (nextJson == previousJson) return
+    if (nextRows.size() == 0) {
+      settingsStore.clearRuntimeChatTrace()
+      VueTagLogger.info("runtime_chat", "toonflow.chat=[]")
+      return
+    }
+    settingsStore.setRuntimeChatTraceJson(nextJson)
+    VueTagLogger.info("runtime_chat", "toonflow.chat=${VueTagLogger.sanitize(nextJson, 4000)}")
   }
 
   private fun runtimeMiniGamePhaseLabel(gameType: String, phase: String, uiPhaseLabel: String): String {
@@ -2600,12 +2709,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
   }
 
-  fun isWorldPublished(world: WorldItem): Boolean {
+  fun worldPublishStatus(world: WorldItem): String {
     val topLevelStatus = safeText(world.publishStatus).trim().lowercase()
     if (topLevelStatus.isNotBlank()) {
-      return topLevelStatus == "published"
+      return topLevelStatus
     }
-    return safeText(world.settings?.publishStatus).trim().lowercase() == "published"
+    return safeText(world.settings?.publishStatus).trim().lowercase().ifBlank { "draft" }
+  }
+
+  fun isWorldPublished(world: WorldItem): Boolean {
+    return worldPublishStatus(world) == "published"
+  }
+
+  // “我的”页面要把发布中的故事归到已发布分区，但公共推荐和大厅只认真正 published。
+  fun isWorldInPublishedLane(world: WorldItem): Boolean {
+    return worldPublishStatus(world) in setOf("published", "publishing", "publish_failed")
+  }
+
+  fun worldPublishStatusLabel(world: WorldItem): String {
+    return when (worldPublishStatus(world)) {
+      "publishing" -> "发布中"
+      "publish_failed" -> "发布失败"
+      "published" -> "已发布"
+      else -> "草稿"
+    }
   }
 
   fun worldCoverPath(world: WorldItem?): String {
@@ -2761,7 +2888,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun deleteMessage(message: MessageItem) {
     if (!canDeleteMessage(message)) {
-      notice = "当前只支持删除最后一条玩家台词"
+      notice = "当前只支持删除最后一条用户台词"
       return
     }
     viewModelScope.launch {
@@ -2777,7 +2904,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           refreshCurrentSession()
         }
       }.onSuccess {
-        notice = "已删除上一句玩家台词"
+        notice = "已删除上一句用户台词"
       }.onFailure {
         throwIfCancellation(it)
         notice = "删除台词失败: ${it.message ?: "未知错误"}"
@@ -2823,7 +2950,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return source.filterNot(::isRuntimeRetryMessage)
   }
 
-  private fun isLocalPendingPlayerMessage(message: MessageItem): Boolean {
+  fun isLocalPendingPlayerMessage(message: MessageItem): Boolean {
     if (message.roleType != "player" || message.id >= 0) return false
     val meta = message.meta?.takeIf { it.isJsonObject }?.asJsonObject ?: return false
     val status = meta.get("status")?.asString?.trim().orEmpty()
@@ -2892,6 +3019,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     nextMessages.add(message)
     messages.clear()
     messages.addAll(nextMessages)
+    syncRuntimeChatTraceLog()
     return message
   }
 
@@ -2899,6 +3027,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val index = messages.indexOfFirst { it.id == messageId }
     if (index >= 0) {
       messages.removeAt(index)
+      syncRuntimeChatTraceLog()
     }
   }
 
@@ -2906,6 +3035,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     updateMessageById(messageId) { message ->
       message.copy(meta = buildRuntimeStreamMeta(message.meta, status = "error", streaming = false))
     }
+    syncRuntimeChatTraceLog()
   }
 
   fun playerPendingStatusText(message: MessageItem): String {
@@ -2949,6 +3079,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ),
       )
     }
+    syncRuntimeChatTraceLog()
   }
 
   private fun messageIdentity(message: MessageItem): String {
@@ -2990,7 +3121,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private fun normalizeLoadedSessionDetail(detail: SessionDetail): SessionDetail {
     if (detail.messages.isEmpty()) return detail
-    val turnState = detail.state?.takeIf { it.isJsonObject }?.asJsonObject?.getAsJsonObject("turnState")
+    val turnState = sessionTurnStateRoot(detail)
     if (turnState == null || turnState.entrySet().isEmpty()) return detail
     val normalized = detail.messages.mapIndexed { index, message ->
       normalizeSessionRuntimeMessage(message, index + 1, turnState)
@@ -3035,12 +3166,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       status = result.status.ifBlank { existingDetail?.status.orEmpty() },
       chapterId = result.chapterId ?: existingDetail?.chapterId,
       state = nextState,
+      latestSnapshot = com.toonflow.game.data.SessionSnapshot(state = nextState),
       world = existingDetail?.world,
       chapter = result.chapter ?: existingDetail?.chapter,
       messages = mergedMessages,
     )
     messages.clear()
     messages.addAll(mergedMessages)
+    syncRuntimeChatTraceLog()
     result.chapter?.let { chapter ->
       val index = playChapters.indexOfFirst { it.id == chapter.id }
       if (index >= 0) {
@@ -3052,11 +3185,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sessionRuntimeStage = ""
   }
 
+  private fun applySessionOrchestrationResult(result: SessionOrchestrationResult) {
+    val existingDetail = sessionDetail
+    sessionDetail = SessionDetail(
+      sessionId = result.sessionId.ifBlank { existingDetail?.sessionId.orEmpty() },
+      title = existingDetail?.title.orEmpty(),
+      status = result.status.ifBlank { existingDetail?.status.orEmpty() },
+      chapterId = result.chapterId ?: existingDetail?.chapterId,
+      state = existingDetail?.state,
+      latestSnapshot = existingDetail?.latestSnapshot,
+      world = existingDetail?.world,
+      chapter = existingDetail?.chapter,
+      messages = existingDetail?.messages ?: messages.toList(),
+    )
+    syncRuntimeChatTraceLog()
+    sessionRuntimeStage = ""
+  }
+
   private fun clearRuntimeRetryMessage() {
     val nextMessages = conversationMessages()
     if (nextMessages.size == messages.size) return
     messages.clear()
     messages.addAll(nextMessages)
+    syncRuntimeChatTraceLog()
   }
 
   private fun clearRuntimeRetryState() {
@@ -3089,6 +3240,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         createTime = now,
       ),
     )
+    syncRuntimeChatTraceLog()
   }
 
   fun retryRuntimeFailure() {
@@ -3740,8 +3892,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return fallback
   }
 
-  private suspend fun saveWorldInternal(publish: Boolean? = null): WorldItem {
-    val safeWorldName = prepareWorldNameForSave(publish)
+  private fun worldStatusModeForPublish(publish: Boolean?): SaveWorldStatusMode {
+    return when (publish) {
+      true -> SaveWorldStatusMode.PUBLISHED
+      false -> SaveWorldStatusMode.DRAFT
+      else -> SaveWorldStatusMode.PRESERVE
+    }
+  }
+
+  private fun resolveTargetWorldStatus(statusMode: SaveWorldStatusMode): String {
+    return when (statusMode) {
+      SaveWorldStatusMode.PUBLISHED -> "published"
+      SaveWorldStatusMode.DRAFT -> "draft"
+      SaveWorldStatusMode.PRESERVE -> worldPublishStatus.ifBlank { "draft" }
+    }
+  }
+
+  private fun logStoryFlow(message: String) {
+    VueTagLogger.info("story_flow", message)
+  }
+
+  private suspend fun saveWorldInternal(statusMode: SaveWorldStatusMode = SaveWorldStatusMode.PRESERVE): WorldItem {
+    val safeWorldName = prepareWorldNameForSave(statusMode == SaveWorldStatusMode.PUBLISHED)
     val worldKey = if (worldId > 0L) "world_$worldId" else "project_${selectedProjectId}"
     val persistedUserAvatarPath = ensureRemoteStoredMediaPath(userAvatarPath, "role", "${worldKey}_player_fg", true)
     val persistedUserAvatarBgPath = ensureRemoteStoredMediaPath(userAvatarBgPath, "role", "${worldKey}_player_bg", true)
@@ -3803,11 +3975,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ),
       )
     }
-    val targetStatus = when (publish) {
-      true -> "published"
-      false -> "draft"
-      else -> worldPublishStatus.ifBlank { "draft" }
-    }
+    val targetStatus = resolveTargetWorldStatus(statusMode)
     val persistedChapterExtras = mutableListOf<ChapterExtra>()
     chapterExtras.forEachIndexed { index, extra ->
       persistedChapterExtras.add(
@@ -3849,16 +4017,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       add("narratorRole", repository.toJson(narratorRole))
     }
     payload.addProperty("publishStatus", targetStatus)
+    logStoryFlow("saveWorld request worldId=${worldId.takeIf { it > 0L } ?: 0L} projectId=$selectedProjectId targetStatus=$targetStatus")
     val saved = repository.saveWorld(payload)
     worldId = saved.id
     worldPublishStatus = safeText(saved.publishStatus).ifBlank {
       safeText(saved.settings?.publishStatus).ifBlank { targetStatus }
     }
+    logStoryFlow("saveWorld success worldId=${saved.id} status=$worldPublishStatus")
     return saved
   }
 
   private suspend fun saveEditorChapterInternal(targetStatus: String): ChapterItem? {
-    if (worldId <= 0L || !hasCurrentChapterDraft()) return null
+    if (worldId <= 0L || !hasCurrentChapterDraft()) {
+      logStoryFlow("saveChapter skipped worldId=$worldId hasDraft=${hasCurrentChapterDraft()}")
+      return null
+    }
     val currentId = selectedChapterId
     val currentSort = currentChapterSort()
     val normalizedOpeningRole = chapterOpeningRole.ifBlank { narratorName.ifBlank { "旁白" } }.trim()
@@ -3881,16 +4054,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       addProperty("sort", currentSort)
       addProperty("status", if (targetStatus == "published") "published" else "draft")
     }
+    logStoryFlow("saveChapter request worldId=$worldId chapterId=${currentId ?: 0L} sort=$currentSort status=${if (targetStatus == "published") "published" else "draft"}")
     val saved = repository.saveChapter(payload)
     upsertChapterExtra(saved.id, saved.sort)
     selectedChapterId = saved.id
+    logStoryFlow("saveChapter success chapterId=${saved.id} sort=${saved.sort} status=${saved.status}")
     return saved
   }
 
   private suspend fun refreshStoryData() {
+    logStoryFlow("refreshStoryData start")
     loadWorlds()
     loadSessions()
     refreshRecommendation()
+    logStoryFlow("refreshStoryData done worlds=${worlds.size} sessions=${sessions.size}")
   }
 
   fun openWorldForEdit(world: WorldItem) {
@@ -3928,7 +4105,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           notice = "该故事已在草稿箱"
           return@runCatching
         }
-        saveWorldInternal(false)
+        saveWorldInternal(SaveWorldStatusMode.DRAFT)
         refreshStoryData()
         loadWorldEditor(world.id)
         activeTab = "创建"
@@ -3966,7 +4143,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     viewModelScope.launch {
       runCatching {
-        saveWorldInternal(publish)
+        saveWorldInternal(worldStatusModeForPublish(publish))
         refreshStoryData()
         primeStoryEditorPersistState()
         notice = successNotice
@@ -3992,17 +4169,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         notice = "发布中，正在生成角色参数和章节快照..."
       }
       runCatching {
+        val worldStatusMode = worldStatusModeForPublish(publish)
+        val targetWorldStatus = resolveTargetWorldStatus(worldStatusMode)
+        val targetChapterStatus = if (targetWorldStatus == "published") "published" else "draft"
+        logStoryFlow(
+          "saveStoryEditor start publish=$publish mode=$worldStatusMode worldId=$worldId selectedChapterId=${selectedChapterId ?: 0L} worldStatus=$worldPublishStatus hasDraft=${hasCurrentChapterDraft()}",
+        )
         if (worldId <= 0L) {
-          saveWorldInternal(false)
+          saveWorldInternal(SaveWorldStatusMode.DRAFT)
         }
-        val targetStatus = when (publish) {
-          true -> "published"
-          false -> "draft"
-          else -> worldPublishStatus.ifBlank { "draft" }
-        }
-        val chapterStatus = if (targetStatus == "published") "published" else "draft"
-        val savedChapter = saveEditorChapterInternal(chapterStatus)
-        saveWorldInternal(publish)
+        val savedChapter = saveEditorChapterInternal(targetChapterStatus)
+        saveWorldInternal(worldStatusMode)
         refreshStoryData()
         when {
           startNextDraft -> beginNewChapterDraft()
@@ -4012,10 +4189,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!successNotice.isNullOrBlank()) {
           notice = successNotice
         }
+        logStoryFlow("saveStoryEditor success worldId=$worldId worldStatus=$worldPublishStatus savedChapterId=${savedChapter?.id ?: 0L}")
       }.onFailure {
         if (publish == true) {
-          runCatching { refreshStoryData() }
+          runCatching {
+            if (worldId > 0L) {
+              loadWorldEditor(worldId)
+            }
+            refreshStoryData()
+          }
         }
+        VueTagLogger.error("story_flow", "saveStoryEditor failed publish=$publish error=${VueTagLogger.throwableMessage(it)}", it)
         notice = "保存失败: ${it.message ?: "未知错误"}"
       }.also {
         if (publish == true) {
@@ -4039,7 +4223,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       runCatching {
         val wasUpdating = selectedChapterId != null && selectedChapterId!! > 0L
         val saved = saveEditorChapterInternal(worldPublishStatus.ifBlank { "draft" }) ?: error("当前没有可保存的章节内容")
-        saveWorldInternal(null)
+        saveWorldInternal(SaveWorldStatusMode.PRESERVE)
         loadChapters(worldId)
         if (startNextDraft) {
           beginNewChapterDraft()
@@ -4059,10 +4243,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     viewModelScope.launch {
       runCatching {
         if (hasCurrentChapterDraft()) {
-          saveWorldInternal(null)
+          saveWorldInternal(SaveWorldStatusMode.PRESERVE)
           val savedChapter = saveEditorChapterInternal(worldPublishStatus.ifBlank { "draft" })
           if (savedChapter != null) {
-            saveWorldInternal(null)
+            saveWorldInternal(SaveWorldStatusMode.PRESERVE)
           }
         }
         refreshStoryData()
@@ -4116,10 +4300,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     notice = "进入调试中..."
     try {
       debugLoadingStage = "保存草稿"
-      saveWorldInternal(false)
+      saveWorldInternal(SaveWorldStatusMode.PRESERVE)
       val savedChapter = saveEditorChapterInternal(worldPublishStatus.ifBlank { "draft" })
       if (savedChapter != null) {
-        saveWorldInternal(false)
+        saveWorldInternal(SaveWorldStatusMode.PRESERVE)
       }
       debugLoadingStage = "创建这次会话环境"
       if (worldId > 0L) {
@@ -4208,10 +4392,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sessionOpeningStage = if (playback) "同步回放进度" else "同步游戏进度"
     notice = if (playback) "正在同步回放进度..." else "正在同步游戏进度..."
     refreshCurrentSession()
-    if (firstMessage.isNotBlank()) {
-      applySessionNarrativeResult(repository.addPlayerMessage(sessionId, playerName.ifBlank { "用户" }, firstMessage))
+    if (!playback && conversationMessages(messages.toList()).isEmpty() && !playCanPlayerSpeak()) {
+      continueSessionNarrativeInBackground()
     }
-    loadSessions()
+    if (firstMessage.isNotBlank()) {
+      performSessionPlayerMessage(sessionId, firstMessage)
+    }
+    runCatching {
+      loadSessions()
+    }.onFailure {
+      throwIfCancellation(it)
+      sessionListError = it.message ?: "会话列表刷新失败"
+    }
   }
 
   fun startFromWorld(world: WorldItem, firstMessage: String = "") {
@@ -4227,12 +4419,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     viewModelScope.launch {
       notice = "正在进入故事..."
       runCatching {
-        val existingSessionId = repository.listSession(worldId = world.id)
-          .firstOrNull()
-          ?.sessionId
-          ?.trim()
-          .orEmpty()
-          .ifBlank { sessions.firstOrNull { it.worldId == world.id }?.sessionId?.trim().orEmpty() }
+        val existingSessionId = sessions.firstOrNull { it.worldId == world.id }?.sessionId?.trim().orEmpty()
+          .ifBlank {
+            runCatching { repository.listSession(worldId = world.id) }
+              .getOrElse {
+                throwIfCancellation(it)
+                sessionListError = it.message ?: "会话列表加载失败"
+                emptyList()
+              }
+              .firstOrNull()
+              ?.sessionId
+              ?.trim()
+              .orEmpty()
+          }
         if (existingSessionId.isNotBlank()) {
           openResolvedSession(existingSessionId, playback = false, playbackIndex = 0, firstMessage = firstMessage, resumeLatest = true)
           return@runCatching
@@ -4269,12 +4468,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     viewModelScope.launch {
       notice = if (playback) "正在打开剧情回放..." else "正在进入故事..."
       runCatching {
-        val resolvedSessionId = repository.listSession(worldId = worldId)
-          .firstOrNull()
-          ?.sessionId
-          ?.trim()
-          .orEmpty()
-          .ifBlank { sessions.firstOrNull { it.worldId == worldId }?.sessionId?.trim().orEmpty() }
+        val resolvedSessionId = sessions.firstOrNull { it.worldId == worldId }?.sessionId?.trim().orEmpty()
+          .ifBlank {
+            runCatching { repository.listSession(worldId = worldId) }
+              .getOrElse {
+                throwIfCancellation(it)
+                sessionListError = it.message ?: "会话列表加载失败"
+                emptyList()
+              }
+              .firstOrNull()
+              ?.sessionId
+              ?.trim()
+              .orEmpty()
+          }
           .ifBlank { fallbackSessionId.trim() }
         if (resolvedSessionId.isBlank()) error("未找到会话")
         openResolvedSession(
@@ -4408,9 +4614,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun sendMessage() {
     val sid = currentSessionId
     val text = sendText.trim()
-    if (sid.isBlank() || text.isBlank() || sendPending) return
-    if (!playCanPlayerInput()) {
-      notice = playTurnHint()
+    if (sid.isBlank() || text.isBlank() || sendPending) {
+      logStoryFlow("sendMessage skipped sessionId=${sid.trim()} textBlank=${text.isBlank()} pending=$sendPending")
       return
     }
 
@@ -4420,6 +4625,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     clearRuntimeRetryState()
+    logStoryFlow("sendMessage request sessionId=$sid text=${VueTagLogger.sanitize(text, 240)}")
     val optimistic = appendLocalPendingPlayerMessage(text)
     sendText = ""
     sendPending = true
@@ -4447,13 +4653,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun sendMiniGameAction(action: String) {
     val sid = currentSessionId
     val text = action.trim()
-    if (sid.isBlank() || text.isBlank() || sendPending) return
+    if (sid.isBlank() || text.isBlank() || sendPending) {
+      logStoryFlow("sendMiniGameAction skipped sessionId=${sid.trim()} textBlank=${text.isBlank()} pending=$sendPending")
+      return
+    }
     sendText = text
     if (debugMode) {
       sendDebugMessage(text)
       return
     }
     clearRuntimeRetryState()
+    logStoryFlow("sendMiniGameAction request sessionId=$sid text=${VueTagLogger.sanitize(text, 240)}")
     val optimistic = appendLocalPendingPlayerMessage(text)
     sendText = ""
     sendPending = true
@@ -4543,10 +4753,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private suspend fun loadSessions() {
-    val rows = repository.listSession(null)
+    val rows = runCatching { repository.listSession(null) }
+      .onFailure {
+        throwIfCancellation(it)
+        sessionListError = it.message ?: "会话列表加载失败"
+      }
+      .getOrElse { return }
       .groupBy { it.worldId }
       .mapNotNull { (_, group) -> group.maxByOrNull { item -> item.updateTime } }
       .sortedByDescending { it.updateTime }
+    sessionListError = ""
     sessions.clear()
     sessions.addAll(rows)
   }
@@ -4585,6 +4801,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       sessionDetail = detail.copy(messages = loadedMessages)
       messages.addAll(loadedMessages)
     }
+    syncRuntimeChatTraceLog()
   }
 
   fun playSessionRefreshFingerprint(): String {
@@ -4612,7 +4829,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private suspend fun performSessionPlayerMessage(sessionId: String, text: String, optimisticMessageId: Long? = null) {
-    sessionRuntimeStage = "提交玩家发言并编排后续剧情"
+    sessionRuntimeStage = "提交用户发言"
     try {
       val result = repository.addPlayerMessage(sessionId, playerName.ifBlank { "用户" }, text)
       if (optimisticMessageId != null) {
@@ -4621,12 +4838,113 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       sendText = ""
       clearRuntimeRetryState()
       applySessionNarrativeResult(result)
-      loadSessions()
+      continueSessionNarrativeInBackground()
+      viewModelScope.launch {
+        runCatching { loadSessions() }.onFailure {
+          throwIfCancellation(it)
+          sessionListError = it.message ?: "会话列表刷新失败"
+        }
+      }
     } finally {
-      if (sessionRuntimeStage == "提交玩家发言并编排后续剧情") {
+      if (sessionRuntimeStage == "提交用户发言") {
         sessionRuntimeStage = ""
       }
     }
+  }
+
+  private fun continueSessionNarrativeInBackground() {
+    val previousJob = continueSessionNarrativeJob
+    continueSessionNarrativeJob = viewModelScope.launch {
+      previousJob?.join()
+      runCatching {
+        continueSessionNarrative()
+      }.onFailure {
+        if (it is CancellationException) return@onFailure
+        notice = "继续剧情失败: ${it.message ?: "未知错误"}"
+      }
+    }
+  }
+
+  private suspend fun streamSessionPlan(orchestration: SessionOrchestrationResult, historyMessages: List<MessageItem>) {
+    val sessionId = currentSessionId.trim()
+    val plan = orchestration.plan ?: return
+    if (sessionId.isBlank()) return
+    val placeholder = createStreamingMessage(plan, historyMessages.size + 1)
+    messages.clear()
+    messages.addAll(historyMessages)
+    messages.add(placeholder)
+    syncRuntimeChatTraceLog()
+    var done = false
+    var accumulated = ""
+    var finalMessage: JsonObject? = null
+    logStoryFlow("streamSessionPlan start sessionId=$sessionId role=${plan.role} roleType=${plan.roleType}")
+    repository.streamSessionLines(
+      sessionId = sessionId,
+      plan = plan,
+    ) { event ->
+      when (event.get("type")?.asString.orEmpty()) {
+        "delta" -> {
+          val text = event.getAsJsonObject("data")?.get("text")?.asString.orEmpty()
+          if (text.isBlank()) return@streamSessionLines
+          accumulated += text
+          updateMessageById(placeholder.id) { current ->
+            current.copy(content = current.content + text)
+          }
+        }
+
+        "sentence" -> {
+          val text = event.getAsJsonObject("data")?.get("text")?.asString.orEmpty().trim()
+          if (text.isBlank()) return@streamSessionLines
+          updateMessageById(placeholder.id) { current ->
+            val meta = buildRuntimeStreamMeta(current.meta, status = "streaming", streaming = true)
+            val sentences = meta.getAsJsonArray("sentences") ?: JsonArray().also { meta.add("sentences", it) }
+            val exists = sentences.any { item -> item?.takeIf { !it.isJsonNull }?.asString == text }
+            if (!exists) {
+              sentences.add(text)
+            }
+            current.copy(meta = meta)
+          }
+        }
+
+        "done" -> {
+          done = true
+          val data = event.getAsJsonObject("data")
+          finalMessage = data?.getAsJsonObject("message")
+          val finalContent = finalMessage?.get("content")?.asString ?: data?.get("content")?.asString.orEmpty()
+          updateMessageById(placeholder.id) { current ->
+            current.copy(
+              role = finalMessage?.get("role")?.asString ?: current.role,
+              roleType = finalMessage?.get("roleType")?.asString ?: current.roleType,
+              eventType = finalMessage?.get("eventType")?.asString ?: current.eventType,
+              content = finalContent,
+              meta = buildRuntimeStreamMeta(current.meta, status = "generated", streaming = false),
+            )
+          }
+        }
+
+        "error" -> {
+          val message = event.getAsJsonObject("data")?.get("message")?.asString.orEmpty().ifBlank { "台词流生成失败" }
+          updateMessageById(placeholder.id) { null }
+          error(message)
+        }
+      }
+    }
+    if (!done) {
+      updateMessageById(placeholder.id) { null }
+      error("台词流未正常结束")
+    }
+    val committedContent = finalMessage?.get("content")?.asString ?: accumulated
+    val committedCreateTime = finalMessage?.get("createTime")?.asLong ?: System.currentTimeMillis()
+    val committed = repository.commitNarrativeTurn(
+      sessionId = sessionId,
+      content = committedContent,
+      createTime = committedCreateTime,
+    )
+    logStoryFlow("streamSessionPlan committed sessionId=$sessionId content=${VueTagLogger.sanitize(committedContent, 240)}")
+    messages.clear()
+    messages.addAll(historyMessages)
+    syncRuntimeChatTraceLog()
+    applySessionNarrativeResult(committed)
   }
 
   fun retryFailedPlayerMessage(messageId: Long) {
@@ -4666,17 +4984,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (currentSessionId.isBlank()) return
     sessionRuntimeStage = "继续编排下一轮剧情"
     try {
-      val beforeCount = conversationMessages().size
-      val result = repository.continueSession(currentSessionId)
-      clearRuntimeRetryState()
-      applySessionNarrativeResult(result)
-      loadSessions()
-      val afterCount = conversationMessages().size
-      val latest = conversationMessages().lastOrNull()
-      val latestStatus = latest?.let(::runtimeMessageStatus).orEmpty()
-      val canPlayerSpeakNow = playCanPlayerSpeak()
-      if (afterCount <= beforeCount && !canPlayerSpeakNow && latestStatus != "waiting_player") {
+      var advanced = false
+      for (attempt in 0 until 3) {
+        val beforeCount = conversationMessages().size
+        val history = conversationMessages()
+        val orchestration = repository.orchestrateSession(currentSessionId)
+        clearRuntimeRetryState()
+        applySessionOrchestrationResult(orchestration)
+        logStoryFlow(
+          "continueSession orchestration sessionId=$currentSessionId planRole=${orchestration.plan?.role.orEmpty()} nextRole=${orchestration.plan?.nextRole.orEmpty()} status=${orchestration.status}",
+        )
+        if (orchestration.plan != null) {
+          streamSessionPlan(orchestration, history)
+        }
+        val afterCount = conversationMessages().size
+        val latest = conversationMessages().lastOrNull()
+        val latestStatus = latest?.let(::runtimeMessageStatus).orEmpty()
+        val canPlayerSpeakNow = playCanPlayerSpeak()
+        if (afterCount > beforeCount || canPlayerSpeakNow || latestStatus == "waiting_player" || orchestration.plan == null) {
+          advanced = true
+          break
+        }
+      }
+      if (!advanced) {
         error("自动推进没有产出新内容")
+      }
+      viewModelScope.launch {
+        runCatching { loadSessions() }.onFailure {
+          throwIfCancellation(it)
+          sessionListError = it.message ?: "会话列表刷新失败"
+        }
       }
     } finally {
       if (sessionRuntimeStage == "继续编排下一轮剧情") {

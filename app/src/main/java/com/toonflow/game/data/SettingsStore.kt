@@ -23,6 +23,18 @@ class SettingsStore(context: Context) {
       prefs.edit().putBoolean("auto_voice_enabled", value).apply()
     }
 
+  fun getRuntimeChatTraceJson(): String {
+    return prefs.getString("toonflow.chat", "[]") ?: "[]"
+  }
+
+  fun setRuntimeChatTraceJson(value: String) {
+    prefs.edit().putString("toonflow.chat", value).apply()
+  }
+
+  fun clearRuntimeChatTrace() {
+    prefs.edit().remove("toonflow.chat").apply()
+  }
+
   fun getAvatarPath(userId: Long): String {
     if (userId <= 0) return ""
     return prefs.getString("avatar_path_user_$userId", "") ?: ""

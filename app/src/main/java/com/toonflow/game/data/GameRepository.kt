@@ -5,6 +5,7 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.toonflow.game.api.ApiClient
+import com.toonflow.game.util.VueTagLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -31,6 +32,15 @@ class GameRepository(private val settingsStore: SettingsStore) {
 
   private fun api() = ApiClient.create(settingsStore)
 
+  private fun <T> unwrapEnvelope(path: String, envelope: ApiEnvelope<T>): T {
+    if (envelope.code != 200) {
+      val message = envelope.message.trim().ifBlank { "$path 请求失败" }
+      VueTagLogger.error("api", "$path failed code=${envelope.code} message=$message")
+      error(message)
+    }
+    return envelope.data
+  }
+
   private fun resolveRoleAvatarResult(task: RoleAvatarTaskResult): SeparatedRoleImageResult {
     val foregroundPath = task.foregroundFilePath.ifBlank { task.foregroundPath }
     val backgroundPath = task.backgroundFilePath.ifBlank { task.backgroundPath }
@@ -50,7 +60,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("username", username)
       addProperty("password", password)
     }
-    return api().login(payload).data
+    return unwrapEnvelope("other/login", api().login(payload))
   }
 
   suspend fun register(username: String, password: String): JsonObject {
@@ -58,15 +68,15 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("username", username)
       addProperty("password", password)
     }
-    return api().register(payload).data
+    return unwrapEnvelope("other/register", api().register(payload))
   }
 
   suspend fun getProjects(): List<ProjectItem> {
-    return api().getProjects().data
+    return unwrapEnvelope("project/getProject", api().getProjects())
   }
 
   suspend fun getUser(): JsonObject {
-    return api().getUser().data
+    return unwrapEnvelope("user/getUser", api().getUser())
   }
 
   suspend fun saveUser(
@@ -86,7 +96,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
       if (avatarBgPath != null) addProperty("avatarBgPath", avatarBgPath)
     }
     if (payload.size() == 0) return
-    api().saveUser(payload)
+    unwrapEnvelope("user/saveUser", api().saveUser(payload))
   }
 
   suspend fun changePassword(oldPassword: String, newPassword: String) {
@@ -94,7 +104,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("oldPassword", oldPassword)
       addProperty("newPassword", newPassword)
     }
-    api().changePassword(payload)
+    unwrapEnvelope("user/changePassword", api().changePassword(payload))
   }
 
   suspend fun getWorld(projectId: Long, autoCreate: Boolean): WorldItem? {
@@ -102,14 +112,14 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("projectId", projectId)
       addProperty("autoCreate", autoCreate)
     }
-    return runCatching { api().getWorld(payload).data }.getOrNull()
+    return runCatching { unwrapEnvelope("game/getWorld", api().getWorld(payload)) }.getOrNull()
   }
 
   suspend fun getWorldById(worldId: Long): WorldItem? {
     val payload = JsonObject().apply {
       addProperty("worldId", worldId)
     }
-    return runCatching { api().getWorld(payload).data }.getOrNull()
+    return runCatching { unwrapEnvelope("game/getWorld", api().getWorld(payload)) }.getOrNull()
   }
 
   suspend fun listWorlds(projectId: Long? = null, includePublicPublished: Boolean = false): List<WorldItem> {
@@ -117,18 +127,18 @@ class GameRepository(private val settingsStore: SettingsStore) {
       if (projectId != null && projectId > 0L) addProperty("projectId", projectId)
       if (includePublicPublished) addProperty("includePublicPublished", true)
     }
-    return runCatching { api().listWorlds(payload).data }.getOrElse { emptyList() }
+    return runCatching { unwrapEnvelope("game/listWorlds", api().listWorlds(payload)) }.getOrElse { emptyList() }
   }
 
   suspend fun saveWorld(payload: JsonObject): WorldItem {
-    return api().saveWorld(payload).data
+    return unwrapEnvelope("game/saveWorld", api().saveWorld(payload))
   }
 
   suspend fun deleteWorld(worldId: Long) {
     val payload = JsonObject().apply {
       addProperty("worldId", worldId)
     }
-    api().deleteWorld(payload)
+    unwrapEnvelope("game/deleteWorld", api().deleteWorld(payload))
   }
 
   suspend fun generateImage(
@@ -155,7 +165,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
       if (!aspectRatio.isNullOrBlank()) addProperty("aspectRatio", aspectRatio)
       addProperty("size", size)
     }
-    return api().generateImage(payload).data
+    return unwrapEnvelope("game/generateImage", api().generateImage(payload))
   }
 
   suspend fun uploadImage(
@@ -170,7 +180,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("base64Data", base64Data)
       if (fileName.isNotBlank()) addProperty("fileName", fileName)
     }
-    return api().uploadImage(payload).data
+    return unwrapEnvelope("game/uploadImage", api().uploadImage(payload))
   }
 
   suspend fun convertAvatarVideoToGif(
@@ -183,7 +193,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("base64Data", base64Data)
       if (fileName.isNotBlank()) addProperty("fileName", fileName)
     }
-    return api().convertAvatarVideoToGif(payload).data
+    return unwrapEnvelope("game/convertAvatarVideoToGif", api().convertAvatarVideoToGif(payload))
   }
 
   suspend fun separateRoleAvatar(
@@ -199,16 +209,16 @@ class GameRepository(private val settingsStore: SettingsStore) {
       if (name.isNotBlank()) addProperty("name", name)
       addProperty("asyncTask", true)
     }
-    val task = api().separateRoleAvatar(payload).data
+    val task = unwrapEnvelope("game/separateRoleAvatar", api().separateRoleAvatar(payload))
     val taskId = task.taskId
     if (taskId <= 0L) {
       error("头像分离任务创建失败")
     }
     val startedAt = System.currentTimeMillis()
     while (System.currentTimeMillis() - startedAt < roleAvatarTaskTimeoutMs) {
-      val status = api().separateRoleAvatarStatus(JsonObject().apply {
+      val status = unwrapEnvelope("game/separateRoleAvatar/status", api().separateRoleAvatarStatus(JsonObject().apply {
         addProperty("taskId", taskId)
-      }).data
+      }))
       when (status.status.trim().lowercase()) {
         "success" -> return resolveRoleAvatarResult(status)
         "failed" -> error(status.errorMessage.ifBlank { status.message.ifBlank { "头像分离失败" } })
@@ -222,11 +232,11 @@ class GameRepository(private val settingsStore: SettingsStore) {
     val payload = JsonObject().apply {
       addProperty("worldId", worldId)
     }
-    return api().getChapter(payload).data
+    return unwrapEnvelope("game/getChapter", api().getChapter(payload))
   }
 
   suspend fun saveChapter(payload: JsonObject): ChapterItem {
-    return api().saveChapter(payload).data
+    return unwrapEnvelope("game/saveChapter", api().saveChapter(payload))
   }
 
   suspend fun startSession(worldId: Long, projectId: Long, chapterId: Long?): String {
@@ -235,7 +245,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("projectId", projectId)
       if (chapterId != null) addProperty("chapterId", chapterId)
     }
-    return api().startSession(payload).data.get("sessionId")?.asString ?: ""
+    return unwrapEnvelope("game/startSession", api().startSession(payload)).get("sessionId")?.asString ?: ""
   }
 
   suspend fun listSession(projectId: Long? = null, worldId: Long? = null): List<SessionItem> {
@@ -248,7 +258,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
       }
       addProperty("limit", 60)
     }
-    return runCatching { api().listSession(payload).data }.getOrElse { emptyList() }
+    return unwrapEnvelope("game/listSession", api().listSession(payload))
   }
 
   suspend fun getSession(sessionId: String): SessionDetail {
@@ -256,7 +266,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("sessionId", sessionId)
       addProperty("messageLimit", 120)
     }
-    return api().getSession(payload).data
+    return unwrapEnvelope("game/getSession", api().getSession(payload))
   }
 
   suspend fun deleteSession(sessionId: String) {
@@ -289,15 +299,37 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("role", role)
       addProperty("content", content)
       addProperty("eventType", "on_message")
+      addProperty("orchestrate", false)
     }
-    return api().addMessage(payload).data
+    return unwrapEnvelope("game/addMessage", api().addMessage(payload))
+  }
+
+  suspend fun commitNarrativeTurn(
+    sessionId: String,
+    content: String,
+    createTime: Long,
+  ): SessionNarrativeResult {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+      addProperty("content", content)
+      addProperty("createTime", createTime)
+      addProperty("saveSnapshot", true)
+    }
+    return unwrapEnvelope("game/commitNarrativeTurn", api().commitNarrativeTurn(payload))
   }
 
   suspend fun continueSession(sessionId: String): SessionNarrativeResult {
     val payload = JsonObject().apply {
       addProperty("sessionId", sessionId)
     }
-    return api().continueSession(payload).data
+    return unwrapEnvelope("game/continueSession", api().continueSession(payload))
+  }
+
+  suspend fun orchestrateSession(sessionId: String): SessionOrchestrationResult {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+    }
+    return unwrapEnvelope("game/orchestration", api().orchestrateSession(payload))
   }
 
   suspend fun debugStep(
@@ -414,6 +446,80 @@ class GameRepository(private val settingsStore: SettingsStore) {
       } catch (err: Throwable) {
         if (timedOut.get() || err is InterruptedIOException || err is SocketTimeoutException) {
           error("调试台词流空闲超时")
+        }
+        throw err
+      } finally {
+        watchdog.cancel()
+      }
+    }
+  }
+
+  suspend fun streamSessionLines(
+    sessionId: String,
+    plan: DebugNarrativePlan,
+    onEvent: suspend (JsonObject) -> Unit,
+  ) {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+      add("plan", gson.toJsonTree(plan))
+    }
+    val baseUrl = settingsStore.baseUrl.trim().removeSuffix("/")
+    val request = Request.Builder()
+      .url("$baseUrl/game/streamlines")
+      .post(gson.toJson(payload).toRequestBody("application/json; charset=utf-8".toMediaType()))
+      .apply {
+        val token = settingsStore.token.trim()
+        if (token.isNotEmpty()) {
+          header("Authorization", token)
+        }
+      }
+      .build()
+    val logger = HttpLoggingInterceptor().apply {
+      level = HttpLoggingInterceptor.Level.BASIC
+    }
+    val client = OkHttpClient.Builder()
+      .addInterceptor(logger)
+      .connectTimeout(20, TimeUnit.SECONDS)
+      .readTimeout(0, TimeUnit.SECONDS)
+      .writeTimeout(30, TimeUnit.SECONDS)
+      .build()
+    coroutineScope {
+      val call = client.newCall(request)
+      val timedOut = AtomicBoolean(false)
+      val lastEventAt = AtomicLong(System.currentTimeMillis())
+      val watchdog = launch(Dispatchers.IO) {
+        while (isActive) {
+          delay(debugStreamWatchdogPollMs)
+          if (System.currentTimeMillis() - lastEventAt.get() < debugStreamIdleTimeoutMs) continue
+          timedOut.set(true)
+          call.cancel()
+          break
+        }
+      }
+      try {
+        withContext(Dispatchers.IO) {
+          call.execute().use { response ->
+            if (!response.isSuccessful) {
+              error("HTTP ${response.code}")
+            }
+            val body = response.body ?: error("未返回流式正文")
+            val source = body.source()
+            source.timeout().timeout(debugStreamIdleTimeoutMs, TimeUnit.MILLISECONDS)
+            while (true) {
+              val raw = source.readUtf8Line() ?: break
+              val line = raw.trim()
+              if (line.isBlank()) continue
+              lastEventAt.set(System.currentTimeMillis())
+              val event = gson.fromJson(line, JsonObject::class.java)
+              withContext(Dispatchers.Main.immediate) {
+                onEvent(event)
+              }
+            }
+          }
+        }
+      } catch (err: Throwable) {
+        if (timedOut.get() || err is InterruptedIOException || err is SocketTimeoutException) {
+          error("剧情台词流空闲超时")
         }
         throw err
       } finally {
@@ -653,7 +759,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
         }
       }
     }
-    val data = api().streamVoice(payload).data
+    val data = unwrapEnvelope("game/streamvoice", api().streamVoice(payload))
     return data.get("audioUrl")?.asString?.trim().orEmpty()
   }
 

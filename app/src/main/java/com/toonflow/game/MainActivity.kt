@@ -163,6 +163,7 @@ import com.toonflow.game.data.SessionItem
 import com.toonflow.game.data.VoiceBindingDraft
 import com.toonflow.game.data.VoiceMixItem
 import com.toonflow.game.data.WorldItem
+import com.toonflow.game.util.VueTagLogger
 import com.toonflow.game.viewmodel.MainViewModel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
@@ -2261,7 +2262,11 @@ private fun HistoryScene(vm: MainViewModel) {
   var pendingDeleteSession by remember { mutableStateOf<SessionItem?>(null) }
   Column(modifier = Modifier.fillMaxSize().background(pageGray).padding(10.dp)) {
     HeaderTitle(title = "聊过", rightText = "刷新") { vm.reloadAll() }
-    if (vm.sessions.isEmpty()) {
+    if (vm.sessionListError.isNotBlank()) {
+      Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text("会话列表加载失败：${vm.sessionListError}", color = Color(0xFF60708C))
+      }
+    } else if (vm.sessions.isEmpty()) {
       Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text("暂无会话记录", color = Color(0xFF60708C))
       }
@@ -2672,6 +2677,7 @@ private fun PlayScene(
         )
       } ?: throw IllegalStateException("语音生成超时")
       if (url.isBlank()) throw IllegalStateException("未返回试听音频")
+      VueTagLogger.info("voice", "streamvoice text=${VueTagLogger.sanitize(text, 120)} audioUrl=${VueTagLogger.sanitize(url, 400)}")
       setLimitedCacheValue(runtimeVoicePreviewCache, cacheKey, url)
       deferred.complete(url)
       return url
@@ -2690,6 +2696,7 @@ private fun PlayScene(
     runtimeVoiceAudioInflight[audioUrl] = deferred
     try {
       val resolvedAudioUrl = vm.resolveMediaPath(audioUrl)
+      VueTagLogger.info("voice", "download audio request=${VueTagLogger.sanitize(resolvedAudioUrl, 400)}")
       val localPath = withTimeoutOrNull(10000L) {
         withContext(Dispatchers.IO) {
           val targetDir = File(context.cacheDir, "runtime_voice_preview").apply { mkdirs() }
@@ -2705,12 +2712,14 @@ private fun PlayScene(
         }
       } ?: throw IllegalStateException("音频下载超时")
       if (localPath.isBlank()) throw IllegalStateException("音频下载失败")
+      VueTagLogger.info("voice", "download audio success localPath=${VueTagLogger.sanitize(localPath, 240)}")
       setLimitedCacheValue(runtimeVoiceAudioPathCache, audioUrl, localPath) { cachedPath ->
         runCatching { File(cachedPath).delete() }
       }
       deferred.complete(localPath)
       return localPath
     } catch (err: Throwable) {
+      VueTagLogger.error("voice", "download audio failed url=${VueTagLogger.sanitize(audioUrl, 400)} message=${VueTagLogger.throwableMessage(err)}")
       deferred.completeExceptionally(err)
       throw err
     } finally {
@@ -2869,6 +2878,7 @@ private fun PlayScene(
           delay(220L)
           return@repeat
         }
+        VueTagLogger.info("voice", "play audio messageId=${message.id} path=${VueTagLogger.sanitize(playbackPath, 240)}")
         if (requestId != playbackRequestId) return false
         val played = withTimeoutOrNull(if (waitForCompletion) estimatePlaybackTimeoutMs(segment) else 8000L) {
           suspendCancellableCoroutine<Boolean> { continuation ->
@@ -2932,6 +2942,7 @@ private fun PlayScene(
         segmentPlayed = played
       }
       if (!segmentPlayed) {
+        VueTagLogger.error("voice", "playMessageVoice failed messageId=${message.id} message=${lastError?.message ?: "未知错误"}")
         throw (lastError ?: IllegalStateException("重听失败"))
       }
       delay(120L)
@@ -3082,6 +3093,9 @@ private fun PlayScene(
   val currentChapter = vm.playCurrentChapter()
   val allMessages = vm.messages.toList()
   val playbackMessages = remember(allMessages) { allMessages.filterNot(vm::isRuntimeRetryMessage) }
+  val latestPendingPlayerMessage = remember(allMessages) {
+    allMessages.lastOrNull(vm::isLocalPendingPlayerMessage)
+  }
   val allMessageKeysFingerprint = allMessages.map { vm.messageUiKey(it) }.joinToString("|")
   val allMessageProgressFingerprint = allMessages.joinToString("|") { message ->
     buildString {
@@ -3096,6 +3110,7 @@ private fun PlayScene(
   val isSessionPlaybackMode = !vm.debugMode && vm.sessionViewMode == "playback"
   val displayMessages = when {
     mode == "history" -> allMessages
+    latestPendingPlayerMessage != null -> listOf(latestPendingPlayerMessage)
     else -> revealedMessages.takeLast(1).toList()
   }
   val latestRevealedMessage = revealedMessages.lastOrNull()
@@ -3274,7 +3289,7 @@ private fun PlayScene(
     val sameVoiceTarget = runtimeVoiceMessageKey == vm.messageUiKey(latest)
     val canPlayerSpeakNow = vm.playCanPlayerSpeak()
     var latestStatus = vm.runtimeMessageStatus(latest)
-    if (!sameVoiceTarget && latestStatus in listOf("", "generated", "revealing", "voicing")) {
+    if (!sameVoiceTarget && latestStatus in listOf("", "orchestrated", "generated", "revealing", "voicing")) {
       latestStatus = if (canPlayerSpeakNow) "waiting_player" else "waiting_next"
       vm.setRuntimeMessageStatus(latest.id, latestStatus)
     }
@@ -3464,7 +3479,7 @@ private fun PlayScene(
               when {
                 vm.sessionOpening -> vm.sessionOpeningStage.ifBlank { "正在进入故事..." }
                 vm.sessionOpenError.isNotBlank() -> "打开会话失败"
-                else -> "当前会话暂无消息"
+                else -> if (vm.currentSessionId.isNotBlank()) "正在等待首句内容..." else "当前会话暂无消息"
               },
               color = Color(0xFFD5E6FF),
             )
@@ -3729,7 +3744,7 @@ private fun PlayScene(
             title = { Text("删除这条台词？", fontWeight = FontWeight.Bold) },
             text = {
               Text(
-                "当前只支持删除最后一条玩家台词。删除后会回到可重新输入的状态。",
+                "当前只支持删除最后一条用户台词。删除后会回到可重新输入的状态。",
                 color = Color(0xFF42546F),
               )
             },
@@ -5198,8 +5213,9 @@ private fun FooterBar(
 private fun runtimeStatusLabel(status: String): String {
   return when (status.trim()) {
     "sending" -> "发送中"
+    "orchestrated" -> "已编排"
     "waiting_next" -> "等待下一位"
-    "waiting_player" -> "等待玩家"
+    "waiting_player" -> "等待用户"
     "auto_advancing" -> "自动推进中"
     "revealing" -> "展示中"
     "streaming" -> "流式生成中"
@@ -5389,8 +5405,8 @@ private fun ProfileScene(
   var imageGenerateStyleKey by remember { mutableStateOf("general_3") }
   val imageGenerateReferenceUris = remember { mutableStateListOf<String>() }
   val allWorlds = vm.worldsForSelectedProject()
-  val publishedWorlds = allWorlds.filter { vm.isWorldPublished(it) }
-  val draftWorlds = allWorlds.filter { !vm.isWorldPublished(it) }
+  val publishedWorlds = allWorlds.filter { vm.isWorldInPublishedLane(it) }
+  val draftWorlds = allWorlds.filter { !vm.isWorldInPublishedLane(it) }
   val projectNameSet = buildSet {
     vm.projects.map { it.name.trim() }.filterTo(this) { it.isNotBlank() }
     val currentProjectName = vm.selectedProjectName().trim()
@@ -5606,7 +5622,9 @@ private fun ProfileScene(
                   modifier = Modifier
                     .fillMaxWidth()
                     .height(126.dp)
-                    .clickable { vm.startFromWorld(firstPublished) },
+                    .let { base ->
+                      if (vm.isWorldPublished(firstPublished)) base.clickable { vm.startFromWorld(firstPublished) } else base
+                    },
                 )
               } else {
                 Box(
@@ -5625,6 +5643,7 @@ private fun ProfileScene(
             } else {
               "暂无已发布故事"
             },
+            statusLabel = firstPublished?.let(vm::worldPublishStatusLabel),
             onClick = null,
             actions = if (firstPublished != null) {
               {
@@ -5649,10 +5668,13 @@ private fun ProfileScene(
                     modifier = Modifier
                       .fillMaxWidth()
                       .height(126.dp)
-                      .clickable { vm.startFromWorld(world) },
+                      .let { base ->
+                        if (vm.isWorldPublished(world)) base.clickable { vm.startFromWorld(world) } else base
+                      },
                   )
                 },
                 meta = world.name.ifBlank { "未命名故事" },
+                statusLabel = vm.worldPublishStatusLabel(world),
                 onClick = null,
                 actions = {
                   ProfileActionBtn(text = "编辑", modifier = Modifier.fillMaxWidth()) { vm.reopenPublishedWorldAsDraft(world) }
@@ -5960,6 +5982,7 @@ private fun ProfileWorkCard(
   cover: @Composable () -> Unit,
   meta: String,
   metaLines: Int = 1,
+  statusLabel: String? = null,
   onClick: (() -> Unit)?,
   actions: (@Composable () -> Unit)? = null,
 ) {
@@ -5982,13 +6005,18 @@ private fun ProfileWorkCard(
           .padding(horizontal = 7.dp, vertical = 7.dp),
         verticalArrangement = Arrangement.SpaceBetween,
       ) {
-        Text(
-          text = meta,
-          color = Color(0xFF556B8A),
-          style = MaterialTheme.typography.bodySmall,
-          maxLines = metaLines,
-          overflow = TextOverflow.Ellipsis,
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          if (!statusLabel.isNullOrBlank()) {
+            ProfileStatusPill(statusLabel)
+          }
+          Text(
+            text = meta,
+            color = Color(0xFF556B8A),
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = metaLines,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
         if (actions != null) {
           Box(modifier = Modifier.fillMaxWidth()) {
             actions()
@@ -5996,6 +6024,28 @@ private fun ProfileWorkCard(
         }
       }
     }
+  }
+}
+
+@Composable
+private fun ProfileStatusPill(text: String) {
+  val background = when (text) {
+    "发布中" -> Color(0xFFF7EAB4)
+    "发布失败" -> Color(0xFFF9D7D7)
+    else -> Color(0xFFDDF4E2)
+  }
+  val foreground = when (text) {
+    "发布中" -> Color(0xFF866300)
+    "发布失败" -> Color(0xFF9E3F3F)
+    else -> Color(0xFF24724C)
+  }
+  Box(
+    modifier = Modifier
+      .clip(RoundedCornerShape(999.dp))
+      .background(background)
+      .padding(horizontal = 8.dp, vertical = 3.dp),
+  ) {
+    Text(text, color = foreground, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
   }
 }
 
@@ -8052,7 +8102,7 @@ private fun SettingsModelEditorDialog(
     }
     if (!interactive) return false
     localAvatarMattingInstalling = true
-    vm.notice = "正在安装本地 BiRefNet，请稍候..."
+    vm.notice = "正在安装本地 BiRefNet，请稍候... pip install torch opencv-python pillow onnxruntime onnx"
     try {
       val installed = vm.installLocalAvatarMattingModel(manufacturer, model.trim())
       localAvatarMattingStatus = installed
