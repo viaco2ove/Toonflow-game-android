@@ -131,6 +131,7 @@ data class ChapterItem(
   @SerializedName("openingText") val openingText: String = "",
   @SerializedName("bgmPath") val bgmPath: String = "",
   @SerializedName("showCompletionCondition") val showCompletionCondition: Boolean = true,
+  @SerializedName("runtimeOutline") val runtimeOutline: JsonElement? = null,
 )
 
 data class MessageItem(
@@ -214,8 +215,6 @@ data class DebugNarrativePlan(
   @SerializedName("awaitUser") val awaitUser: Boolean = false,
   @SerializedName("nextRole") val nextRole: String = "",
   @SerializedName("nextRoleType") val nextRoleType: String = "",
-  @SerializedName("chapterOutcome") val chapterOutcome: String = "continue",
-  @SerializedName("nextChapterId") val nextChapterId: Long? = null,
   @SerializedName("source") val source: String = "ai",
   @SerializedName("triggerMemoryAgent") val triggerMemoryAgent: Boolean = false,
   @SerializedName("eventType") val eventType: String = "",

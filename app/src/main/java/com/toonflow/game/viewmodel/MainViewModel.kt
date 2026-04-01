@@ -77,6 +77,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val content: String,
   )
 
+  data class ChapterPhasePreview(
+    val id: String,
+    val label: String,
+    val allowedSpeakers: String,
+    val nextPhaseIds: String,
+  )
+
+  data class ChapterUserNodePreview(
+    val id: String,
+    val goal: String,
+    val promptRole: String,
+  )
+
+  data class ChapterFixedEventPreview(
+    val id: String,
+    val label: String,
+  )
+
+  data class ChapterEndingRulesPreview(
+    val success: String,
+    val failure: String,
+    val nextChapterId: String,
+  )
+
+  data class ChapterRuntimeOutlinePreview(
+    val phases: List<ChapterPhasePreview>,
+    val userNodes: List<ChapterUserNodePreview>,
+    val fixedEvents: List<ChapterFixedEventPreview>,
+    val endingRules: ChapterEndingRulesPreview?,
+  )
+
+  data class RuntimeChapterProgressDebugItem(
+    val phaseLabel: String,
+    val phaseId: String,
+    val pendingGoal: String,
+    val userNodeLabel: String,
+    val completedEvents: String,
+  )
+
   data class RuntimeMiniGameAction(
     val actionId: String,
     val label: String,
@@ -234,6 +273,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var chapterBackground by mutableStateOf("")
   var chapterMusic by mutableStateOf("")
   var chapterConditionVisible by mutableStateOf(true)
+  var chapterRuntimeOutlineText by mutableStateOf("")
   val chapters = mutableStateListOf<ChapterItem>()
   var selectedChapterId by mutableStateOf<Long?>(null)
 
@@ -316,6 +356,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val chapterBackground: String,
     val chapterMusic: String,
     val chapterConditionVisible: Boolean,
+    val chapterRuntimeOutlineText: String,
   )
   private var storyEditorAutoPersistJob: Job? = null
   private var storyEditorPersistMuted = false
@@ -662,6 +703,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       chapterBackground = chapterBackground,
       chapterMusic = chapterMusic,
       chapterConditionVisible = chapterConditionVisible,
+      chapterRuntimeOutlineText = chapterRuntimeOutlineText,
     )
   }
 
@@ -717,6 +759,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     chapterBackground = snapshot.chapterBackground
     chapterMusic = snapshot.chapterMusic
     chapterConditionVisible = snapshot.chapterConditionVisible
+    chapterRuntimeOutlineText = normalizeRuntimeOutlineEditorText(snapshot.chapterRuntimeOutlineText)
   }
 
   private fun hasPersistableStoryEditorContent(snapshot: StoryEditorPersistSnapshot = captureStoryEditorSnapshot()): Boolean {
@@ -725,6 +768,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (snapshot.worldCoverPath.isNotBlank() || snapshot.playerDesc.isNotBlank() || snapshot.globalBackground.isNotBlank()) return true
     if (snapshot.chapterTitle.isNotBlank() || snapshot.chapterContent.isNotBlank() || snapshot.chapterOpeningLine.isNotBlank()) return true
     if (snapshot.chapterEntryCondition.isNotBlank() || snapshot.chapterCondition.isNotBlank()) return true
+    if (snapshot.chapterRuntimeOutlineText.isNotBlank()) return true
     if (snapshot.chapterBackground.isNotBlank() || snapshot.chapterMusic.isNotBlank()) return true
     return snapshot.npcRoles.any { role ->
       role.name.isNotBlank() ||
@@ -3707,6 +3751,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       openingText = chapterOpeningLine,
       bgmPath = chapterMusic,
       showCompletionCondition = chapterConditionVisible,
+      runtimeOutline = parseRuntimeOutlineEditorText(chapterRuntimeOutlineText),
     )
   }
 
@@ -3723,6 +3768,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       chapterBackground = ""
       chapterMusic = ""
       chapterConditionVisible = true
+      chapterRuntimeOutlineText = ""
       primeStoryEditorPersistState()
       return
     }
@@ -3758,6 +3804,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       normalizeScalarEditorText(chapter.bgmPath)
     }
     chapterConditionVisible = extra?.conditionVisible ?: chapter.showCompletionCondition
+    chapterRuntimeOutlineText = normalizeRuntimeOutlineEditorText(chapter.runtimeOutline)
     primeStoryEditorPersistState()
   }
 
@@ -3898,6 +3945,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     chapterBackground = ""
     chapterMusic = ""
     chapterConditionVisible = true
+    chapterRuntimeOutlineText = ""
     primeStoryEditorPersistState()
   }
 
@@ -4095,6 +4143,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       addProperty("showCompletionCondition", chapterConditionVisible)
       parseChapterCondition(chapterEntryCondition)?.let { add("entryCondition", it) }
       parseChapterCondition(chapterCondition)?.let { add("completionCondition", it) }
+      parseRuntimeOutlineEditorText(chapterRuntimeOutlineText)?.let { add("runtimeOutline", it) }
       addProperty("sort", currentSort)
       addProperty("status", if (targetStatus == "published") "published" else "draft")
     }
@@ -5626,6 +5675,134 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val text = normalizeScalarEditorText(raw).trim()
     if (text.isEmpty()) return null
     return runCatching { JsonParser.parseString(text) }.getOrElse { JsonPrimitive(text) }
+  }
+
+  private fun normalizeRuntimeOutlineEditorText(raw: Any?): String {
+    if (raw == null) return ""
+    val text = normalizeScalarEditorText(raw).trim()
+    if (text.isEmpty()) return ""
+    return if (raw is JsonElement) {
+      raw.toString()
+    } else {
+      runCatching { JsonParser.parseString(text).toString() }.getOrElse { text }
+    }
+  }
+
+  private fun parseRuntimeOutlineEditorText(raw: String): JsonElement? {
+    val text = normalizeScalarEditorText(raw).trim()
+    if (text.isEmpty()) return null
+    val parsed = runCatching { JsonParser.parseString(text) }.getOrNull()
+      ?: error("章节 Phase Graph 配置不是有效 JSON")
+    if (!parsed.isJsonObject) {
+      error("章节 Phase Graph 配置必须是 JSON 对象")
+    }
+    return parsed
+  }
+
+  fun chapterRuntimePhasePreview(): List<ChapterPhasePreview> {
+    val parsed = runCatching { parseRuntimeOutlineEditorText(chapterRuntimeOutlineText) }.getOrNull()
+      ?: return emptyList()
+    if (!parsed.isJsonObject) return emptyList()
+    val phases = parsed.asJsonObject.getAsJsonArray("phases") ?: return emptyList()
+    return phases.mapIndexedNotNull { index, element ->
+      if (!element.isJsonObject) return@mapIndexedNotNull null
+      val obj = element.asJsonObject
+      val id = normalizeScalarEditorText(obj.get("id")?.asString).ifBlank { "phase_${index + 1}" }
+      val label = normalizeScalarEditorText(obj.get("label")?.asString).ifBlank { "阶段 ${index + 1}" }
+      val allowedSpeakers = obj.getAsJsonArray("allowedSpeakers")
+        ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+        ?.joinToString(" / ")
+        .orEmpty()
+      val nextPhaseIds = obj.getAsJsonArray("nextPhaseIds")
+        ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+        ?.joinToString(" -> ")
+        .orEmpty()
+      ChapterPhasePreview(
+        id = id,
+        label = label,
+        allowedSpeakers = allowedSpeakers,
+        nextPhaseIds = nextPhaseIds,
+      )
+    }
+  }
+
+  fun chapterRuntimeOutlinePreview(): ChapterRuntimeOutlinePreview? {
+    val parsed = runCatching { parseRuntimeOutlineEditorText(chapterRuntimeOutlineText) }.getOrNull()
+      ?: return null
+    if (!parsed.isJsonObject) return null
+    val root = parsed.asJsonObject
+    val phases = chapterRuntimePhasePreview()
+    val userNodes = root.getAsJsonArray("userNodes")
+      ?.mapIndexedNotNull { index, element ->
+        if (!element.isJsonObject) return@mapIndexedNotNull null
+        val obj = element.asJsonObject
+        ChapterUserNodePreview(
+          id = normalizeScalarEditorText(obj.get("id")?.asString).ifBlank { "user_node_${index + 1}" },
+          goal = normalizeScalarEditorText(obj.get("goal")?.asString).ifBlank { normalizeScalarEditorText(obj.get("label")?.asString).ifBlank { "用户节点 ${index + 1}" } },
+          promptRole = normalizeScalarEditorText(obj.get("promptRole")?.asString).ifBlank { "系统" },
+        )
+      }
+      .orEmpty()
+    val fixedEvents = root.getAsJsonArray("fixedEvents")
+      ?.mapIndexedNotNull { index, element ->
+        if (!element.isJsonObject) return@mapIndexedNotNull null
+        val obj = element.asJsonObject
+        ChapterFixedEventPreview(
+          id = normalizeScalarEditorText(obj.get("id")?.asString).ifBlank { "fixed_event_${index + 1}" },
+          label = normalizeScalarEditorText(obj.get("label")?.asString).ifBlank { "固定事件 ${index + 1}" },
+        )
+      }
+      .orEmpty()
+    val endingRules = root.getAsJsonObject("endingRules")?.let { rules ->
+      ChapterEndingRulesPreview(
+        success = rules.getAsJsonArray("success")
+          ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+          ?.joinToString(" / ")
+          .orEmpty(),
+        failure = rules.getAsJsonArray("failure")
+          ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+          ?.joinToString(" / ")
+          .orEmpty(),
+        nextChapterId = normalizeScalarEditorText(rules.get("nextChapterId")?.toString()).trim(),
+      )
+    }
+    return ChapterRuntimeOutlinePreview(
+      phases = phases,
+      userNodes = userNodes,
+      fixedEvents = fixedEvents,
+      endingRules = endingRules,
+    )
+  }
+
+  fun playChapterProgressDebug(): RuntimeChapterProgressDebugItem? {
+    val root = runtimeStateRoot() ?: return null
+    val progress = root.getAsJsonObject("chapterProgress") ?: return null
+    val phaseId = scalarRuntimeText(progress.get("phaseId"))
+    val pendingGoal = scalarRuntimeText(progress.get("pendingGoal"))
+    val userNodeId = scalarRuntimeText(progress.get("userNodeId"))
+    val completedEvents = progress.getAsJsonArray("completedEvents")
+      ?.mapNotNull { runCatching { scalarRuntimeText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+      ?.joinToString(" / ")
+      .orEmpty()
+    val chapter = playCurrentChapter()
+    val runtimeOutline = chapter?.runtimeOutline?.takeIf { it.isJsonObject }?.asJsonObject
+    val phaseLabel = runtimeOutline?.getAsJsonArray("phases")
+      ?.firstOrNull { element -> element.isJsonObject && scalarRuntimeText(element.asJsonObject.get("id")) == phaseId }
+      ?.asJsonObject
+      ?.let { scalarRuntimeText(it.get("label")) }
+      .orEmpty()
+    val userNodeLabel = runtimeOutline?.getAsJsonArray("userNodes")
+      ?.firstOrNull { element -> element.isJsonObject && scalarRuntimeText(element.asJsonObject.get("id")) == userNodeId }
+      ?.asJsonObject
+      ?.let { scalarRuntimeText(it.get("goal")).ifBlank { scalarRuntimeText(it.get("label")) } }
+      .orEmpty()
+    return RuntimeChapterProgressDebugItem(
+      phaseLabel = phaseLabel,
+      phaseId = phaseId,
+      pendingGoal = pendingGoal,
+      userNodeLabel = userNodeLabel,
+      completedEvents = completedEvents,
+    )
   }
 
   private fun buildRole(

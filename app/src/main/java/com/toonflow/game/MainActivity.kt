@@ -1213,6 +1213,8 @@ private fun CreateScene(
   val mentionRoles = vm.mentionRoleNames().distinct().filter { it.isNotBlank() }.ifEmpty { listOf("用户", "旁白") }
   val resolvedOpeningRole = if (vm.chapterOpeningRole in mentionRoles) vm.chapterOpeningRole else mentionRoles.first()
   val chapterUsed = vm.chapterContent.length
+  val runtimeOutlinePreview = remember(vm.chapterRuntimeOutlineText) { vm.chapterRuntimeOutlinePreview() }
+  val runtimePhasePreview = runtimeOutlinePreview?.phases.orEmpty()
   val currentEditorChapterSort = vm.selectedChapterId?.let { selectedId ->
     vm.chapters.firstOrNull { it.id == selectedId }?.sort
   } ?: if (vm.chapters.isNotEmpty()) {
@@ -2075,6 +2077,98 @@ private fun CreateScene(
           checked = vm.chapterConditionVisible,
           onToggle = { vm.chapterConditionVisible = !vm.chapterConditionVisible },
         )
+      }
+    }
+
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
+      Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Phase Graph（高级）", fontWeight = FontWeight.Bold, color = Color(0xFF232F43))
+        Text(
+          "可直接填写章节运行模板 JSON。为空时由系统根据章节正文和指令自动推断。",
+          style = MaterialTheme.typography.bodySmall,
+          color = Color(0xFF7B8EA8),
+        )
+        ScrollableOutlinedTextField(
+          value = vm.chapterRuntimeOutlineText,
+          onValueChange = { vm.chapterRuntimeOutlineText = it },
+          modifier = Modifier.fillMaxWidth(),
+          minLines = 6,
+          placeholder = { Text("""例如：{"phases":[{"id":"phase_1_opening","label":"开场","nextPhaseIds":["phase_2_user"]}]}""") },
+        )
+        if (runtimePhasePreview.isNotEmpty()) {
+          Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            runtimePhasePreview.forEach { phase ->
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clip(RoundedCornerShape(10.dp))
+                  .background(Color(0xFFF8FBFF))
+                  .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+                  .padding(10.dp),
+              ) {
+                Text(phase.label, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
+                Text("ID：${phase.id}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                Text("允许角色：${phase.allowedSpeakers.ifBlank { "未限制" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                Text("下一阶段：${phase.nextPhaseIds.ifBlank { "顺序回退" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+              }
+            }
+          }
+        }
+        if (runtimeOutlinePreview?.userNodes?.isNotEmpty() == true) {
+          Text("用户节点", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
+          Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            runtimeOutlinePreview.userNodes.forEach { node ->
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clip(RoundedCornerShape(10.dp))
+                  .background(Color(0xFFF8FBFF))
+                  .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+                  .padding(10.dp),
+              ) {
+                Text(node.goal, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
+                Text("ID：${node.id}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                Text("提示角色：${node.promptRole.ifBlank { "系统" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+              }
+            }
+          }
+        }
+        if (runtimeOutlinePreview?.fixedEvents?.isNotEmpty() == true) {
+          Text("固定事件", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
+          Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            runtimeOutlinePreview.fixedEvents.forEach { event ->
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clip(RoundedCornerShape(10.dp))
+                  .background(Color(0xFFF8FBFF))
+                  .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+                  .padding(10.dp),
+              ) {
+                Text(event.label, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
+                Text("ID：${event.id}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+              }
+            }
+          }
+        }
+        runtimeOutlinePreview?.endingRules?.let { rules ->
+          if (rules.success.isNotBlank() || rules.failure.isNotBlank() || rules.nextChapterId.isNotBlank()) {
+            Text("章节结算", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0xFFF8FBFF))
+                .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+                .padding(10.dp),
+              verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+              Text("成功条件：${rules.success.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+              Text("失败条件：${rules.failure.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+              Text("下一章节：${rules.nextChapterId.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+            }
+          }
+        }
       }
     }
 
@@ -3393,6 +3487,7 @@ private fun PlayScene(
 
   val tipOptions = vm.buildAiTipOptions()
   val statePreview = vm.playStatePreview()
+  val chapterProgressDebug = vm.playChapterProgressDebug()
   val playTitle = vm.playWorldName()
   val chapterTitle = vm.playChapterTitle()
   val chapterObjectiveText = vm.playVisibleChapterObjective()
@@ -3889,6 +3984,7 @@ private fun PlayScene(
         miniGame = activeMiniGame,
         debugMode = vm.debugMode,
         runtimeChatDebug = vm.playLatestRuntimeChatDebug(),
+        chapterProgressDebug = chapterProgressDebug,
         debugPanelOpen = debugPanelOpen,
         isSessionPlaybackMode = isSessionPlaybackMode,
         playbackProgressLabel = if (playbackMessages.isEmpty()) {
@@ -4947,6 +5043,7 @@ private fun FooterBar(
   miniGame: MainViewModel.RuntimeMiniGameView?,
   debugMode: Boolean,
   runtimeChatDebug: MainViewModel.RuntimeChatDebugItem?,
+  chapterProgressDebug: MainViewModel.RuntimeChapterProgressDebugItem?,
   debugPanelOpen: Boolean,
   isSessionPlaybackMode: Boolean,
   playbackProgressLabel: String,
@@ -5081,6 +5178,34 @@ private fun FooterBar(
             color = Color(0xFFEAF3FF),
             style = MaterialTheme.typography.labelSmall,
           )
+          if (!chapterProgressDebug?.phaseLabel.isNullOrBlank() || !chapterProgressDebug?.phaseId.isNullOrBlank()) {
+            Text(
+              text = "阶段 ${chapterProgressDebug?.phaseLabel?.ifBlank { chapterProgressDebug.phaseId } ?: chapterProgressDebug?.phaseId.orEmpty()}",
+              color = Color(0xFFD7E7FF),
+              style = MaterialTheme.typography.labelSmall,
+            )
+          }
+          if (!chapterProgressDebug?.userNodeLabel.isNullOrBlank()) {
+            Text(
+              text = "用户节点 ${chapterProgressDebug?.userNodeLabel}",
+              color = Color(0xFFD7E7FF),
+              style = MaterialTheme.typography.labelSmall,
+            )
+          }
+          if (!chapterProgressDebug?.pendingGoal.isNullOrBlank()) {
+            Text(
+              text = "目标 ${chapterProgressDebug?.pendingGoal}",
+              color = Color(0xFFD7E7FF),
+              style = MaterialTheme.typography.labelSmall,
+            )
+          }
+          if (!chapterProgressDebug?.completedEvents.isNullOrBlank()) {
+            Text(
+              text = "已完成 ${chapterProgressDebug?.completedEvents}",
+              color = Color(0xFFD7E7FF),
+              style = MaterialTheme.typography.labelSmall,
+            )
+          }
         }
       }
     }
