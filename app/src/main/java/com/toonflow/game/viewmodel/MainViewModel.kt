@@ -2650,6 +2650,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return value.trim().trimEnd('/')
   }
 
+  private fun isLocalOrPrivateHost(host: String): Boolean {
+    val normalized = host.trim().trim('[', ']').lowercase(Locale.getDefault())
+    if (normalized.isBlank()) return true
+    if (normalized == "localhost" || normalized == "::1" || normalized.endsWith(".local")) return true
+    val parts = normalized.split('.')
+    if (parts.size != 4) return normalized == "0.0.0.0"
+    val octets = parts.mapNotNull { it.toIntOrNull() }
+    if (octets.size != 4) return false
+    val first = octets[0]
+    val second = octets[1]
+    if (first == 0 || first == 10 || first == 127) return true
+    if (first == 169 && second == 254) return true
+    if (first == 192 && second == 168) return true
+    if (first == 172 && second in 16..31) return true
+    return false
+  }
+
+  private fun rewriteLoopbackMediaUrl(raw: String, base: String): String {
+    if (base.isBlank()) return raw
+    return runCatching {
+      val source = URL(raw)
+      if (!isLocalOrPrivateHost(source.host)) return raw
+      val target = URL(if (base.endsWith("/")) base else "$base/")
+      val targetPort = if (target.port >= 0) ":${target.port}" else ""
+      buildString {
+        append(target.protocol)
+        append("://")
+        append(target.host)
+        append(targetPort)
+        append(source.path)
+        if (!source.query.isNullOrBlank()) {
+          append('?')
+          append(source.query)
+        }
+        if (!source.ref.isNullOrBlank()) {
+          append('#')
+          append(source.ref)
+        }
+      }
+    }.getOrDefault(raw)
+  }
+
   fun resolveMediaPath(value: String?): String {
     val raw = safeText(value).trim()
     if (raw.isBlank()) return ""
@@ -2657,8 +2699,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (raw.startsWith("content://", ignoreCase = true)) return raw
     if (raw.startsWith("file://", ignoreCase = true)) return raw
     if (raw.startsWith("data:", ignoreCase = true)) return raw
-    if (raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)) return raw
     val base = normalizeBaseUrlValue(baseUrl.ifBlank { settingsStore.baseUrl })
+    if (raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)) {
+      return rewriteLoopbackMediaUrl(raw, base)
+    }
     if (base.isBlank()) return raw
     return if (raw.startsWith("/")) "$base$raw" else "$base/$raw"
   }

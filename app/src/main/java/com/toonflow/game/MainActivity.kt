@@ -3111,15 +3111,46 @@ private fun PlayScene(
   val displayMessages = when {
     mode == "history" -> allMessages
     latestPendingPlayerMessage != null -> listOf(latestPendingPlayerMessage)
-    else -> revealedMessages.takeLast(1).toList()
+    else -> revealedMessages.toList()
   }
   val latestRevealedMessage = revealedMessages.lastOrNull()
   val canPlayerSpeak = vm.playCanPlayerSpeak()
   val canPlayerInput = vm.playCanPlayerInput()
   val listState = rememberLazyListState()
   var debugPanelOpen by remember(vm.currentSessionId) { mutableStateOf(false) }
+  var initialHydratedVoiceKey by remember(vm.currentSessionId) { mutableStateOf("") }
   fun latestMessageByKey(messageKey: String): MessageItem? {
     return vm.messages.firstOrNull { vm.messageUiKey(it) == messageKey }
+  }
+  suspend fun autoVoiceHydratedLatest(reason: String) {
+    if (!autoVoice) {
+      VueTagLogger.info("voice", "skip hydrated auto voice reason=$reason autoVoice=false")
+      return
+    }
+    val latest = revealedMessages.lastOrNull() ?: allMessages.lastOrNull() ?: return
+    if (latest.roleType == "player" || vm.isRuntimeRetryMessage(latest) || vm.isStreamingRuntimeMessage(latest)) {
+      VueTagLogger.info(
+        "voice",
+        "skip hydrated auto voice reason=$reason messageId=${latest.id} roleType=${latest.roleType} streaming=${vm.isStreamingRuntimeMessage(latest)}",
+      )
+      return
+    }
+    val messageKey = vm.messageUiKey(latest)
+    if (messageKey.isBlank() || initialHydratedVoiceKey == messageKey) return
+    val displayContent = vm.displayContentForMessage(latest)
+    val playableSegments = listOf(sanitizeSpeakableText(displayContent)).filter { it.isNotBlank() }
+    if (playableSegments.isEmpty()) {
+      VueTagLogger.info("voice", "skip hydrated auto voice reason=$reason messageId=${latest.id} empty=true")
+      return
+    }
+    initialHydratedVoiceKey = messageKey
+    vm.setRuntimeMessageStatus(latest.id, "voicing")
+    VueTagLogger.info(
+      "voice",
+      "hydrated auto voice reason=$reason messageId=${latest.id} role=${vm.displayNameForMessage(latest)} segments=${playableSegments.size}",
+    )
+    launchRuntimeAutoVoice(latest, playableSegments)
+    vm.setRuntimeMessageStatus(latest.id, if (vm.playCanPlayerSpeak()) "waiting_player" else "waiting_next")
   }
   LaunchedEffect(mode, displayMessages.size) {
     if (displayMessages.isNotEmpty()) {
@@ -3134,6 +3165,7 @@ private fun PlayScene(
     playbackCursor = vm.sessionPlaybackStartIndex.coerceAtLeast(0)
     playbackPlaying = false
     playbackRunId += 1
+    initialHydratedVoiceKey = ""
     stopRuntimeAutoVoiceQueue()
     debugAutoAdvancing = false
   }
@@ -3163,6 +3195,7 @@ private fun PlayScene(
       revealedMessages.clear()
       revealedMessages.addAll(allMessages)
       vm.sessionResumeLatestOnOpen = false
+      autoVoiceHydratedLatest("resume_latest")
       return@LaunchedEffect
     }
     val currentKeys = allMessages.map { vm.messageUiKey(it) }
@@ -3195,6 +3228,13 @@ private fun PlayScene(
       revealedMessages.clear()
       revealedMessages.addAll(allMessages)
       vm.sessionResumeLatestOnOpen = false
+      autoVoiceHydratedLatest("resume_latest")
+      return@LaunchedEffect
+    }
+    if (mode == "live" && revealedMessages.isEmpty() && allMessages.isNotEmpty()) {
+      revealedMessages.clear()
+      revealedMessages.addAll(allMessages)
+      autoVoiceHydratedLatest("initial_batch")
       return@LaunchedEffect
     }
     val currentKeys = allMessages.map { vm.messageUiKey(it) }
@@ -3203,6 +3243,7 @@ private fun PlayScene(
     if (mismatched) {
       revealedMessages.clear()
       revealedMessages.addAll(allMessages)
+      autoVoiceHydratedLatest("mismatched")
       return@LaunchedEffect
     }
     val newMessages = allMessages.drop(revealedKeys.size)
@@ -3253,6 +3294,7 @@ private fun PlayScene(
         continue
       }
       if (!autoVoice) {
+        VueTagLogger.info("voice", "skip auto voice messageId=${currentMessage.id} reason=disabled")
         vm.setRuntimeMessageStatus(currentMessage.id, if (vm.playCanPlayerSpeak()) "waiting_player" else "waiting_next")
         delay(estimateRevealDelayMs(displayContent))
       } else {
@@ -3260,7 +3302,13 @@ private fun PlayScene(
         val playableSegments = voiceSegments.map(::sanitizeSpeakableText).filter { it.isNotBlank() }
         if (playableSegments.isNotEmpty()) {
           vm.setRuntimeMessageStatus(currentMessage.id, "voicing")
+          VueTagLogger.info(
+            "voice",
+            "auto voice messageId=${currentMessage.id} role=${vm.displayNameForMessage(currentMessage)} segments=${playableSegments.size}",
+          )
           launchRuntimeAutoVoice(currentMessage, playableSegments)
+        } else {
+          VueTagLogger.info("voice", "skip auto voice messageId=${currentMessage.id} reason=empty_segments")
         }
         vm.setRuntimeMessageStatus(currentMessage.id, if (vm.playCanPlayerSpeak()) "waiting_player" else "waiting_next")
         delay(if (playableSegments.isNotEmpty()) 260 else estimateRevealDelayMs(displayContent))
@@ -3353,6 +3401,8 @@ private fun PlayScene(
     if (normalized.length > 20) "${normalized.take(20)}..." else normalized
   }
   val activeMiniGame = vm.playRuntimeMiniGame()
+  val configuration = LocalConfiguration.current
+  val density = LocalDensity.current
   val playerAvatarPath = vm.userAvatarPath.trim().ifBlank { null }
   val playerAvatarBgPath = vm.userAvatarBgPath.trim().ifBlank { null }
   val chapterBackgroundPath = vm.playChapterBackgroundPath().trim().ifBlank { null }
@@ -3360,6 +3410,10 @@ private fun PlayScene(
   val currentLiveFigureFgPath = currentLiveMessage
     ?.takeIf { !vm.isRuntimeRetryMessage(it) }
     ?.let { vm.avatarPathForMessage(it).trim().ifBlank { null } }
+  val isCompactPlayViewport = configuration.screenWidthDp <= 420
+  val liveFigureStageHeightFraction = if (isCompactPlayViewport) 0.8f else 0.76f
+  val liveFigureScale = if (isCompactPlayViewport) 1.22f else 1.12f
+  val liveFigureTranslationY = with(density) { (if (isCompactPlayViewport) 26.dp else 14.dp).toPx() }
   val closeDialogMenu = {
     selectedMessage = null
     dialogMenuAnchorBounds = null
@@ -3367,8 +3421,6 @@ private fun PlayScene(
   }
 
   BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color(0xFF15283F))) {
-    val configuration = LocalConfiguration.current
-    val density = LocalDensity.current
     if (chapterBackgroundPath != null) {
       AsyncImage(
         model = chapterBackgroundPath,
@@ -3383,7 +3435,7 @@ private fun PlayScene(
         modifier = Modifier
           .align(Alignment.BottomCenter)
           .fillMaxWidth()
-          .fillMaxHeight(0.74f),
+          .fillMaxHeight(liveFigureStageHeightFraction),
       ) {
         Box(
           modifier = Modifier
@@ -3402,9 +3454,16 @@ private fun PlayScene(
             modifier = Modifier
               .align(Alignment.BottomCenter)
               .fillMaxSize()
+              .graphicsLayer {
+                // 安卓端立绘此前按完整尺寸缩进舞台里，和 web 的 110vw 舞台前景相比会显得明显偏小。
+                // 这里按移动端视口做轻微放大，并把重心下压，保持底部贴地的视觉效果。
+                scaleX = liveFigureScale
+                scaleY = liveFigureScale
+                translationY = liveFigureTranslationY
+              }
               .alpha(0.98f),
             alignment = Alignment.BottomCenter,
-            contentScale = ContentScale.Fit,
+            contentScale = ContentScale.FillHeight,
           )
         }
         Box(
