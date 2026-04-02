@@ -239,6 +239,10 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return unwrapEnvelope("game/saveChapter", api().saveChapter(payload))
   }
 
+  suspend fun previewRuntimeOutline(payload: JsonObject): JsonObject {
+    return unwrapEnvelope("game/previewRuntimeOutline", api().previewRuntimeOutline(payload))
+  }
+
   suspend fun startSession(worldId: Long, projectId: Long, chapterId: Long?): String {
     val payload = JsonObject().apply {
       addProperty("worldId", worldId)

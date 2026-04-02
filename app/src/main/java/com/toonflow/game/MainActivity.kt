@@ -1210,6 +1210,7 @@ private fun CreateScene(
   var imageGeneratePrompt by remember { mutableStateOf("") }
   var imageGenerateStyleKey by remember { mutableStateOf("general_3") }
   val imageGenerateReferenceUris = remember { mutableStateListOf<String>() }
+  val scope = rememberCoroutineScope()
   val mentionRoles = vm.mentionRoleNames().distinct().filter { it.isNotBlank() }.ifEmpty { listOf("用户", "旁白") }
   val resolvedOpeningRole = if (vm.chapterOpeningRole in mentionRoles) vm.chapterOpeningRole else mentionRoles.first()
   val chapterUsed = vm.chapterContent.length
@@ -2088,6 +2089,23 @@ private fun CreateScene(
           style = MaterialTheme.typography.bodySmall,
           color = Color(0xFF7B8EA8),
         )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          Button(
+            onClick = { scope.launch { vm.generateChapterRuntimeOutlineDraft() } },
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEEF4FF), contentColor = Color(0xFF3F5F8C)),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+          ) {
+            Text("生成草稿")
+          }
+          OutlinedButton(
+            onClick = { vm.formatChapterRuntimeOutlineDraft() },
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF4D6285)),
+            border = BorderStroke(1.dp, Color(0xFFD8E3F3)),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+          ) {
+            Text("格式化 JSON")
+          }
+        }
         ScrollableOutlinedTextField(
           value = vm.chapterRuntimeOutlineText,
           onValueChange = { vm.chapterRuntimeOutlineText = it },
@@ -2097,6 +2115,21 @@ private fun CreateScene(
         )
         if (runtimePhasePreview.isNotEmpty()) {
           Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("阶段关系图", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
+            runtimePhasePreview.forEach { phase ->
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clip(RoundedCornerShape(10.dp))
+                  .background(Color(0xFFF8FBFF))
+                  .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+                  .padding(10.dp),
+              ) {
+                Text(phase.flowSummary, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
+                Text("默认流向：${phase.defaultNextPhaseId.ifBlank { "顺序回退" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+              }
+            }
+            Text("阶段详情", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
             runtimePhasePreview.forEach { phase ->
               Column(
                 modifier = Modifier
@@ -2108,8 +2141,14 @@ private fun CreateScene(
               ) {
                 Text(phase.label, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
                 Text("ID：${phase.id}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                Text("阶段类型：${phase.kind.ifBlank { "scene" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
                 Text("允许角色：${phase.allowedSpeakers.ifBlank { "未限制" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
                 Text("下一阶段：${phase.nextPhaseIds.ifBlank { "顺序回退" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                Text("默认下一阶段：${phase.defaultNextPhaseId.ifBlank { "顺序回退" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                Text("阶段前置：${phase.requiredEventIds.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                Text("完成事件：${phase.completionEventIds.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                Text("推进信号：${phase.advanceSignals.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                Text("关联结果：${phase.relatedFixedEventIds.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
               }
             }
           }

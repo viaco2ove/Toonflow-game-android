@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.gson.GsonBuilder
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
@@ -58,6 +59,7 @@ import java.util.Locale
 class MainViewModel(application: Application) : AndroidViewModel(application) {
   private val settingsStore = SettingsStore(application)
   private val repository = GameRepository(settingsStore)
+  private val prettyGson = GsonBuilder().setPrettyPrinting().create()
   private val runtimeChatStorageLimit = 24
   private val avatarStdSize = 512
   private val avatarBgSize = 768
@@ -80,8 +82,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   data class ChapterPhasePreview(
     val id: String,
     val label: String,
+    val kind: String,
     val allowedSpeakers: String,
     val nextPhaseIds: String,
+    val defaultNextPhaseId: String,
+    val requiredEventIds: String,
+    val completionEventIds: String,
+    val advanceSignals: String,
+    val relatedFixedEventIds: String,
+    val flowSummary: String,
   )
 
   data class ChapterUserNodePreview(
@@ -5699,29 +5708,95 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return parsed
   }
 
+  fun formatChapterRuntimeOutlineDraft() {
+    val parsed = parseRuntimeOutlineEditorText(chapterRuntimeOutlineText)
+    if (parsed == null || parsed.isJsonNull) {
+      chapterRuntimeOutlineText = ""
+      notice = "当前没有可格式化的 Phase Graph"
+      return
+    }
+    chapterRuntimeOutlineText = "${prettyGson.toJson(parsed)}\n"
+    notice = "已格式化 Phase Graph"
+  }
+
+  suspend fun generateChapterRuntimeOutlineDraft() {
+    val payload = JsonObject().apply {
+      addProperty("openingRole", chapterOpeningRole)
+      addProperty("openingText", chapterOpeningLine)
+      addProperty("content", chapterContent)
+      parseChapterCondition(chapterEntryCondition)?.let { add("entryCondition", it) }
+      parseChapterCondition(chapterCondition)?.let { add("completionCondition", it) }
+      parseRuntimeOutlineEditorText(chapterRuntimeOutlineText)?.let { add("runtimeOutline", it) }
+    }
+    val outline = repository.previewRuntimeOutline(payload)
+    chapterRuntimeOutlineText = "${prettyGson.toJson(outline)}\n"
+    notice = "已生成章节 Phase Graph 草稿"
+  }
+
   fun chapterRuntimePhasePreview(): List<ChapterPhasePreview> {
     val parsed = runCatching { parseRuntimeOutlineEditorText(chapterRuntimeOutlineText) }.getOrNull()
       ?: return emptyList()
     if (!parsed.isJsonObject) return emptyList()
     val phases = parsed.asJsonObject.getAsJsonArray("phases") ?: return emptyList()
+    val phaseBasics = phases.mapIndexedNotNull { index, element ->
+      if (!element.isJsonObject) return@mapIndexedNotNull null
+      val obj = element.asJsonObject
+      val id = normalizeScalarEditorText(obj.get("id")?.asString).ifBlank { "phase_${index + 1}" }
+      val label = normalizeScalarEditorText(obj.get("label")?.asString).ifBlank { "阶段 ${index + 1}" }
+      id to label
+    }
+    val phaseLabelMap = phaseBasics.toMap()
     return phases.mapIndexedNotNull { index, element ->
       if (!element.isJsonObject) return@mapIndexedNotNull null
       val obj = element.asJsonObject
       val id = normalizeScalarEditorText(obj.get("id")?.asString).ifBlank { "phase_${index + 1}" }
       val label = normalizeScalarEditorText(obj.get("label")?.asString).ifBlank { "阶段 ${index + 1}" }
+      val kind = normalizeScalarEditorText(obj.get("kind")?.asString).ifBlank { "scene" }
       val allowedSpeakers = obj.getAsJsonArray("allowedSpeakers")
         ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
         ?.joinToString(" / ")
         .orEmpty()
-      val nextPhaseIds = obj.getAsJsonArray("nextPhaseIds")
+      val nextPhaseList = obj.getAsJsonArray("nextPhaseIds")
         ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
-        ?.joinToString(" -> ")
         .orEmpty()
+      val nextPhaseIds = nextPhaseList
+        .map { phaseLabelMap[it] ?: it }
+        .joinToString(" -> ")
+      val defaultNextPhaseId = normalizeScalarEditorText(obj.get("defaultNextPhaseId")?.asString).trim()
+        .let { value -> if (value.isNotBlank()) phaseLabelMap[value] ?: value else "" }
+      val requiredEventIds = obj.getAsJsonArray("requiredEventIds")
+        ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+        ?.joinToString(" / ")
+        .orEmpty()
+      val completionEventIds = obj.getAsJsonArray("completionEventIds")
+        ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+        ?.joinToString(" / ")
+        .orEmpty()
+      val advanceSignals = obj.getAsJsonArray("advanceSignals")
+        ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+        ?.joinToString(" / ")
+        .orEmpty()
+      val relatedFixedEventIds = obj.getAsJsonArray("relatedFixedEventIds")
+        ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+        ?.joinToString(" / ")
+        .orEmpty()
+      val flowSummary = if (nextPhaseList.isNotEmpty()) {
+        "${label} -> ${nextPhaseList.map { phaseLabelMap[it] ?: it }.joinToString(" / ")}"
+      } else {
+        "${label} -> 顺序回退"
+      }
       ChapterPhasePreview(
         id = id,
         label = label,
+        kind = kind,
         allowedSpeakers = allowedSpeakers,
         nextPhaseIds = nextPhaseIds,
+        defaultNextPhaseId = defaultNextPhaseId,
+        requiredEventIds = requiredEventIds,
+        completionEventIds = completionEventIds,
+        advanceSignals = advanceSignals,
+        relatedFixedEventIds = relatedFixedEventIds,
+        flowSummary = flowSummary,
       )
     }
   }
@@ -5781,7 +5856,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val pendingGoal = scalarRuntimeText(progress.get("pendingGoal"))
     val userNodeId = scalarRuntimeText(progress.get("userNodeId"))
     val completedEvents = progress.getAsJsonArray("completedEvents")
-      ?.mapNotNull { runCatching { scalarRuntimeText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+      ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
       ?.joinToString(" / ")
       .orEmpty()
     val chapter = playCurrentChapter()
