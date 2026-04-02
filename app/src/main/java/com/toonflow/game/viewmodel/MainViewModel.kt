@@ -39,6 +39,8 @@ import com.toonflow.game.data.StoryRole
 import com.toonflow.game.data.UploadedVoiceAudioResult
 import com.toonflow.game.data.AiModelMapItem
 import com.toonflow.game.data.AiModelOptionItem
+import com.toonflow.game.data.AiTokenUsageLogItem
+import com.toonflow.game.data.AiTokenUsageStatsItem
 import com.toonflow.game.data.DebugNarrativePlan
 import com.toonflow.game.data.DebugStepResult
 import com.toonflow.game.data.VoiceBindingDraft
@@ -266,11 +268,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   val settingsVoiceConfigs = mutableStateListOf<VoiceModelConfig>()
   val settingsAiModelMap = mutableStateListOf<AiModelMapItem>()
   val settingsTextModelList = mutableStateMapOf<String, List<AiModelOptionItem>>()
+  val settingsTokenUsageLogs = mutableStateListOf<AiTokenUsageLogItem>()
+  val settingsTokenUsageStats = mutableStateListOf<AiTokenUsageStatsItem>()
   val storyPrompts = mutableStateListOf<PromptItem>()
   private val voicePresetsCache = mutableStateMapOf<Long, List<VoicePresetItem>>()
   var voiceLoading by mutableStateOf(false)
   var settingsPanelLoading by mutableStateOf(false)
   var settingsPanelLoaded by mutableStateOf(false)
+  var settingsTokenUsageLoading by mutableStateOf(false)
   var aiGenerating by mutableStateOf(false)
 
   var chapterTitle by mutableStateOf("")
@@ -820,6 +825,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         notice = "加载设置失败: ${it.message ?: "未知错误"}"
       }
       settingsPanelLoading = false
+    }
+  }
+
+  fun loadAiTokenUsagePanel(
+    startTime: String = "",
+    endTime: String = "",
+    type: String = "",
+    granularity: String = "day",
+  ) {
+    if (token.isBlank()) return
+    if (settingsTokenUsageLoading) return
+    settingsTokenUsageLoading = true
+    viewModelScope.launch {
+      runCatching {
+        val logs = repository.getAiTokenUsageLog(startTime.trim(), endTime.trim(), type.trim())
+        val stats = repository.getAiTokenUsageStats(startTime.trim(), endTime.trim(), type.trim(), granularity.trim().ifBlank { "day" })
+        settingsTokenUsageLogs.clear()
+        settingsTokenUsageLogs.addAll(logs)
+        settingsTokenUsageStats.clear()
+        settingsTokenUsageStats.addAll(stats)
+      }.onFailure {
+        notice = "加载 token 消耗失败: ${it.message ?: "未知错误"}"
+      }
+      settingsTokenUsageLoading = false
     }
   }
 

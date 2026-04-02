@@ -229,6 +229,36 @@ data class DebugOrchestrationResult(
   @SerializedName("plan") val plan: DebugNarrativePlan? = null,
 )
 
+data class AiTokenUsageLogItem(
+  @SerializedName("id") val id: Long = 0L,
+  @SerializedName("createTime") val createTime: Long = 0L,
+  @SerializedName("type") val type: String = "",
+  @SerializedName("manufacturer") val manufacturer: String = "",
+  @SerializedName("model") val model: String = "",
+  @SerializedName("channel") val channel: String = "",
+  @SerializedName("inputTokens") val inputTokens: Int = 0,
+  @SerializedName("outputTokens") val outputTokens: Int = 0,
+  @SerializedName("reasoningTokens") val reasoningTokens: Int = 0,
+  @SerializedName("cacheReadTokens") val cacheReadTokens: Int = 0,
+  @SerializedName("totalTokens") val totalTokens: Int = 0,
+  @SerializedName("remark") val remark: String = "",
+)
+
+data class AiTokenUsageStatsItem(
+  @SerializedName("bucketTime") val bucketTime: String = "",
+  @SerializedName("type") val type: String = "",
+  @SerializedName("manufacturer") val manufacturer: String = "",
+  @SerializedName("model") val model: String = "",
+  @SerializedName("channel") val channel: String = "",
+  @SerializedName("inputTokens") val inputTokens: Int = 0,
+  @SerializedName("outputTokens") val outputTokens: Int = 0,
+  @SerializedName("reasoningTokens") val reasoningTokens: Int = 0,
+  @SerializedName("cacheReadTokens") val cacheReadTokens: Int = 0,
+  @SerializedName("totalTokens") val totalTokens: Int = 0,
+  @SerializedName("callCount") val callCount: Int = 0,
+  @SerializedName("remark") val remark: String = "",
+)
+
 data class GeneratedImageResult(
   @SerializedName("path") val path: String = "",
   @SerializedName("filePath") val filePath: String = "",

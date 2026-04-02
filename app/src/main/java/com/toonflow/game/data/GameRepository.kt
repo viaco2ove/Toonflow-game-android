@@ -599,6 +599,26 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return runCatching { api().getAiModelList(payload).data }.getOrElse { emptyMap() }
   }
 
+  suspend fun getAiTokenUsageLog(startTime: String, endTime: String, type: String): List<AiTokenUsageLogItem> {
+    val payload = JsonObject().apply {
+      if (startTime.isNotBlank()) addProperty("startTime", startTime)
+      if (endTime.isNotBlank()) addProperty("endTime", endTime)
+      if (type.isNotBlank()) addProperty("type", type)
+      addProperty("limit", 200)
+    }
+    return unwrapEnvelope("setting/getAiTokenUsageLog", api().getAiTokenUsageLog(payload))
+  }
+
+  suspend fun getAiTokenUsageStats(startTime: String, endTime: String, type: String, granularity: String): List<AiTokenUsageStatsItem> {
+    val payload = JsonObject().apply {
+      if (startTime.isNotBlank()) addProperty("startTime", startTime)
+      if (endTime.isNotBlank()) addProperty("endTime", endTime)
+      if (type.isNotBlank()) addProperty("type", type)
+      addProperty("granularity", granularity.ifBlank { "day" })
+    }
+    return unwrapEnvelope("setting/getAiTokenUsageStats", api().getAiTokenUsageStats(payload))
+  }
+
   suspend fun bindModelConfig(id: Long, configId: Long) {
     val payload = JsonObject().apply {
       addProperty("id", id)

@@ -6200,6 +6200,13 @@ private fun formatDraftDate(timestamp: Long): String {
   }.getOrDefault("--.--")
 }
 
+private fun formatAiTokenUsageTime(timestamp: Long): String {
+  if (timestamp <= 0L) return "-"
+  return runCatching {
+    SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
+  }.getOrDefault("-")
+}
+
 @Composable
 private fun ProfileWorkCard(
   cover: @Composable () -> Unit,
@@ -7439,7 +7446,12 @@ private fun ProfileActionDialogRow(icon: ImageVector, text: String, onClick: () 
 @Composable
 private fun SettingsScene(vm: MainViewModel) {
   var showAccountDialog by remember { mutableStateOf(false) }
+  var showTokenUsageDialog by remember { mutableStateOf(false) }
   var accountMode by remember { mutableStateOf("login") }
+  var tokenUsageStartTime by remember { mutableStateOf("") }
+  var tokenUsageEndTime by remember { mutableStateOf("") }
+  var tokenUsageType by remember { mutableStateOf("") }
+  var tokenUsageGranularity by remember { mutableStateOf("day") }
   var dialogUsername by remember { mutableStateOf(vm.loginUsername) }
   var dialogPassword by remember { mutableStateOf("") }
   var registerUsername by remember { mutableStateOf("") }
@@ -7474,6 +7486,16 @@ private fun SettingsScene(vm: MainViewModel) {
   fun openModelManager(slot: MainViewModel.SettingsModelSlot) {
     activeModelSlot = slot
     showModelManager = true
+  }
+
+  fun openTokenUsageDialog() {
+    showTokenUsageDialog = true
+    vm.loadAiTokenUsagePanel(
+      startTime = tokenUsageStartTime,
+      endTime = tokenUsageEndTime,
+      type = tokenUsageType,
+      granularity = tokenUsageGranularity,
+    )
   }
 
   LaunchedEffect(vm.token, vm.activeTab, isProfileEditor) {
@@ -7662,7 +7684,12 @@ private fun SettingsScene(vm: MainViewModel) {
       }
 
       SettingsSectionCard(title = "其他") {
-        MiniBtn(text = "检查更新", onClick = { vm.notice = "当前为开发版，暂未接入在线更新" })
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          if (vm.token.isNotBlank()) {
+            MiniBtn(text = "token消耗", onClick = { openTokenUsageDialog() })
+          }
+          MiniBtn(text = "检查更新", onClick = { vm.notice = "当前为开发版，暂未接入在线更新" })
+        }
       }
       }
     }
@@ -7782,6 +7809,105 @@ private fun SettingsScene(vm: MainViewModel) {
         TextButton(onClick = { showAccountDialog = false }) {
           Text("取消")
         }
+      },
+    )
+  }
+
+  if (showTokenUsageDialog) {
+    AlertDialog(
+      onDismissRequest = { showTokenUsageDialog = false },
+      title = { Text("token消耗") },
+      text = {
+        Column(
+          modifier = Modifier.verticalScroll(rememberScrollState()),
+          verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+          OutlinedTextField(
+            value = tokenUsageStartTime,
+            onValueChange = { tokenUsageStartTime = it },
+            label = { Text("开始时间") },
+            placeholder = { Text("2026-04-02T00:00") },
+            modifier = Modifier.fillMaxWidth(),
+          )
+          OutlinedTextField(
+            value = tokenUsageEndTime,
+            onValueChange = { tokenUsageEndTime = it },
+            label = { Text("结束时间") },
+            placeholder = { Text("2026-04-02T23:59") },
+            modifier = Modifier.fillMaxWidth(),
+          )
+          OutlinedTextField(
+            value = tokenUsageType,
+            onValueChange = { tokenUsageType = it },
+            label = { Text("业务类型") },
+            placeholder = { Text("如：编排师 / 角色发言 / 记忆管理") },
+            modifier = Modifier.fillMaxWidth(),
+          )
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MiniBtn(text = "按时", primary = tokenUsageGranularity == "hour", onClick = { tokenUsageGranularity = "hour" })
+            MiniBtn(text = "按日", primary = tokenUsageGranularity == "day", onClick = { tokenUsageGranularity = "day" })
+            MiniBtn(text = "按月", primary = tokenUsageGranularity == "month", onClick = { tokenUsageGranularity = "month" })
+          }
+          MiniBtn(
+            text = if (vm.settingsTokenUsageLoading) "加载中..." else "查询",
+            primary = true,
+            onClick = {
+              vm.loadAiTokenUsagePanel(
+                startTime = tokenUsageStartTime,
+                endTime = tokenUsageEndTime,
+                type = tokenUsageType,
+                granularity = tokenUsageGranularity,
+              )
+            },
+          )
+          Text("日志明细", fontWeight = FontWeight.Bold, color = Color(0xFF20314F))
+          if (vm.settingsTokenUsageLogs.isEmpty()) {
+            Text("暂无 token 消耗日志", style = MaterialTheme.typography.bodySmall, color = Color(0xFF697A97))
+          } else {
+            vm.settingsTokenUsageLogs.forEach { row ->
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clip(RoundedCornerShape(12.dp))
+                  .background(Color(0xFFF6F8FC))
+                  .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+              ) {
+                Text("时间：${formatAiTokenUsageTime(row.createTime)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("业务类型：${row.type.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("模型：${row.model.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("渠道：${row.channel.ifBlank { row.manufacturer.ifBlank { "-" } }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("token量：${row.totalTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("备注：${row.remark.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+              }
+            }
+          }
+          Text("统计", fontWeight = FontWeight.Bold, color = Color(0xFF20314F))
+          if (vm.settingsTokenUsageStats.isEmpty()) {
+            Text("暂无 token 统计数据", style = MaterialTheme.typography.bodySmall, color = Color(0xFF697A97))
+          } else {
+            vm.settingsTokenUsageStats.forEach { row ->
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clip(RoundedCornerShape(12.dp))
+                  .background(Color(0xFFF6F8FC))
+                  .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+              ) {
+                Text("时间：${row.bucketTime.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("业务类型：${row.type.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("模型：${row.model.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("渠道：${row.channel.ifBlank { row.manufacturer.ifBlank { "-" } }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("token量：${row.totalTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("备注：${row.remark.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+              }
+            }
+          }
+        }
+      },
+      confirmButton = {
+        MiniBtn(text = "关闭", primary = true, onClick = { showTokenUsageDialog = false })
       },
     )
   }
