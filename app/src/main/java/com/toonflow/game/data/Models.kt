@@ -241,6 +241,11 @@ data class AiTokenUsageLogItem(
   @SerializedName("reasoningTokens") val reasoningTokens: Int = 0,
   @SerializedName("cacheReadTokens") val cacheReadTokens: Int = 0,
   @SerializedName("totalTokens") val totalTokens: Int = 0,
+  @SerializedName("inputPricePer1M") val inputPricePer1M: Double = 0.0,
+  @SerializedName("outputPricePer1M") val outputPricePer1M: Double = 0.0,
+  @SerializedName("cacheReadPricePer1M") val cacheReadPricePer1M: Double = 0.0,
+  @SerializedName("amount") val amount: Double = 0.0,
+  @SerializedName("currency") val currency: String = "CNY",
   @SerializedName("remark") val remark: String = "",
 )
 
@@ -255,6 +260,8 @@ data class AiTokenUsageStatsItem(
   @SerializedName("reasoningTokens") val reasoningTokens: Int = 0,
   @SerializedName("cacheReadTokens") val cacheReadTokens: Int = 0,
   @SerializedName("totalTokens") val totalTokens: Int = 0,
+  @SerializedName("amount") val amount: Double = 0.0,
+  @SerializedName("currency") val currency: String = "CNY",
   @SerializedName("callCount") val callCount: Int = 0,
   @SerializedName("remark") val remark: String = "",
 )
@@ -291,6 +298,10 @@ data class VoiceModelConfig(
   @SerializedName("manufacturer") val manufacturer: String = "",
   @SerializedName("baseUrl") val baseUrl: String = "",
   @SerializedName("apiKey") val apiKey: String = "",
+  @SerializedName("inputPricePer1M") val inputPricePer1M: Double = 0.0,
+  @SerializedName("outputPricePer1M") val outputPricePer1M: Double = 0.0,
+  @SerializedName("cacheReadPricePer1M") val cacheReadPricePer1M: Double = 0.0,
+  @SerializedName("currency") val currency: String = "CNY",
   @SerializedName("modes") val modes: List<String> = emptyList(),
   @SerializedName("createTime") val createTime: Long = 0L,
 )
@@ -303,6 +314,10 @@ data class ModelConfigItem(
   @SerializedName("manufacturer") val manufacturer: String = "",
   @SerializedName("baseUrl") val baseUrl: String = "",
   @SerializedName("apiKey") val apiKey: String = "",
+  @SerializedName("inputPricePer1M") val inputPricePer1M: Double = 0.0,
+  @SerializedName("outputPricePer1M") val outputPricePer1M: Double = 0.0,
+  @SerializedName("cacheReadPricePer1M") val cacheReadPricePer1M: Double = 0.0,
+  @SerializedName("currency") val currency: String = "CNY",
   @SerializedName("createTime") val createTime: Long = 0L,
 )
 

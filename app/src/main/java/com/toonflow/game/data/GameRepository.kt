@@ -540,7 +540,18 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return runCatching { api().getModelConfigs().data }.getOrElse { emptyList() }
   }
 
-  suspend fun addModelConfig(type: String, model: String, baseUrl: String, apiKey: String, modelType: String, manufacturer: String) {
+  suspend fun addModelConfig(
+    type: String,
+    model: String,
+    baseUrl: String,
+    apiKey: String,
+    modelType: String,
+    manufacturer: String,
+    inputPricePer1M: Double,
+    outputPricePer1M: Double,
+    cacheReadPricePer1M: Double,
+    currency: String,
+  ) {
     val payload = JsonObject().apply {
       addProperty("type", type)
       addProperty("model", model)
@@ -548,11 +559,27 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("apiKey", apiKey)
       addProperty("modelType", modelType)
       addProperty("manufacturer", manufacturer)
+      addProperty("inputPricePer1M", inputPricePer1M)
+      addProperty("outputPricePer1M", outputPricePer1M)
+      addProperty("cacheReadPricePer1M", cacheReadPricePer1M)
+      addProperty("currency", currency)
     }
     api().addModelConfig(payload)
   }
 
-  suspend fun updateModelConfig(id: Long, type: String, model: String, baseUrl: String, apiKey: String, modelType: String, manufacturer: String) {
+  suspend fun updateModelConfig(
+    id: Long,
+    type: String,
+    model: String,
+    baseUrl: String,
+    apiKey: String,
+    modelType: String,
+    manufacturer: String,
+    inputPricePer1M: Double,
+    outputPricePer1M: Double,
+    cacheReadPricePer1M: Double,
+    currency: String,
+  ) {
     val payload = JsonObject().apply {
       addProperty("id", id)
       addProperty("type", type)
@@ -561,6 +588,10 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("apiKey", apiKey)
       addProperty("modelType", modelType)
       addProperty("manufacturer", manufacturer)
+      addProperty("inputPricePer1M", inputPricePer1M)
+      addProperty("outputPricePer1M", outputPricePer1M)
+      addProperty("cacheReadPricePer1M", cacheReadPricePer1M)
+      addProperty("currency", currency)
     }
     api().updateModelConfig(payload)
   }

@@ -175,6 +175,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.math.BigDecimal
+import java.math.RoundingMode
 import java.io.File
 import java.net.URL
 import java.security.MessageDigest
@@ -6207,6 +6209,24 @@ private fun formatAiTokenUsageTime(timestamp: Long): String {
   }.getOrDefault("-")
 }
 
+private fun normalizeTokenPriceValue(input: String): Double {
+  val value = input.trim().toDoubleOrNull() ?: 0.0
+  if (!value.isFinite() || value < 0.0) return 0.0
+  return kotlin.math.round(value * 1_000_000.0) / 1_000_000.0
+}
+
+private fun formatPricePer1M(value: Double, currency: String = "CNY"): String {
+  if (!value.isFinite() || value <= 0.0) return "-"
+  val normalized = BigDecimal.valueOf(value).stripTrailingZeros().toPlainString()
+  return "${currency.ifBlank { "CNY" }} $normalized/100万"
+}
+
+private fun formatAiTokenUsageAmount(amount: Double, currency: String = "CNY"): String {
+  if (!amount.isFinite() || amount <= 0.0) return "${currency.ifBlank { "CNY" }} 0"
+  val normalized = BigDecimal.valueOf(amount).setScale(6, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+  return "${currency.ifBlank { "CNY" }} $normalized"
+}
+
 @Composable
 private fun ProfileWorkCard(
   cover: @Composable () -> Unit,
@@ -7878,6 +7898,7 @@ private fun SettingsScene(vm: MainViewModel) {
                 Text("模型：${row.model.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("渠道：${row.channel.ifBlank { row.manufacturer.ifBlank { "-" } }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("token量：${row.totalTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("金额：${formatAiTokenUsageAmount(row.amount, row.currency)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("备注：${row.remark.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
               }
             }
@@ -7900,6 +7921,7 @@ private fun SettingsScene(vm: MainViewModel) {
                 Text("模型：${row.model.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("渠道：${row.channel.ifBlank { row.manufacturer.ifBlank { "-" } }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("token量：${row.totalTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("金额：${formatAiTokenUsageAmount(row.amount, row.currency)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("备注：${row.remark.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
               }
             }
@@ -8168,6 +8190,11 @@ private fun SettingsModelManagerDialog(
                 Text(row.model.ifBlank { "配置${row.id}" }, fontWeight = FontWeight.ExtraBold, color = Color(0xFF213958))
                 Text(row.baseUrl.ifBlank { "默认 Base URL" }, style = MaterialTheme.typography.bodySmall, color = Color(0xFF6E819B))
                 Text(if (row.apiKey.isBlank()) "API Key：未填写" else "API Key：••••••••", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6E819B))
+                if (slot.configType == "text") {
+                  Text("输入单价：${formatPricePer1M(row.inputPricePer1M, row.currency)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6E819B))
+                  Text("输出单价：${formatPricePer1M(row.outputPricePer1M, row.currency)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6E819B))
+                  Text("缓存单价：${formatPricePer1M(row.cacheReadPricePer1M, row.currency)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6E819B))
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                   MiniBtn(
                     text = if (testingId == row.id) "测试中" else "测试",
@@ -8253,13 +8280,36 @@ private fun SettingsModelManagerDialog(
       slot = slot,
       initial = editingModel,
       onDismiss = { showEditor = false },
-      onSubmit = { id, manufacturer, modelType, model, baseUrl, apiKey ->
+      onSubmit = { id, manufacturer, modelType, model, baseUrl, apiKey, inputPricePer1M, outputPricePer1M, cacheReadPricePer1M, currency ->
         scope.launch {
           runCatching {
             if (id == null) {
-              vm.addManagedModelConfig(slot.configType, model, baseUrl, apiKey, modelType, manufacturer)
+              vm.addManagedModelConfig(
+                slot.configType,
+                model,
+                baseUrl,
+                apiKey,
+                modelType,
+                manufacturer,
+                inputPricePer1M,
+                outputPricePer1M,
+                cacheReadPricePer1M,
+                currency,
+              )
             } else {
-              vm.updateManagedModelConfig(id, slot.configType, model, baseUrl, apiKey, modelType, manufacturer)
+              vm.updateManagedModelConfig(
+                id,
+                slot.configType,
+                model,
+                baseUrl,
+                apiKey,
+                modelType,
+                manufacturer,
+                inputPricePer1M,
+                outputPricePer1M,
+                cacheReadPricePer1M,
+                currency,
+              )
             }
           }.onSuccess {
             showEditor = false
@@ -8364,7 +8414,7 @@ private fun SettingsModelEditorDialog(
   slot: MainViewModel.SettingsModelSlot,
   initial: com.toonflow.game.data.ModelConfigItem?,
   onDismiss: () -> Unit,
-  onSubmit: (Long?, String, String, String, String, String) -> Unit,
+  onSubmit: (Long?, String, String, String, String, String, Double, Double, Double, String) -> Unit,
 ) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
@@ -8394,6 +8444,10 @@ private fun SettingsModelEditorDialog(
     mutableStateOf(initial?.baseUrl?.ifBlank { defaultSettingsBaseUrl(manufacturer, slot.configType, modelType) } ?: defaultSettingsBaseUrl(manufacturer, slot.configType, modelType))
   }
   var apiKey by remember(initial?.id) { mutableStateOf(initial?.apiKey.orEmpty()) }
+  var inputPricePer1M by remember(initial?.id) { mutableStateOf(if (initial == null || initial.inputPricePer1M <= 0.0) "" else BigDecimal.valueOf(initial.inputPricePer1M).stripTrailingZeros().toPlainString()) }
+  var outputPricePer1M by remember(initial?.id) { mutableStateOf(if (initial == null || initial.outputPricePer1M <= 0.0) "" else BigDecimal.valueOf(initial.outputPricePer1M).stripTrailingZeros().toPlainString()) }
+  var cacheReadPricePer1M by remember(initial?.id) { mutableStateOf(if (initial == null || initial.cacheReadPricePer1M <= 0.0) "" else BigDecimal.valueOf(initial.cacheReadPricePer1M).stripTrailingZeros().toPlainString()) }
+  var currency by remember(initial?.id) { mutableStateOf(initial?.currency?.ifBlank { "CNY" } ?: "CNY") }
   var autodlPresetExpanded by remember { mutableStateOf(false) }
   var manufacturerExpanded by remember { mutableStateOf(false) }
   var modelTypeExpanded by remember { mutableStateOf(false) }
@@ -8644,6 +8698,41 @@ private fun SettingsModelEditorDialog(
             visualTransformation = PasswordVisualTransformation(),
           )
         }
+        if (slot.configType == "text") {
+          OutlinedTextField(
+            value = inputPricePer1M,
+            onValueChange = { inputPricePer1M = it },
+            label = { Text("输入单价") },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("按每100万 token 计价") },
+          )
+          OutlinedTextField(
+            value = outputPricePer1M,
+            onValueChange = { outputPricePer1M = it },
+            label = { Text("输出单价") },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("按每100万 token 计价") },
+          )
+          OutlinedTextField(
+            value = cacheReadPricePer1M,
+            onValueChange = { cacheReadPricePer1M = it },
+            label = { Text("缓存命中单价") },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("可留空或填 0") },
+          )
+          OutlinedTextField(
+            value = currency,
+            onValueChange = { currency = it },
+            label = { Text("货币") },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("默认 CNY") },
+          )
+          Text(
+            "单价单位统一按每 100 万 token 计算，金额日志会按这里的配置实时换算。",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF6A7F9F),
+          )
+        }
         settingsApiKeyHint(slot, manufacturer).takeIf { it.isNotBlank() }?.let { hint ->
           Text(
             hint,
@@ -8672,6 +8761,10 @@ private fun SettingsModelEditorDialog(
               model.trim(),
               if (submitManufacturer == "local_birefnet") "" else baseUrl.trim(),
               if (submitManufacturer == "local_birefnet") "" else apiKey.trim(),
+              if (slot.configType == "text") normalizeTokenPriceValue(inputPricePer1M) else 0.0,
+              if (slot.configType == "text") normalizeTokenPriceValue(outputPricePer1M) else 0.0,
+              if (slot.configType == "text") normalizeTokenPriceValue(cacheReadPricePer1M) else 0.0,
+              if (slot.configType == "text") currency.trim().ifBlank { "CNY" }.uppercase(Locale.ROOT) else "CNY",
             )
           }.onFailure {
             vm.notice = "本地 BiRefNet 安装失败: ${it.message ?: "未知错误"}"

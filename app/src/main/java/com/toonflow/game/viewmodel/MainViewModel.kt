@@ -890,8 +890,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     apiKey: String,
     modelType: String,
     manufacturer: String,
+    inputPricePer1M: Double,
+    outputPricePer1M: Double,
+    cacheReadPricePer1M: Double,
+    currency: String,
   ) {
-    repository.addModelConfig(type, model, baseUrl, apiKey, modelType, manufacturer)
+    repository.addModelConfig(
+      type,
+      model,
+      baseUrl,
+      apiKey,
+      modelType,
+      manufacturer,
+      inputPricePer1M,
+      outputPricePer1M,
+      cacheReadPricePer1M,
+      currency,
+    )
     ensureSettingsPanelData(true)
   }
 
@@ -903,8 +918,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     apiKey: String,
     modelType: String,
     manufacturer: String,
+    inputPricePer1M: Double,
+    outputPricePer1M: Double,
+    cacheReadPricePer1M: Double,
+    currency: String,
   ) {
-    repository.updateModelConfig(id, type, model, baseUrl, apiKey, modelType, manufacturer)
+    repository.updateModelConfig(
+      id,
+      type,
+      model,
+      baseUrl,
+      apiKey,
+      modelType,
+      manufacturer,
+      inputPricePer1M,
+      outputPricePer1M,
+      cacheReadPricePer1M,
+      currency,
+    )
     ensureSettingsPanelData(true)
   }
 
