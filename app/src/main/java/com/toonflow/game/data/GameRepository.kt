@@ -187,11 +187,13 @@ class GameRepository(private val settingsStore: SettingsStore) {
     projectId: Long? = null,
     base64Data: String,
     fileName: String = "avatar.mp4",
+    preferGif: Boolean = false,
   ): SeparatedRoleImageResult {
     val payload = JsonObject().apply {
       if (projectId != null && projectId > 0L) addProperty("projectId", projectId)
       addProperty("base64Data", base64Data)
       if (fileName.isNotBlank()) addProperty("fileName", fileName)
+      if (preferGif) addProperty("preferGif", true)
     }
     return unwrapEnvelope("game/convertAvatarVideoToGif", api().convertAvatarVideoToGif(payload))
   }

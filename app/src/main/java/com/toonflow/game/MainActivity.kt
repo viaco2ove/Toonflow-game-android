@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.OpenableColumns
@@ -156,7 +157,11 @@ import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.ThumbDown
 import androidx.compose.material.icons.outlined.ThumbUp
+import coil.ImageLoader
 import coil.compose.AsyncImage
+import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
+import coil.request.ImageRequest
 import org.json.JSONArray
 import com.toonflow.game.data.MessageItem
 import com.toonflow.game.data.SessionItem
@@ -875,7 +880,7 @@ private fun HomeScene(vm: MainViewModel, autoVoice: Boolean, onToggleVoice: () -
   Box(modifier = Modifier.fillMaxSize()) {
     Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0A1830)))
     if (coverPath != null) {
-      AsyncImage(
+      AnimatedAsyncImage(
         model = coverPath,
         contentDescription = null,
         modifier = Modifier
@@ -3558,7 +3563,7 @@ private fun PlayScene(
 
   BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color(0xFF15283F))) {
     if (chapterBackgroundPath != null) {
-      AsyncImage(
+      AnimatedAsyncImage(
         model = chapterBackgroundPath,
         contentDescription = null,
         modifier = Modifier.fillMaxSize(),
@@ -3584,7 +3589,7 @@ private fun PlayScene(
             ),
         )
         if (currentLiveFigureFgPath != null) {
-          AsyncImage(
+          AnimatedAsyncImage(
             model = currentLiveFigureFgPath,
             contentDescription = null,
             modifier = Modifier
@@ -4666,6 +4671,44 @@ private fun MessageLoadingDots(
 }
 
 @Composable
+private fun AnimatedAsyncImage(
+  model: String?,
+  contentDescription: String?,
+  modifier: Modifier = Modifier,
+  contentScale: ContentScale = ContentScale.Fit,
+  alignment: Alignment = Alignment.Center,
+) {
+  val context = LocalContext.current.applicationContext
+  val imageLoader = remember(context) {
+    ImageLoader.Builder(context)
+      .components {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+          add(ImageDecoderDecoder.Factory())
+        } else {
+          add(GifDecoder.Factory())
+        }
+      }
+      .crossfade(false)
+      .build()
+  }
+  val request = remember(model, context) {
+    ImageRequest.Builder(context)
+      .data(model)
+      // 角色动图需要逐帧解码，禁用硬件位图避免前景被拍平成静态帧。
+      .allowHardware(false)
+      .build()
+  }
+  AsyncImage(
+    model = request,
+    imageLoader = imageLoader,
+    contentDescription = contentDescription,
+    modifier = modifier,
+    contentScale = contentScale,
+    alignment = alignment,
+  )
+}
+
+@Composable
 private fun SmallAvatar(
   foregroundPath: String?,
   backgroundPath: String?,
@@ -4707,7 +4750,7 @@ private fun LayeredAvatarFrame(
     contentAlignment = Alignment.Center,
   ) {
     if (!backgroundPath.isNullOrBlank()) {
-      AsyncImage(
+      AnimatedAsyncImage(
         model = backgroundPath,
         contentDescription = null,
         modifier = Modifier.fillMaxSize(),
@@ -4716,7 +4759,7 @@ private fun LayeredAvatarFrame(
       )
     }
     if (!foregroundPath.isNullOrBlank()) {
-      AsyncImage(
+      AnimatedAsyncImage(
         model = foregroundPath,
         contentDescription = null,
         modifier = Modifier.fillMaxSize(),
@@ -6446,7 +6489,7 @@ private fun AvatarPreviewDialog(
             )
             AvatarPreviewMode.Foreground -> {
               if (!foregroundPath.isNullOrBlank()) {
-                AsyncImage(
+                AnimatedAsyncImage(
                   model = foregroundPath,
                   contentDescription = null,
                   modifier = Modifier.fillMaxSize(),
@@ -6463,7 +6506,7 @@ private fun AvatarPreviewDialog(
             }
             AvatarPreviewMode.Background -> {
               if (!backgroundPath.isNullOrBlank()) {
-                AsyncImage(
+                AnimatedAsyncImage(
                   model = backgroundPath,
                   contentDescription = null,
                   modifier = Modifier.fillMaxSize(),
@@ -8363,7 +8406,7 @@ private fun SettingsModelManagerDialog(
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
           Text(testResultTitle, fontWeight = FontWeight.Bold, color = Color(0xFF213958))
           when (testResultKind) {
-            "image" -> AsyncImage(
+            "image" -> AnimatedAsyncImage(
               model = testResultContent,
               contentDescription = null,
               modifier = Modifier
@@ -8950,7 +8993,7 @@ private fun StoryCoverImage(title: String, coverPath: String? = null, modifier: 
   val initial = title.trim().firstOrNull()?.uppercaseChar()?.toString() ?: "故"
   Box(modifier = modifier, contentAlignment = Alignment.Center) {
     if (!coverPath.isNullOrBlank()) {
-      AsyncImage(
+      AnimatedAsyncImage(
         model = coverPath,
         contentDescription = null,
         modifier = Modifier.fillMaxSize(),

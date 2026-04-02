@@ -180,6 +180,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   val baseTabs = listOf("主页", "创建", "聊过", "我的")
   val settingsModelSlots = listOf(
     SettingsModelSlot("storyOrchestratorModel", "编排师", "text"),
+    SettingsModelSlot("storyFastSpeakerModel", "快速角色发言", "text"),
     SettingsModelSlot("storySpeakerModel", "角色发言", "text"),
     SettingsModelSlot("storyMemoryModel", "记忆管理", "text"),
     SettingsModelSlot("storyImageModel", "AI生图", "image"),
@@ -2314,6 +2315,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       projectId = if (projectScoped) selectedProjectId.takeIf { it > 0L } ?: error("请先选择项目后再上传 MP4") else null,
       base64Data = bytesToBase64Payload(source.bytes, source.mime),
       fileName = source.fileName.ifBlank { "avatar.mp4" },
+      // 安卓端要优先拿 GIF，避免部分设备对 animated WebP 的兼容性不稳定。
+      preferGif = true,
     )
     val foregroundPath = resolveMediaPath(result.foregroundFilePath.ifBlank { result.foregroundPath })
     val backgroundPath = resolveMediaPath(result.backgroundFilePath.ifBlank { result.backgroundPath })
