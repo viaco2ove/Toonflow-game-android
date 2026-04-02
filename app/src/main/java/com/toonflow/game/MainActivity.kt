@@ -3471,12 +3471,16 @@ private fun PlayScene(
       return@LaunchedEffect
     }
     val latest = latestRevealedMessage ?: return@LaunchedEffect
-    if (latest.roleType == "player" || vm.isRuntimeRetryMessage(latest) || vm.isStreamingRuntimeMessage(latest)) {
+    val canPlayerSpeakNow = vm.playCanPlayerSpeak()
+    var latestStatus = vm.runtimeMessageStatus(latest)
+    if (vm.isRuntimeRetryMessage(latest) || vm.isStreamingRuntimeMessage(latest)) {
+      return@LaunchedEffect
+    }
+    // 最后一条即使是用户消息，只要运行态已经进入 waiting_next，就说明后端还应继续推进。
+    if (latest.roleType == "player" && (canPlayerSpeakNow || latestStatus != "waiting_next")) {
       return@LaunchedEffect
     }
     val sameVoiceTarget = runtimeVoiceMessageKey == vm.messageUiKey(latest)
-    val canPlayerSpeakNow = vm.playCanPlayerSpeak()
-    var latestStatus = vm.runtimeMessageStatus(latest)
     if (!sameVoiceTarget && latestStatus in listOf("", "orchestrated", "generated", "revealing", "voicing")) {
       latestStatus = if (canPlayerSpeakNow) "waiting_player" else "waiting_next"
       vm.setRuntimeMessageStatus(latest.id, latestStatus)
