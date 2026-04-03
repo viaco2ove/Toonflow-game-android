@@ -6010,9 +6010,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       eventKind = item.eventKind,
       eventSummary = item.eventSummary,
       eventStatus = item.eventStatus,
-      eventFacts = item.eventFacts,
+      eventFacts = runtimeStringify(item.eventFacts),
       memorySummary = item.memorySummary,
-      memoryFacts = item.memoryFacts,
+      memoryFacts = runtimeStringify(item.memoryFacts),
     )
   }
 
