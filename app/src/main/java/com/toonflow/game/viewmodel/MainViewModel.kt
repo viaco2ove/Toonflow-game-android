@@ -30,6 +30,7 @@ import com.toonflow.game.data.ModelConfigItem
 import com.toonflow.game.data.ProjectItem
 import com.toonflow.game.data.PromptItem
 import com.toonflow.game.data.RoleParameterCard
+import com.toonflow.game.data.RuntimeEventDigestItem
 import com.toonflow.game.data.SessionDetail
 import com.toonflow.game.data.SessionItem
 import com.toonflow.game.data.SessionNarrativeResult
@@ -125,6 +126,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val pendingGoal: String,
     val userNodeLabel: String,
     val completedEvents: String,
+  )
+
+  data class RuntimeChapterEventItem(
+    val eventIndex: Int,
+    val eventKind: String,
+    val eventSummary: String,
+    val eventStatus: String,
+    val eventFacts: String,
+    val memorySummary: String,
+    val memoryFacts: String,
   )
 
   data class RuntimeMiniGameAction(
@@ -1810,6 +1821,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun playVisibleChapterObjective(): String {
+    val eventSummary = playCurrentRuntimeEventDigest()?.eventSummary.orEmpty()
+      .takeIf { it.isNotBlank() && it != "当前事件摘要待生成" }
+      .orEmpty()
+    if (eventSummary.isNotBlank()) {
+      return eventSummary
+    }
+    val progress = playChapterProgressDebug()
+    val progressObjective = progress?.pendingGoal
+      ?.takeIf { it.isNotBlank() }
+      ?: progress?.userNodeLabel?.takeIf { it.isNotBlank() }
+      ?: progress?.phaseLabel?.takeIf { it.isNotBlank() }
+    if (!progressObjective.isNullOrBlank()) {
+      return progressObjective
+    }
     val chapter = playCurrentChapter() ?: return ""
     if (chapter.showCompletionCondition == false) return ""
     return normalizeConditionEditorText(chapter.completionCondition)
@@ -5976,6 +6001,160 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       userNodeLabel = userNodeLabel,
       completedEvents = completedEvents,
     )
+  }
+
+  private fun runtimeEventDigestItemFromModel(item: RuntimeEventDigestItem?): RuntimeChapterEventItem? {
+    if (item == null) return null
+    return RuntimeChapterEventItem(
+      eventIndex = item.eventIndex,
+      eventKind = item.eventKind,
+      eventSummary = item.eventSummary,
+      eventStatus = item.eventStatus,
+      eventFacts = item.eventFacts,
+      memorySummary = item.memorySummary,
+      memoryFacts = item.memoryFacts,
+    )
+  }
+
+  private fun runtimeEventDigestItemFromJson(input: JsonElement?): RuntimeChapterEventItem? {
+    if (input == null || input.isJsonNull || !input.isJsonObject) return null
+    val obj = input.asJsonObject
+    val summary = scalarRuntimeText(obj.get("eventSummary"))
+    val facts = scalarRuntimeText(obj.get("eventFacts"))
+    val memorySummary = scalarRuntimeText(obj.get("memorySummary"))
+    val memoryFacts = scalarRuntimeText(obj.get("memoryFacts"))
+    val eventKind = scalarRuntimeText(obj.get("eventKind"))
+    val eventStatus = scalarRuntimeText(obj.get("eventStatus"))
+    val eventIndex = runtimeIntValue(obj.get("eventIndex")) ?: 0
+    if (
+      summary.isBlank()
+      && facts.isBlank()
+      && memorySummary.isBlank()
+      && memoryFacts.isBlank()
+      && eventKind.isBlank()
+      && eventStatus.isBlank()
+      && eventIndex <= 0
+    ) {
+      return null
+    }
+    return RuntimeChapterEventItem(
+      eventIndex = eventIndex,
+      eventKind = eventKind,
+      eventSummary = summary,
+      eventStatus = eventStatus,
+      eventFacts = facts,
+      memorySummary = memorySummary,
+      memoryFacts = memoryFacts,
+    )
+  }
+
+  private fun runtimeEventDigestWindowFromState(): List<RuntimeChapterEventItem> {
+    val fromDetail = sessionDetail?.eventDigestWindow
+      ?.mapNotNull(::runtimeEventDigestItemFromModel)
+      .orEmpty()
+    if (fromDetail.isNotEmpty()) {
+      return fromDetail.sortedBy { item -> if (item.eventIndex > 0) item.eventIndex else Int.MAX_VALUE }
+    }
+    val root = runtimeStateRoot() ?: return emptyList()
+    val merged = linkedMapOf<Int, RuntimeChapterEventItem>()
+    runtimeEventDigestItemFromJson(root.get("currentEvent"))?.let { item ->
+      val key = item.eventIndex.takeIf { it > 0 } ?: 1
+      merged[key] = item
+    }
+    root.getAsJsonArray("dynamicEvents")
+      ?.mapNotNull(::runtimeEventDigestItemFromJson)
+      ?.forEachIndexed { index, item ->
+        val key = item.eventIndex.takeIf { it > 0 } ?: (index + 1)
+        val current = merged[key]
+        merged[key] = if (
+          current == null
+          || (current.eventSummary.isBlank() && item.eventSummary.isNotBlank())
+          || (current.eventFacts.isBlank() && item.eventFacts.isNotBlank())
+        ) {
+          item
+        } else {
+          current
+        }
+      }
+    return merged.values.sortedBy { item -> if (item.eventIndex > 0) item.eventIndex else Int.MAX_VALUE }
+  }
+
+  fun playCurrentRuntimeEventDigest(): RuntimeChapterEventItem? {
+    runtimeEventDigestItemFromModel(sessionDetail?.currentEventDigest)?.let { return it }
+    val runtimeItems = runtimeEventDigestWindowFromState()
+    return runtimeItems.firstOrNull()
+  }
+
+  private fun hasReadyRuntimeEventWindow(items: List<RuntimeChapterEventItem>): Boolean {
+    return items.any { item ->
+      item.eventSummary.isNotBlank()
+        && item.eventSummary != "当前事件摘要待生成"
+    }
+  }
+
+  private fun runtimeOutlineEventItems(): List<RuntimeChapterEventItem> {
+    val chapter = playCurrentChapter() ?: return emptyList()
+    val runtimeOutline = chapter.runtimeOutline?.takeIf { it.isJsonObject }?.asJsonObject ?: return emptyList()
+    val phaseId = scalarRuntimeText(runtimeStateRoot()?.getAsJsonObject("chapterProgress")?.get("phaseId"))
+    if (runtimeOutline.getAsJsonArray("phases") == null) return emptyList()
+    val phasePreview = chapterRuntimePhasePreview()
+    val activeIndex = phasePreview.indexOfFirst { item -> item.id == phaseId }
+    return phasePreview.mapIndexed { index, item ->
+      val status = when {
+        phaseId.isNotBlank() && item.id == phaseId -> "进行中"
+        activeIndex >= 0 && index < activeIndex -> "已完成"
+        else -> "未开始"
+      }
+      RuntimeChapterEventItem(
+        eventIndex = index + 1,
+        eventKind = item.kind,
+        eventSummary = item.label.ifBlank { "事件 ${index + 1}" },
+        eventStatus = status,
+        eventFacts = item.flowSummary,
+        memorySummary = "",
+        memoryFacts = "",
+      )
+    }
+  }
+
+  fun playVisibleChapterEvents(): List<RuntimeChapterEventItem> {
+    val runtimeItems = runtimeEventDigestWindowFromState()
+    if (hasReadyRuntimeEventWindow(runtimeItems)) {
+      return runtimeItems
+    }
+    return runtimeOutlineEventItems()
+  }
+
+  fun playCurrentEventProgressText(): String {
+    val currentEvent = playCurrentRuntimeEventDigest()
+    if (currentEvent != null) {
+      val parts = mutableListOf<String>()
+      if (currentEvent.eventIndex > 0) {
+        parts += "事件 ${currentEvent.eventIndex}"
+      }
+      val kind = currentEvent.eventKind.trim()
+      if (kind.isNotBlank()) {
+        parts += kind
+      }
+      val summary = currentEvent.eventSummary.trim()
+      if (summary.isNotBlank()) {
+        parts += summary
+      }
+      val status = currentEvent.eventStatus.trim()
+      if (status.isNotBlank()) {
+        parts += status
+      }
+      if (parts.isNotEmpty()) {
+        return parts.joinToString(" · ")
+      }
+    }
+    val progress = playChapterProgressDebug()
+    return listOfNotNull(
+      progress?.phaseLabel?.takeIf { it.isNotBlank() }?.let { "阶段 $it" },
+      progress?.pendingGoal?.takeIf { it.isNotBlank() }?.let { "目标 $it" },
+      progress?.userNodeLabel?.takeIf { it.isNotBlank() }?.let { "用户节点 $it" },
+      progress?.completedEvents?.takeIf { it.isNotBlank() }?.let { "已完成 $it" },
+    ).joinToString(" · ").ifBlank { "当前章节事件待生成" }
   }
 
   private fun buildRole(

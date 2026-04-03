@@ -732,6 +732,7 @@ private fun PrototypeAndroidApp(vm: MainViewModel = viewModel()) {
   var autoVoice by remember { mutableStateOf(vm.autoVoiceEnabled()) }
   var showDialogMenu by remember { mutableStateOf(false) }
   var showStorySettingDetail by remember { mutableStateOf(false) }
+  var showChapterEventDetail by remember { mutableStateOf(false) }
   val toggleAutoVoice = {
     val next = !autoVoice
     autoVoice = next
@@ -810,6 +811,8 @@ private fun PrototypeAndroidApp(vm: MainViewModel = viewModel()) {
             onCloseDialogMenu = { showDialogMenu = false },
             showStorySettingDetail = showStorySettingDetail,
             onToggleStorySettingDetail = { showStorySettingDetail = !showStorySettingDetail },
+            showChapterEventDetail = showChapterEventDetail,
+            onToggleChapterEventDetail = { showChapterEventDetail = !showChapterEventDetail },
             onCloseSetting = { playMode = "live" },
             onExitDebug = {
               vm.leaveDebugMode()
@@ -2540,6 +2543,8 @@ private fun PlayScene(
   onCloseDialogMenu: () -> Unit,
   showStorySettingDetail: Boolean,
   onToggleStorySettingDetail: () -> Unit,
+  showChapterEventDetail: Boolean,
+  onToggleChapterEventDetail: () -> Unit,
   onCloseSetting: () -> Unit,
   onExitDebug: () -> Unit,
 ) {
@@ -3538,6 +3543,8 @@ private fun PlayScene(
   val tipOptions = vm.buildAiTipOptions()
   val statePreview = vm.playStatePreview()
   val chapterProgressDebug = vm.playChapterProgressDebug()
+  val chapterEventProgressText = vm.playCurrentEventProgressText()
+  val chapterEventItems = vm.playVisibleChapterEvents()
   val playTitle = vm.playWorldName()
   val chapterTitle = vm.playChapterTitle()
   val chapterObjectiveText = vm.playVisibleChapterObjective()
@@ -3838,11 +3845,15 @@ private fun PlayScene(
               chapterOpeningLine = currentChapter?.openingText.orEmpty(),
               chapterContent = currentChapter?.content?.ifBlank { "暂无章节内容" } ?: "暂无章节内容",
               chapterCondition = vm.playChapterConditionText(),
+              currentEventProgressText = chapterEventProgressText,
+              chapterEventItems = chapterEventItems,
               roles = vm.playStoryRoles(),
               allowRoleView = vm.playAllowRoleView(),
               statePreview = statePreview,
               showStorySettingDetail = showStorySettingDetail,
               onToggleStorySettingDetail = onToggleStorySettingDetail,
+              showChapterEventDetail = showChapterEventDetail,
+              onToggleChapterEventDetail = onToggleChapterEventDetail,
               onClose = onCloseSetting,
             )
           }
@@ -4904,11 +4915,15 @@ private fun StorySettingPanel(
   chapterOpeningLine: String,
   chapterContent: String,
   chapterCondition: String,
+  currentEventProgressText: String,
+  chapterEventItems: List<MainViewModel.RuntimeChapterEventItem>,
   roles: List<com.toonflow.game.data.StoryRole>,
   allowRoleView: Boolean,
   statePreview: String,
   showStorySettingDetail: Boolean,
   onToggleStorySettingDetail: () -> Unit,
+  showChapterEventDetail: Boolean,
+  onToggleChapterEventDetail: () -> Unit,
   onClose: () -> Unit,
 ) {
   var selectedRoleId by remember(worldName) { mutableStateOf<String?>(null) }
@@ -5037,6 +5052,42 @@ private fun StorySettingPanel(
         }
       }
       Card(
+        modifier = Modifier.fillMaxWidth().clickable { onToggleChapterEventDetail() },
+        colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
+        shape = RoundedCornerShape(10.dp),
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text("当前章节事件", color = Color.White, fontWeight = FontWeight.SemiBold)
+          Text(if (showChapterEventDetail) "收起 >" else "> ", color = Color(0xFFD5EBFF), style = MaterialTheme.typography.bodySmall)
+        }
+      }
+      if (showChapterEventDetail) {
+        Card(
+          colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
+          shape = RoundedCornerShape(12.dp),
+        ) {
+          Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("当前事件进度", color = Color.White, fontWeight = FontWeight.Bold)
+            Text(
+              text = currentEventProgressText.ifBlank { "当前章节事件待生成" },
+              color = Color(0xFFDCEEFF),
+              style = MaterialTheme.typography.bodySmall,
+            )
+            if (chapterEventItems.isEmpty()) {
+              Text("暂无章节事件", color = Color(0xFFBFD3F1), style = MaterialTheme.typography.bodySmall)
+            } else {
+              chapterEventItems.forEach { item ->
+                ChapterEventDigestCard(item = item)
+              }
+            }
+          }
+        }
+      }
+      Card(
         modifier = Modifier.fillMaxWidth().clickable { showModePicker = !showModePicker },
         colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
         shape = RoundedCornerShape(10.dp),
@@ -5060,6 +5111,48 @@ private fun StorySettingPanel(
             Text("当前仅支持基础模式，后续可扩展其他对话模式。", color = Color(0xFFBFD3F1), style = MaterialTheme.typography.bodySmall)
           }
         }
+      }
+    }
+  }
+}
+
+@Composable
+private fun ChapterEventDigestCard(item: MainViewModel.RuntimeChapterEventItem) {
+  Card(
+    colors = CardDefaults.cardColors(containerColor = Color(0x142B3E5A)),
+    shape = RoundedCornerShape(10.dp),
+  ) {
+    Column(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Text(
+          text = "事件 ${item.eventIndex.takeIf { it > 0 }?.toString() ?: "?"}",
+          color = Color.White,
+          fontWeight = FontWeight.SemiBold,
+          style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+          text = "${runtimeEventKindLabel(item.eventKind)} · ${runtimeEventStatusLabel(item.eventStatus)}",
+          color = Color(0xFFBFD3F1),
+          style = MaterialTheme.typography.labelSmall,
+        )
+      }
+      Text(
+        text = item.eventSummary.ifBlank { "当前事件摘要待生成" },
+        color = Color(0xFFDCEEFF),
+        style = MaterialTheme.typography.bodySmall,
+      )
+      item.eventFacts.takeIf { it.isNotBlank() }?.let { facts ->
+        Text("事件事实：$facts", color = Color(0xFFBFD3F1), style = MaterialTheme.typography.labelSmall)
+      }
+      item.memorySummary.takeIf { it.isNotBlank() }?.let { memory ->
+        Text("事件记忆：$memory", color = Color(0xFFBFD3F1), style = MaterialTheme.typography.labelSmall)
+      }
+      item.memoryFacts.takeIf { it.isNotBlank() }?.let { memoryFacts ->
+        Text("记忆事实：$memoryFacts", color = Color(0xFFBFD3F1), style = MaterialTheme.typography.labelSmall)
       }
     }
   }
@@ -5495,6 +5588,27 @@ private fun runtimeStatusLabel(status: String): String {
     "voicing" -> "语音中"
     "error" -> "异常"
     else -> if (status.isBlank()) "未知" else status
+  }
+}
+
+private fun runtimeEventKindLabel(kind: String): String {
+  return when (kind.trim().lowercase()) {
+    "opening" -> "开场事件"
+    "scene" -> "场景事件"
+    "user" -> "用户事件"
+    "fixed" -> "固定事件"
+    "ending" -> "结束事件"
+    else -> if (kind.isBlank()) "事件" else kind
+  }
+}
+
+private fun runtimeEventStatusLabel(status: String): String {
+  return when (status.trim().lowercase()) {
+    "pending", "todo" -> "未开始"
+    "active", "running", "in_progress" -> "进行中"
+    "completed", "done", "success" -> "已完成"
+    "failed" -> "失败"
+    else -> if (status.isBlank()) "未开始" else status
   }
 }
 

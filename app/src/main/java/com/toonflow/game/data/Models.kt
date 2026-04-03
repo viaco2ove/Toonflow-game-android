@@ -144,6 +144,20 @@ data class MessageItem(
   @SerializedName("meta") val meta: JsonElement? = null,
 )
 
+data class RuntimeEventDigestItem(
+  @SerializedName("eventIndex") val eventIndex: Int = 0,
+  @SerializedName("eventKind") val eventKind: String = "",
+  @SerializedName("eventSummary") val eventSummary: String = "",
+  @SerializedName("eventFacts") val eventFacts: String = "",
+  @SerializedName("eventStatus") val eventStatus: String = "",
+  @SerializedName("summarySource") val summarySource: String = "",
+  @SerializedName("memorySummary") val memorySummary: String = "",
+  @SerializedName("memoryFacts") val memoryFacts: String = "",
+  @SerializedName("updateTime") val updateTime: Long = 0L,
+  @SerializedName("allowedRoles") val allowedRoles: List<String> = emptyList(),
+  @SerializedName("userNodeId") val userNodeId: String = "",
+)
+
 data class SessionItem(
   @SerializedName("sessionId") val sessionId: String,
   @SerializedName("worldId") val worldId: Long,
@@ -158,6 +172,9 @@ data class SessionItem(
   @SerializedName("status") val status: String = "",
   @SerializedName("updateTime") val updateTime: Long = 0L,
   @SerializedName("latestMessage") val latestMessage: MessageItem? = null,
+  @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
+  @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
+  @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
 )
 
 data class SessionSnapshot(
@@ -174,6 +191,9 @@ data class SessionDetail(
   @SerializedName("world") val world: WorldItem? = null,
   @SerializedName("chapter") val chapter: ChapterItem? = null,
   @SerializedName("messages") val messages: List<MessageItem> = emptyList(),
+  @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
+  @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
+  @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
 )
 
 data class SessionNarrativeResult(
@@ -189,6 +209,9 @@ data class SessionNarrativeResult(
   @SerializedName("narrativePlan") val narrativePlan: DebugNarrativePlan? = null,
   @SerializedName("snapshotSaved") val snapshotSaved: Boolean = false,
   @SerializedName("snapshotReason") val snapshotReason: String = "",
+  @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
+  @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
+  @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
 )
 
 data class SessionOrchestrationResult(
@@ -198,6 +221,9 @@ data class SessionOrchestrationResult(
   @SerializedName("expectedRole") val expectedRole: String = "",
   @SerializedName("expectedRoleType") val expectedRoleType: String = "",
   @SerializedName("plan") val plan: DebugNarrativePlan? = null,
+  @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
+  @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
+  @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
 )
 
 data class DebugStepResult(
@@ -206,6 +232,9 @@ data class DebugStepResult(
   @SerializedName("state") val state: JsonElement? = null,
   @SerializedName("endDialog") val endDialog: String? = null,
   @SerializedName("messages") val messages: List<MessageItem> = emptyList(),
+  @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
+  @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
+  @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
 )
 
 data class DebugNarrativePlan(
@@ -227,6 +256,9 @@ data class DebugOrchestrationResult(
   @SerializedName("state") val state: JsonElement? = null,
   @SerializedName("endDialog") val endDialog: String? = null,
   @SerializedName("plan") val plan: DebugNarrativePlan? = null,
+  @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
+  @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
+  @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
 )
 
 data class AiTokenUsageLogItem(
