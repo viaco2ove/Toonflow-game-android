@@ -3025,6 +3025,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return conversationMessages().lastOrNull()?.id == message.id
   }
 
+  private fun applyAwaitUserTurnFromPlan(plan: DebugNarrativePlan?) {
+    val currentPlan = plan ?: return
+    val shouldYieldToUser = currentPlan.awaitUser || currentPlan.nextRoleType.trim().equals("player", ignoreCase = true)
+    if (!shouldYieldToUser) return
+    val detail = sessionDetail ?: return
+    val root = detail.state?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() ?: return
+    val turnState = (root.getAsJsonObject("turnState") ?: JsonObject()).also { root.add("turnState", it) }
+    val displayName = playerName.ifBlank { scalarRuntimeText(root.getAsJsonObject("player")?.get("name")).ifBlank { "用户" } }
+    turnState.addProperty("canPlayerSpeak", true)
+    turnState.addProperty("expectedRoleType", "player")
+    turnState.addProperty("expectedRole", displayName)
+    turnState.addProperty("lastSpeakerRoleType", currentPlan.roleType.ifBlank { turnState.get("lastSpeakerRoleType")?.asString.orEmpty() })
+    turnState.addProperty("lastSpeaker", currentPlan.role.ifBlank { turnState.get("lastSpeaker")?.asString.orEmpty() })
+    sessionDetail = detail.copy(state = root)
+    val latest = messages.lastOrNull()
+    if (latest != null && !isRuntimeRetryMessage(latest) && !isStreamingRuntimeMessage(latest)) {
+      updateMessageById(latest.id) { current ->
+        current.copy(
+          meta = buildRuntimeStreamMeta(
+            current = current.meta,
+            status = "waiting_player",
+            streaming = false,
+            nextRole = displayName,
+            nextRoleType = "player",
+          ),
+        )
+      }
+    }
+    syncRuntimeChatTraceLog()
+  }
+
   private fun restoreDebugPlayerTurnAfterDeletion() {
     val root = debugRuntimeState?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() ?: JsonObject()
     val turnState = (root.getAsJsonObject("turnState") ?: JsonObject()).also { root.add("turnState", it) }
@@ -3358,6 +3389,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       chapter = existingDetail?.chapter,
       messages = existingDetail?.messages ?: messages.toList(),
     )
+    applyAwaitUserTurnFromPlan(result.plan)
     syncRuntimeChatTraceLog()
     sessionRuntimeStage = ""
   }
@@ -5159,14 +5191,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         logStoryFlow(
           "continueSession orchestration sessionId=$currentSessionId planRole=${orchestration.plan?.role.orEmpty()} nextRole=${orchestration.plan?.nextRole.orEmpty()} status=${orchestration.status}",
         )
-        if (orchestration.plan != null) {
+        val plan = orchestration.plan
+        val shouldYieldToUser = plan?.awaitUser == true || plan?.nextRoleType?.trim()?.equals("player", ignoreCase = true) == true
+        val shouldStreamPlan = plan != null && !shouldYieldToUser && plan.role.isNotBlank() && !plan.roleType.trim().equals("player", ignoreCase = true)
+        if (shouldStreamPlan) {
           streamSessionPlan(orchestration, history)
         }
         val afterCount = conversationMessages().size
         val latest = conversationMessages().lastOrNull()
         val latestStatus = latest?.let(::runtimeMessageStatus).orEmpty()
         val canPlayerSpeakNow = playCanPlayerSpeak()
-        if (afterCount > beforeCount || canPlayerSpeakNow || latestStatus == "waiting_player" || orchestration.plan == null) {
+        if (afterCount > beforeCount || canPlayerSpeakNow || latestStatus == "waiting_player" || plan == null || shouldYieldToUser) {
           advanced = true
           break
         }
