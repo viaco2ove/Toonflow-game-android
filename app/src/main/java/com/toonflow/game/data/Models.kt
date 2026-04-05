@@ -142,11 +142,13 @@ data class MessageItem(
   @SerializedName("content") val content: String = "",
   @SerializedName("createTime") val createTime: Long = 0L,
   @SerializedName("meta") val meta: JsonElement? = null,
+  @SerializedName("revisitData") val revisitData: JsonElement? = null,
 )
 
 data class RuntimeEventDigestItem(
   @SerializedName("eventIndex") val eventIndex: Int = 0,
   @SerializedName("eventKind") val eventKind: String = "",
+  @SerializedName("eventFlowType") val eventFlowType: String = "",
   @SerializedName("eventSummary") val eventSummary: String = "",
   @SerializedName("eventFacts") val eventFacts: JsonElement? = null,
   @SerializedName("eventStatus") val eventStatus: String = "",
@@ -231,10 +233,20 @@ data class DebugStepResult(
   @SerializedName("chapterTitle") val chapterTitle: String = "",
   @SerializedName("state") val state: JsonElement? = null,
   @SerializedName("endDialog") val endDialog: String? = null,
+  @SerializedName("endDialogDetail") val endDialogDetail: String? = null,
   @SerializedName("messages") val messages: List<MessageItem> = emptyList(),
   @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
   @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
   @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
+)
+
+data class OrchestratorRuntimeMeta(
+  @SerializedName("modelKey") val modelKey: String = "",
+  @SerializedName("manufacturer") val manufacturer: String = "",
+  @SerializedName("model") val model: String = "",
+  @SerializedName("reasoningEffort") val reasoningEffort: String = "",
+  @SerializedName("payloadMode") val payloadMode: String = "compact",
+  @SerializedName("payloadModeSource") val payloadModeSource: String = "inferred",
 )
 
 data class DebugNarrativePlan(
@@ -245,9 +257,11 @@ data class DebugNarrativePlan(
   @SerializedName("nextRole") val nextRole: String = "",
   @SerializedName("nextRoleType") val nextRoleType: String = "",
   @SerializedName("source") val source: String = "ai",
+  @SerializedName("planSource") val planSource: String = "",
   @SerializedName("triggerMemoryAgent") val triggerMemoryAgent: Boolean = false,
   @SerializedName("eventType") val eventType: String = "",
   @SerializedName("presetContent") val presetContent: String? = null,
+  @SerializedName("orchestratorRuntime") val orchestratorRuntime: OrchestratorRuntimeMeta? = null,
 )
 
 data class DebugOrchestrationResult(
@@ -255,6 +269,7 @@ data class DebugOrchestrationResult(
   @SerializedName("chapterTitle") val chapterTitle: String = "",
   @SerializedName("state") val state: JsonElement? = null,
   @SerializedName("endDialog") val endDialog: String? = null,
+  @SerializedName("endDialogDetail") val endDialogDetail: String? = null,
   @SerializedName("plan") val plan: DebugNarrativePlan? = null,
   @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
   @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
@@ -279,6 +294,7 @@ data class AiTokenUsageLogItem(
   @SerializedName("amount") val amount: Double = 0.0,
   @SerializedName("currency") val currency: String = "CNY",
   @SerializedName("remark") val remark: String = "",
+  @SerializedName("meta") val meta: JsonElement? = null,
 )
 
 data class AiTokenUsageStatsItem(
@@ -350,6 +366,7 @@ data class ModelConfigItem(
   @SerializedName("outputPricePer1M") val outputPricePer1M: Double = 0.0,
   @SerializedName("cacheReadPricePer1M") val cacheReadPricePer1M: Double = 0.0,
   @SerializedName("currency") val currency: String = "CNY",
+  @SerializedName("reasoningEffort") val reasoningEffort: String = "minimal",
   @SerializedName("createTime") val createTime: Long = 0L,
 )
 
@@ -369,6 +386,11 @@ data class AiModelMapItem(
   @SerializedName("configId") val configId: Long? = null,
   @SerializedName("model") val model: String? = null,
   @SerializedName("manufacturer") val manufacturer: String? = null,
+  @SerializedName("payloadMode") val payloadMode: String? = null,
+)
+
+data class StoryRuntimeConfig(
+  @SerializedName("storyOrchestratorPayloadMode") val storyOrchestratorPayloadMode: String = "compact",
 )
 
 data class AiModelOptionItem(

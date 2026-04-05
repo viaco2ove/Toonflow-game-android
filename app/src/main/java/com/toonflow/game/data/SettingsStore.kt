@@ -35,6 +35,21 @@ class SettingsStore(context: Context) {
     prefs.edit().remove("toonflow.chat").apply()
   }
 
+  fun getDebugRevisitSnapshotsJson(conversationId: String): String {
+    if (conversationId.isBlank()) return "[]"
+    return prefs.getString("debug_revisit_$conversationId", "[]") ?: "[]"
+  }
+
+  fun setDebugRevisitSnapshotsJson(conversationId: String, value: String) {
+    if (conversationId.isBlank()) return
+    prefs.edit().putString("debug_revisit_$conversationId", value).apply()
+  }
+
+  fun clearDebugRevisitSnapshots(conversationId: String) {
+    if (conversationId.isBlank()) return
+    prefs.edit().remove("debug_revisit_$conversationId").apply()
+  }
+
   fun getAvatarPath(userId: Long): String {
     if (userId <= 0) return ""
     return prefs.getString("avatar_path_user_$userId", "") ?: ""

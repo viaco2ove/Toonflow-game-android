@@ -701,6 +701,8 @@ private fun storyPromptUiMeta(code: String): StoryPromptUiMeta {
   return when (code) {
     "story-main" -> StoryPromptUiMeta("story_main", "src/agents/story/main.ts")
     "story-orchestrator" -> StoryPromptUiMeta("story_orchestrator", "src/agents/story/orchestrator/index.ts")
+    "story-orchestrator-compact" -> StoryPromptUiMeta("story_orchestrator_compact", "src/agents/story/orchestrator/index.ts")
+    "story-orchestrator-advanced" -> StoryPromptUiMeta("story_orchestrator_advanced", "src/agents/story/orchestrator/index.ts")
     "story-speaker" -> StoryPromptUiMeta("story_speaker", "src/agents/story/speaker/index.ts")
     "story-memory" -> StoryPromptUiMeta("memory_manager", "src/agents/story/memory_manager/index.ts")
     "story-chapter" -> StoryPromptUiMeta("chapter_judge", "src/agents/story/chapter_judge/index.ts")
@@ -1205,6 +1207,7 @@ private fun CreateScene(
   var npcAvatarDraftKey by remember { mutableStateOf("draft_npc_${System.currentTimeMillis()}") }
   var editingNpcIndex by remember { mutableIntStateOf(-1) }
   var showAdvanced by remember { mutableStateOf(false) }
+  var showPhaseGraph by remember { mutableStateOf(false) }
   var showAvatarActionDialog by remember { mutableStateOf(false) }
   var showNpcAvatarActionDialog by remember { mutableStateOf(false) }
   var showUserAvatarPreviewDialog by remember { mutableStateOf(false) }
@@ -2093,128 +2096,139 @@ private fun CreateScene(
 
     Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
       Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Phase Graph（高级）", fontWeight = FontWeight.Bold, color = Color(0xFF232F43))
-        Text(
-          "可直接填写章节运行模板 JSON。为空时由系统根据章节正文和指令自动推断。",
-          style = MaterialTheme.typography.bodySmall,
-          color = Color(0xFF7B8EA8),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-          Button(
-            onClick = { scope.launch { vm.generateChapterRuntimeOutlineDraft() } },
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEEF4FF), contentColor = Color(0xFF3F5F8C)),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-          ) {
-            Text("生成草稿")
-          }
-          OutlinedButton(
-            onClick = { vm.formatChapterRuntimeOutlineDraft() },
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF4D6285)),
-            border = BorderStroke(1.dp, Color(0xFFD8E3F3)),
-            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-          ) {
-            Text("格式化 JSON")
-          }
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .clickable { showPhaseGraph = !showPhaseGraph },
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text("Phase Graph", fontWeight = FontWeight.Bold, color = Color(0xFF232F43))
+          Text(if (showPhaseGraph) "收起" else "展开", color = Color(0xFF6B5CA2), style = MaterialTheme.typography.labelSmall)
         }
-        ScrollableOutlinedTextField(
-          value = vm.chapterRuntimeOutlineText,
-          onValueChange = { vm.chapterRuntimeOutlineText = it },
-          modifier = Modifier.fillMaxWidth(),
-          minLines = 6,
-          placeholder = { Text("""例如：{"phases":[{"id":"phase_1_opening","label":"开场","nextPhaseIds":["phase_2_user"]}]}""") },
-        )
-        if (runtimePhasePreview.isNotEmpty()) {
-          Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("阶段关系图", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
-            runtimePhasePreview.forEach { phase ->
-              Column(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .clip(RoundedCornerShape(10.dp))
-                  .background(Color(0xFFF8FBFF))
-                  .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
-                  .padding(10.dp),
-              ) {
-                Text(phase.flowSummary, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
-                Text("默认流向：${phase.defaultNextPhaseId.ifBlank { "顺序回退" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-              }
-            }
-            Text("阶段详情", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
-            runtimePhasePreview.forEach { phase ->
-              Column(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .clip(RoundedCornerShape(10.dp))
-                  .background(Color(0xFFF8FBFF))
-                  .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
-                  .padding(10.dp),
-              ) {
-                Text(phase.label, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
-                Text("ID：${phase.id}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-                Text("阶段类型：${phase.kind.ifBlank { "scene" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-                Text("允许角色：${phase.allowedSpeakers.ifBlank { "未限制" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-                Text("下一阶段：${phase.nextPhaseIds.ifBlank { "顺序回退" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-                Text("默认下一阶段：${phase.defaultNextPhaseId.ifBlank { "顺序回退" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-                Text("阶段前置：${phase.requiredEventIds.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-                Text("完成事件：${phase.completionEventIds.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-                Text("推进信号：${phase.advanceSignals.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-                Text("关联结果：${phase.relatedFixedEventIds.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-              }
-            }
-          }
-        }
-        if (runtimeOutlinePreview?.userNodes?.isNotEmpty() == true) {
-          Text("用户节点", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
-          Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            runtimeOutlinePreview.userNodes.forEach { node ->
-              Column(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .clip(RoundedCornerShape(10.dp))
-                  .background(Color(0xFFF8FBFF))
-                  .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
-                  .padding(10.dp),
-              ) {
-                Text(node.goal, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
-                Text("ID：${node.id}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-                Text("提示角色：${node.promptRole.ifBlank { "系统" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-              }
-            }
-          }
-        }
-        if (runtimeOutlinePreview?.fixedEvents?.isNotEmpty() == true) {
-          Text("固定事件", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
-          Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            runtimeOutlinePreview.fixedEvents.forEach { event ->
-              Column(
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .clip(RoundedCornerShape(10.dp))
-                  .background(Color(0xFFF8FBFF))
-                  .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
-                  .padding(10.dp),
-              ) {
-                Text(event.label, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
-                Text("ID：${event.id}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-              }
-            }
-          }
-        }
-        runtimeOutlinePreview?.endingRules?.let { rules ->
-          if (rules.success.isNotBlank() || rules.failure.isNotBlank() || rules.nextChapterId.isNotBlank()) {
-            Text("章节结算", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
-            Column(
-              modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFFF8FBFF))
-                .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
-                .padding(10.dp),
-              verticalArrangement = Arrangement.spacedBy(4.dp),
+        if (showPhaseGraph) {
+          Text(
+            "可直接填写章节运行模板 JSON。为空时由系统根据章节正文和指令自动推断。",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF7B8EA8),
+          )
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+              onClick = { scope.launch { vm.generateChapterRuntimeOutlineDraft() } },
+              colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEEF4FF), contentColor = Color(0xFF3F5F8C)),
+              contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
             ) {
-              Text("成功条件：${rules.success.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-              Text("失败条件：${rules.failure.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
-              Text("下一章节：${rules.nextChapterId.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+              Text("生成草稿")
+            }
+            OutlinedButton(
+              onClick = { vm.formatChapterRuntimeOutlineDraft() },
+              colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF4D6285)),
+              border = BorderStroke(1.dp, Color(0xFFD8E3F3)),
+              contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+            ) {
+              Text("格式化 JSON")
+            }
+          }
+          ScrollableOutlinedTextField(
+            value = vm.chapterRuntimeOutlineText,
+            onValueChange = { vm.chapterRuntimeOutlineText = it },
+            modifier = Modifier.fillMaxWidth(),
+            minLines = 6,
+            placeholder = { Text("""例如：{"phases":[{"id":"phase_1_opening","label":"开场","nextPhaseIds":["phase_2_user"]}]}""") },
+          )
+          if (runtimePhasePreview.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+              Text("阶段关系图", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
+              runtimePhasePreview.forEach { phase ->
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFFF8FBFF))
+                    .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+                    .padding(10.dp),
+                ) {
+                  Text(phase.flowSummary, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
+                  Text("默认流向：${phase.defaultNextPhaseId.ifBlank { "顺序回退" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                }
+              }
+              Text("阶段详情", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
+              runtimePhasePreview.forEach { phase ->
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFFF8FBFF))
+                    .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+                    .padding(10.dp),
+                ) {
+                  Text(phase.label, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
+                  Text("ID：${phase.id}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                  Text("阶段类型：${phase.kind.ifBlank { "scene" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                  Text("允许角色：${phase.allowedSpeakers.ifBlank { "未限制" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                  Text("下一阶段：${phase.nextPhaseIds.ifBlank { "顺序回退" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                  Text("默认下一阶段：${phase.defaultNextPhaseId.ifBlank { "顺序回退" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                  Text("阶段前置：${phase.requiredEventIds.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                  Text("完成事件：${phase.completionEventIds.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                  Text("推进信号：${phase.advanceSignals.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                  Text("关联结果：${phase.relatedFixedEventIds.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                }
+              }
+            }
+          }
+          if (runtimeOutlinePreview?.userNodes?.isNotEmpty() == true) {
+            Text("用户节点", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+              runtimeOutlinePreview.userNodes.forEach { node ->
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFFF8FBFF))
+                    .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+                    .padding(10.dp),
+                ) {
+                  Text(node.goal, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
+                  Text("ID：${node.id}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                  Text("提示角色：${node.promptRole.ifBlank { "系统" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                }
+              }
+            }
+          }
+          if (runtimeOutlinePreview?.fixedEvents?.isNotEmpty() == true) {
+            Text("固定事件", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+              runtimeOutlinePreview.fixedEvents.forEach { event ->
+                Column(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color(0xFFF8FBFF))
+                    .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+                    .padding(10.dp),
+                ) {
+                  Text(event.label, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
+                  Text("ID：${event.id}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                }
+              }
+            }
+          }
+          runtimeOutlinePreview?.endingRules?.let { rules ->
+            if (rules.success.isNotBlank() || rules.failure.isNotBlank() || rules.nextChapterId.isNotBlank()) {
+              Text("章节结算", color = Color(0xFF232F43), fontWeight = FontWeight.Bold)
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .clip(RoundedCornerShape(10.dp))
+                  .background(Color(0xFFF8FBFF))
+                  .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+                  .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+              ) {
+                Text("成功条件：${rules.success.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                Text("失败条件：${rules.failure.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+                Text("下一章节：${rules.nextChapterId.ifBlank { "无" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6C7F9D))
+              }
             }
           }
         }
@@ -3544,6 +3558,7 @@ private fun PlayScene(
   val statePreview = vm.playStatePreview()
   val chapterProgressDebug = vm.playChapterProgressDebug()
   val chapterEventProgressText = vm.playCurrentEventProgressText()
+  val debugOrchestratorRuntimeText = vm.playDebugOrchestratorRuntimeText()
   val chapterEventItems = vm.playVisibleChapterEvents()
   val playTitle = vm.playWorldName()
   val chapterTitle = vm.playChapterTitle()
@@ -3846,6 +3861,7 @@ private fun PlayScene(
               chapterContent = currentChapter?.content?.ifBlank { "暂无章节内容" } ?: "暂无章节内容",
               chapterCondition = vm.playChapterConditionText(),
               currentEventProgressText = chapterEventProgressText,
+              debugOrchestratorRuntimeText = debugOrchestratorRuntimeText,
               chapterEventItems = chapterEventItems,
               roles = vm.playStoryRoles(),
               allowRoleView = vm.playAllowRoleView(),
@@ -3866,7 +3882,7 @@ private fun PlayScene(
             val screenWidthPx = with(density) { configuration.screenWidthDp.dp.roundToPx() }
             val screenHeightPx = with(density) { configuration.screenHeightDp.dp.roundToPx() }
             val menuWidthPx = with(density) { 248.dp.roundToPx() }
-            val menuHeightPx = with(density) { 332.dp.roundToPx() }
+            val menuHeightPx = with(density) { 376.dp.roundToPx() }
             val menuMarginPx = with(density) { 12.dp.roundToPx() }
             val menuGapPx = with(density) { 12.dp.roundToPx() }
             val menuMaxX = (screenWidthPx - menuWidthPx - menuMarginPx).coerceAtLeast(menuMarginPx)
@@ -3908,6 +3924,19 @@ private fun PlayScene(
                     scope.launch { playMessageVoice(dialogMessage, manual = true) }
                   }
                   closeDialogMenu()
+                },
+                onRevisit = if (vm.canRevisitDebugMessage(dialogMessage)) {
+                  {
+                    vm.revisitDebugMessage(dialogMessage.id)
+                    closeDialogMenu()
+                  }
+                } else if (vm.canRevisitSessionMessage(dialogMessage)) {
+                  {
+                    vm.revisitSessionMessage(dialogMessage.id)
+                    closeDialogMenu()
+                  }
+                } else {
+                  null
                 },
                 onLike = {
                   vm.setReactionForMessage(dialogMessage, "like")
@@ -4182,13 +4211,15 @@ private fun PlayScene(
   if (vm.debugEndDialog != null) {
     AlertDialog(
       onDismissRequest = { vm.closeDebugDialog(false) },
-      title = { Text("章节调试结束") },
+      title = { Text(if (vm.debugEndDialog == "已失败") "章节失败" else "章节调试结束") },
       text = {
         Text(
-          when (vm.debugEndDialog) {
-            "已完结" -> "已完结\n已没有下一个章节。可返回编辑继续补章节。"
-            "进入自由剧情" -> "进入自由剧情\n当前章节已完成。继续查看后将进入自由剧情，编排师会继续推进故事。"
-            else -> "已失败\n当前调试已结束。"
+          vm.debugEndDialogDetail.ifBlank {
+            when (vm.debugEndDialog) {
+              "已完结" -> "已完结\n已没有下一个章节。可返回编辑继续补章节。"
+              "进入自由剧情" -> "进入自由剧情\n当前章节已完成。继续查看后将进入自由剧情，编排师会继续推进故事。"
+              else -> "已失败\n当前调试已结束。"
+            }
           },
         )
       },
@@ -4814,6 +4845,7 @@ private fun DialogMenu(
   reaction: String,
   onCopy: () -> Unit,
   onReplay: () -> Unit,
+  onRevisit: (() -> Unit)?,
   onLike: () -> Unit,
   onDislike: () -> Unit,
   onRewrite: () -> Unit,
@@ -4843,6 +4875,9 @@ private fun DialogMenu(
       Divider(color = Color(0x334B5B72))
       DialogMenuAction(icon = Icons.Outlined.ContentCopy, text = "复制", onClick = onCopy)
       DialogMenuAction(icon = Icons.Outlined.Replay, text = "重听", onClick = onReplay)
+      if (onRevisit != null) {
+        DialogMenuAction(icon = Icons.Outlined.History, text = "回溯到这句", onClick = onRevisit)
+      }
       DialogMenuAction(
         icon = Icons.Outlined.ThumbUp,
         text = if (reaction == "like") "取消点赞" else "点赞",
@@ -4916,6 +4951,7 @@ private fun StorySettingPanel(
   chapterContent: String,
   chapterCondition: String,
   currentEventProgressText: String,
+  debugOrchestratorRuntimeText: String,
   chapterEventItems: List<MainViewModel.RuntimeChapterEventItem>,
   roles: List<com.toonflow.game.data.StoryRole>,
   allowRoleView: Boolean,
@@ -5077,11 +5113,18 @@ private fun StorySettingPanel(
               color = Color(0xFFDCEEFF),
               style = MaterialTheme.typography.bodySmall,
             )
+            if (debugOrchestratorRuntimeText.isNotBlank()) {
+              Text(
+                text = debugOrchestratorRuntimeText,
+                color = Color(0xFFBFD3F1),
+                style = MaterialTheme.typography.labelSmall,
+              )
+            }
             if (chapterEventItems.isEmpty()) {
               Text("暂无章节事件", color = Color(0xFFBFD3F1), style = MaterialTheme.typography.bodySmall)
             } else {
               chapterEventItems.forEach { item ->
-                ChapterEventDigestCard(item = item)
+                ChapterEventDigestCard(item = item, eventFlowLabel = chapterEventFlowLabel(item))
               }
             }
           }
@@ -5117,7 +5160,7 @@ private fun StorySettingPanel(
 }
 
 @Composable
-private fun ChapterEventDigestCard(item: MainViewModel.RuntimeChapterEventItem) {
+private fun ChapterEventDigestCard(item: MainViewModel.RuntimeChapterEventItem, eventFlowLabel: String) {
   Card(
     colors = CardDefaults.cardColors(containerColor = Color(0x142B3E5A)),
     shape = RoundedCornerShape(10.dp),
@@ -5135,7 +5178,7 @@ private fun ChapterEventDigestCard(item: MainViewModel.RuntimeChapterEventItem) 
           style = MaterialTheme.typography.bodySmall,
         )
         Text(
-          text = "${runtimeEventKindLabel(item.eventKind)} · ${runtimeEventStatusLabel(item.eventStatus)}",
+          text = "$eventFlowLabel · ${runtimeEventKindLabel(item.eventKind)} · ${runtimeEventStatusLabel(item.eventStatus)}",
           color = Color(0xFFBFD3F1),
           style = MaterialTheme.typography.labelSmall,
         )
@@ -5154,6 +5197,22 @@ private fun ChapterEventDigestCard(item: MainViewModel.RuntimeChapterEventItem) 
       item.memoryFacts.takeIf { it.isNotBlank() }?.let { memoryFacts ->
         Text("记忆事实：$memoryFacts", color = Color(0xFFBFD3F1), style = MaterialTheme.typography.labelSmall)
       }
+    }
+  }
+}
+
+private fun chapterEventFlowLabel(item: MainViewModel.RuntimeChapterEventItem): String {
+  return when (item.eventFlowType.trim().lowercase()) {
+    "introduction" -> "开场白"
+    "chapter_ending_check" -> "结束条件检查"
+    "free_runtime" -> "自由剧情"
+    "chapter_content" -> "章节内容"
+    else -> when (item.eventKind.trim().lowercase()) {
+      "opening" -> "开场白"
+      "ending" -> "结束条件检查"
+      "fixed" -> "固定条件"
+      "scene", "user" -> "章节内容"
+      else -> "章节事件"
     }
   }
 }
@@ -7795,6 +7854,20 @@ private fun SettingsScene(vm: MainViewModel) {
               },
               onManage = { openModelManager(slot) },
             )
+            if (slot.key == "storyOrchestratorModel") {
+              Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("运行模式", style = MaterialTheme.typography.bodySmall, color = Color(0xFF61738E))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                  vm.storyOrchestratorPayloadOptions.forEach { item ->
+                    MiniBtn(
+                      text = item.label,
+                      primary = vm.storyOrchestratorPayloadMode() == item.value,
+                      onClick = { vm.saveStoryOrchestratorPayloadMode(item.value) },
+                    )
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -7804,6 +7877,11 @@ private fun SettingsScene(vm: MainViewModel) {
           vm.storyPrompts.forEach { prompt ->
             val isCustom = prompt.customValue?.isNotBlank() == true
             val meta = storyPromptUiMeta(prompt.code)
+            val isOrchestratorPrompt = prompt.code == "story-orchestrator-compact" || prompt.code == "story-orchestrator-advanced"
+            val isCurrentOrchestratorPrompt = when (vm.storyOrchestratorPayloadMode()) {
+              "advanced" -> prompt.code == "story-orchestrator-advanced"
+              else -> prompt.code == "story-orchestrator-compact"
+            }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
               Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -7825,6 +7903,17 @@ private fun SettingsScene(vm: MainViewModel) {
                       .background(if (isCustom) Color(0xFFFFF2D8) else Color(0xFFE4F6EA))
                       .padding(horizontal = 10.dp, vertical = 6.dp),
                   )
+                  if (isOrchestratorPrompt) {
+                    Text(
+                      if (isCurrentOrchestratorPrompt) "当前生效" else "未生效",
+                      color = if (isCurrentOrchestratorPrompt) Color(0xFFBE7A16) else Color(0xFF61738E),
+                      style = MaterialTheme.typography.bodySmall,
+                      modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (isCurrentOrchestratorPrompt) Color(0xFFFFF2D8) else Color(0xFFE9EEF6))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                  }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                   MiniBtn(text = "重置提示词", onClick = {
@@ -7851,7 +7940,11 @@ private fun SettingsScene(vm: MainViewModel) {
                 minLines = 5,
               )
               Text(
-                if (isCustom) "*当前使用自定义提示词，点击重置将恢复默认值" else "*当前使用默认提示词，编辑后将保存为自定义值",
+                when {
+                  isOrchestratorPrompt && !isCurrentOrchestratorPrompt -> "*当前未生效；切换编排师运行模式后才会使用这条提示词"
+                  isCustom -> "*当前使用自定义提示词，点击重置将恢复默认值"
+                  else -> "*当前使用默认值，编辑后将保存为自定义值"
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF7889A1),
               )
@@ -8058,9 +8151,18 @@ private fun SettingsScene(vm: MainViewModel) {
                 Text("业务类型：${row.type.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("模型：${row.model.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("渠道：${row.channel.ifBlank { row.manufacturer.ifBlank { "-" } }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
-                Text("token量：${row.totalTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("输入 tokens：${row.inputTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("输出 tokens：${row.outputTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("推理 tokens：${row.reasoningTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("缓存读取 tokens：${row.cacheReadTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("总 tokens：${row.totalTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("金额：${formatAiTokenUsageAmount(row.amount, row.currency)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("备注：${row.remark.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                val metaText = row.meta?.toString().orEmpty()
+                if (metaText.isNotBlank() && metaText != "null") {
+                  Text("调用审计：", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                  Text(metaText, style = MaterialTheme.typography.bodySmall, color = Color(0xFF5E6F89), maxLines = 12)
+                }
               }
             }
           }
@@ -8081,7 +8183,12 @@ private fun SettingsScene(vm: MainViewModel) {
                 Text("业务类型：${row.type.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("模型：${row.model.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("渠道：${row.channel.ifBlank { row.manufacturer.ifBlank { "-" } }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
-                Text("token量：${row.totalTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("输入 tokens：${row.inputTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("输出 tokens：${row.outputTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("推理 tokens：${row.reasoningTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("缓存读取 tokens：${row.cacheReadTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("总 tokens：${row.totalTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
+                Text("调用次数：${row.callCount}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("金额：${formatAiTokenUsageAmount(row.amount, row.currency)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
                 Text("备注：${row.remark.ifBlank { "-" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF31445E))
               }
@@ -8355,6 +8462,7 @@ private fun SettingsModelManagerDialog(
                   Text("输入单价：${formatPricePer1M(row.inputPricePer1M, row.currency)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6E819B))
                   Text("输出单价：${formatPricePer1M(row.outputPricePer1M, row.currency)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6E819B))
                   Text("缓存单价：${formatPricePer1M(row.cacheReadPricePer1M, row.currency)}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6E819B))
+                  Text("推理强度：${row.reasoningEffort.ifBlank { "minimal" }}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF6E819B))
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                   MiniBtn(
@@ -8441,7 +8549,7 @@ private fun SettingsModelManagerDialog(
       slot = slot,
       initial = editingModel,
       onDismiss = { showEditor = false },
-      onSubmit = { id, manufacturer, modelType, model, baseUrl, apiKey, inputPricePer1M, outputPricePer1M, cacheReadPricePer1M, currency ->
+      onSubmit = { id, manufacturer, modelType, model, baseUrl, apiKey, inputPricePer1M, outputPricePer1M, cacheReadPricePer1M, currency, reasoningEffort ->
         scope.launch {
           runCatching {
             if (id == null) {
@@ -8456,6 +8564,7 @@ private fun SettingsModelManagerDialog(
                 outputPricePer1M,
                 cacheReadPricePer1M,
                 currency,
+                reasoningEffort,
               )
             } else {
               vm.updateManagedModelConfig(
@@ -8470,6 +8579,7 @@ private fun SettingsModelManagerDialog(
                 outputPricePer1M,
                 cacheReadPricePer1M,
                 currency,
+                reasoningEffort,
               )
             }
           }.onSuccess {
@@ -8575,7 +8685,7 @@ private fun SettingsModelEditorDialog(
   slot: MainViewModel.SettingsModelSlot,
   initial: com.toonflow.game.data.ModelConfigItem?,
   onDismiss: () -> Unit,
-  onSubmit: (Long?, String, String, String, String, String, Double, Double, Double, String) -> Unit,
+  onSubmit: (Long?, String, String, String, String, String, Double, Double, Double, String, String) -> Unit,
 ) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
@@ -8609,9 +8719,11 @@ private fun SettingsModelEditorDialog(
   var outputPricePer1M by remember(initial?.id) { mutableStateOf(if (initial == null || initial.outputPricePer1M <= 0.0) "" else BigDecimal.valueOf(initial.outputPricePer1M).stripTrailingZeros().toPlainString()) }
   var cacheReadPricePer1M by remember(initial?.id) { mutableStateOf(if (initial == null || initial.cacheReadPricePer1M <= 0.0) "" else BigDecimal.valueOf(initial.cacheReadPricePer1M).stripTrailingZeros().toPlainString()) }
   var currency by remember(initial?.id) { mutableStateOf(initial?.currency?.ifBlank { "CNY" } ?: "CNY") }
+  var reasoningEffort by remember(initial?.id) { mutableStateOf(initial?.reasoningEffort?.ifBlank { "minimal" } ?: "minimal") }
   var autodlPresetExpanded by remember { mutableStateOf(false) }
   var manufacturerExpanded by remember { mutableStateOf(false) }
   var modelTypeExpanded by remember { mutableStateOf(false) }
+  var reasoningExpanded by remember { mutableStateOf(false) }
   var previousManufacturer by remember(initial?.id, slot.key) { mutableStateOf(normalizedInitialManufacturer) }
   var previousModel by remember(initial?.id, slot.key) { mutableStateOf(normalizedInitialModel) }
   var previousBaseUrl by remember(initial?.id, slot.key) { mutableStateOf(initial?.baseUrl.orEmpty()) }
@@ -8888,8 +9000,27 @@ private fun SettingsModelEditorDialog(
             modifier = Modifier.fillMaxWidth(),
             placeholder = { Text("默认 CNY") },
           )
+          Text("推理强度", fontWeight = FontWeight.Bold, color = Color(0xFF25324A))
+          Box {
+            MiniBtn(
+              text = reasoningEffort,
+              full = true,
+              onClick = { reasoningExpanded = true },
+            )
+            DropdownMenu(expanded = reasoningExpanded, onDismissRequest = { reasoningExpanded = false }) {
+              vm.reasoningEffortOptions.forEach { item ->
+                DropdownMenuItem(
+                  text = { Text(item.label) },
+                  onClick = {
+                    reasoningEffort = item.value
+                    reasoningExpanded = false
+                  },
+                )
+              }
+            }
+          }
           Text(
-            "单价单位统一按每 100 万 token 计算，金额日志会按这里的配置实时换算。",
+            "单价单位统一按每 100 万 token 计算，金额日志会按这里的配置实时换算。推理强度默认 minimal，仅文本模型生效。",
             style = MaterialTheme.typography.bodySmall,
             color = Color(0xFF6A7F9F),
           )
@@ -8926,6 +9057,7 @@ private fun SettingsModelEditorDialog(
               if (slot.configType == "text") normalizeTokenPriceValue(outputPricePer1M) else 0.0,
               if (slot.configType == "text") normalizeTokenPriceValue(cacheReadPricePer1M) else 0.0,
               if (slot.configType == "text") currency.trim().ifBlank { "CNY" }.uppercase(Locale.ROOT) else "CNY",
+              if (slot.configType == "text") reasoningEffort.trim().ifBlank { "minimal" } else "minimal",
             )
           }.onFailure {
             vm.notice = "本地 BiRefNet 安装失败: ${it.message ?: "未知错误"}"

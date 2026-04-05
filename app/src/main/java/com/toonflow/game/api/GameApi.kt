@@ -22,6 +22,7 @@ import com.toonflow.game.data.SessionDetail
 import com.toonflow.game.data.SessionItem
 import com.toonflow.game.data.SessionNarrativeResult
 import com.toonflow.game.data.SessionOrchestrationResult
+import com.toonflow.game.data.StoryRuntimeConfig
 import com.toonflow.game.data.UploadedVoiceAudioResult
 import com.toonflow.game.data.VoiceModelConfig
 import com.toonflow.game.data.WorldItem
@@ -99,6 +100,9 @@ interface GameApi {
   @POST("game/deleteMessage")
   suspend fun deleteMessage(@Body payload: JsonObject): ApiEnvelope<JsonElement>
 
+  @POST("game/revisitMessage")
+  suspend fun revisitMessage(@Body payload: JsonObject): ApiEnvelope<JsonElement>
+
   @POST("game/getMessage")
   suspend fun getMessage(@Body payload: JsonObject): ApiEnvelope<List<MessageItem>>
 
@@ -113,6 +117,9 @@ interface GameApi {
 
   @POST("game/debugStep")
   suspend fun debugStep(@Body payload: JsonObject): ApiEnvelope<DebugStepResult>
+
+  @POST("game/introduction")
+  suspend fun introduceDebug(@Body payload: JsonObject): ApiEnvelope<DebugOrchestrationResult>
 
   @POST("game/orchestration")
   suspend fun orchestrateDebug(@Body payload: JsonObject): ApiEnvelope<DebugOrchestrationResult>
@@ -149,6 +156,9 @@ interface GameApi {
 
   @POST("setting/configurationModel")
   suspend fun bindModelConfig(@Body payload: JsonObject): ApiEnvelope<String>
+
+  @POST("setting/saveStoryRuntimeConfig")
+  suspend fun saveStoryRuntimeConfig(@Body payload: JsonObject): ApiEnvelope<StoryRuntimeConfig>
 
   @POST("setting/localAvatarMatting/status")
   suspend fun getLocalAvatarMattingStatus(@Body payload: JsonObject): ApiEnvelope<LocalAvatarMattingStatus>

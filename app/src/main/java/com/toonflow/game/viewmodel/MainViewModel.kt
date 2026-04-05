@@ -22,6 +22,7 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
+import com.google.gson.reflect.TypeToken
 import com.toonflow.game.data.ChapterItem
 import com.toonflow.game.data.ChapterExtra
 import com.toonflow.game.data.GameRepository
@@ -43,6 +44,7 @@ import com.toonflow.game.data.AiModelOptionItem
 import com.toonflow.game.data.AiTokenUsageLogItem
 import com.toonflow.game.data.AiTokenUsageStatsItem
 import com.toonflow.game.data.DebugNarrativePlan
+import com.toonflow.game.data.DebugOrchestrationResult
 import com.toonflow.game.data.DebugStepResult
 import com.toonflow.game.data.VoiceBindingDraft
 import com.toonflow.game.data.VoiceModelConfig
@@ -75,6 +77,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val key: String,
     val label: String,
     val configType: String,
+  )
+
+  data class StoryRuntimeOption(
+    val label: String,
+    val value: String,
   )
 
   data class SettingsModelTestResult(
@@ -131,6 +138,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   data class RuntimeChapterEventItem(
     val eventIndex: Int,
     val eventKind: String,
+    val eventFlowType: String,
     val eventSummary: String,
     val eventStatus: String,
     val eventFacts: String,
@@ -182,6 +190,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val age: Int? = null,
   )
 
+  private data class DebugRevisitSnapshot(
+    val conversationId: String,
+    val messageId: Long,
+    val chapterId: Long?,
+    val chapterTitle: String,
+    val endDialog: String?,
+    val endDialogDetail: String,
+    val capturedAt: Long,
+    val state: JsonElement?,
+    val messages: List<MessageItem>,
+  )
+
   private enum class SaveWorldStatusMode {
     PRESERVE,
     DRAFT,
@@ -200,9 +220,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     SettingsModelSlot("storyVoiceModel", "语音生成", "voice"),
     SettingsModelSlot("storyAsrModel", "语音识别", "voice"),
   )
+  val storyOrchestratorPayloadOptions = listOf(
+    StoryRuntimeOption("精简版", "compact"),
+    StoryRuntimeOption("高级版", "advanced"),
+  )
+  val reasoningEffortOptions = listOf(
+    StoryRuntimeOption("minimal", "minimal"),
+    StoryRuntimeOption("low", "low"),
+    StoryRuntimeOption("medium", "medium"),
+    StoryRuntimeOption("high", "high"),
+  )
   val storyPromptCodes = listOf(
     "story-main",
-    "story-orchestrator",
+    "story-orchestrator-compact",
+    "story-orchestrator-advanced",
     "story-speaker",
     "story-memory",
     "story-chapter",
@@ -331,12 +362,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var debugChapterId by mutableStateOf<Long?>(null)
   var debugChapterTitle by mutableStateOf("")
   var debugRuntimeState by mutableStateOf<JsonElement?>(null)
+  var debugLatestPlan by mutableStateOf<DebugNarrativePlan?>(null)
   var debugStatePreview by mutableStateOf("{}")
   var debugEndDialog by mutableStateOf<String?>(null)
+  var debugEndDialogDetail by mutableStateOf("")
   var debugLoading by mutableStateOf(false)
   var debugLoadingStage by mutableStateOf("")
+  private val debugRevisitSnapshots = mutableStateListOf<DebugRevisitSnapshot>()
   private var debugChapterSequence: List<ChapterItem> = emptyList()
   private var debugMessageSeed: Long = 1L
+  private var continueDebugNarrativeRunning = false
   private var runtimeRetryTask: (suspend () -> Unit)? = null
   private var runtimeRetryMessageText: String = ""
   private var runtimeRetrying = false
@@ -481,6 +516,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun settingsModelBinding(key: String): AiModelMapItem? {
     return settingsAiModelMap.firstOrNull { it.key == key }
+  }
+
+  fun storyOrchestratorPayloadMode(): String {
+    return if (settingsModelBinding("storyOrchestratorModel")?.payloadMode.equals("advanced", ignoreCase = true)) {
+      "advanced"
+    } else {
+      "compact"
+    }
   }
 
   private fun normalizeSettingsModelHint(value: String?): String {
@@ -895,6 +938,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     bindGameModel(key, recommendation.id)
   }
 
+  fun saveStoryOrchestratorPayloadMode(mode: String) {
+    viewModelScope.launch {
+      runCatching {
+        repository.saveStoryRuntimeConfig(mode)
+        ensureSettingsPanelData(true)
+      }.onSuccess {
+        notice = "编排师运行模式已保存"
+      }.onFailure {
+        notice = "保存编排师运行模式失败: ${it.message ?: "未知错误"}"
+      }
+    }
+  }
+
   suspend fun addManagedModelConfig(
     type: String,
     model: String,
@@ -906,6 +962,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     outputPricePer1M: Double,
     cacheReadPricePer1M: Double,
     currency: String,
+    reasoningEffort: String,
   ) {
     repository.addModelConfig(
       type,
@@ -918,6 +975,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       outputPricePer1M,
       cacheReadPricePer1M,
       currency,
+      reasoningEffort,
     )
     ensureSettingsPanelData(true)
   }
@@ -934,6 +992,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     outputPricePer1M: Double,
     cacheReadPricePer1M: Double,
     currency: String,
+    reasoningEffort: String,
   ) {
     repository.updateModelConfig(
       id,
@@ -947,6 +1006,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       outputPricePer1M,
       cacheReadPricePer1M,
       currency,
+      reasoningEffort,
     )
     ensureSettingsPanelData(true)
   }
@@ -972,7 +1032,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       )
       "text" -> SettingsModelTestResult(
         kind = "text",
-        content = repository.testTextModel(config.model, config.apiKey, config.baseUrl, config.manufacturer),
+        content = repository.testTextModel(
+          config.model,
+          config.apiKey,
+          config.baseUrl,
+          config.manufacturer,
+          config.reasoningEffort,
+        ),
       )
       "image" -> {
         if (isAvatarMattingManufacturer(config.manufacturer)) {
@@ -1647,6 +1713,64 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return "world:${worldId}:chapter:${playRuntimeChapterId() ?: 0L}"
   }
 
+  private fun debugRevisitConversationId(): String {
+    val debugKey = debugRuntimeState
+      ?.takeIf { it.isJsonObject }
+      ?.asJsonObject
+      ?.get("debugRuntimeKey")
+      ?.takeIf { !it.isJsonNull }
+      ?.asString
+      ?.trim()
+      .orEmpty()
+    if (debugKey.isNotBlank()) {
+      return debugKey
+    }
+    return if (debugMode) {
+      "debug:world:${worldId}:chapter:${debugChapterId ?: 0L}"
+    } else {
+      ""
+    }
+  }
+
+  private fun loadDebugRevisitSnapshots() {
+    val conversationId = debugRevisitConversationId()
+    debugRevisitSnapshots.clear()
+    if (conversationId.isBlank()) return
+    val type = object : TypeToken<List<DebugRevisitSnapshot>>() {}.type
+    val restored = runCatching {
+      prettyGson.fromJson<List<DebugRevisitSnapshot>>(
+        settingsStore.getDebugRevisitSnapshotsJson(conversationId),
+        type,
+      ).orEmpty()
+    }.getOrElse { emptyList() }
+    debugRevisitSnapshots.addAll(
+      restored
+        .filter { it.messageId > 0L && it.conversationId.isNotBlank() && it.messages.isNotEmpty() }
+        .sortedBy { it.capturedAt },
+        )
+  }
+
+  private fun persistDebugRevisitSnapshots() {
+    val conversationId = debugRevisitConversationId()
+    if (conversationId.isBlank()) return
+    if (debugRevisitSnapshots.isEmpty()) {
+      settingsStore.clearDebugRevisitSnapshots(conversationId)
+      return
+    }
+    settingsStore.setDebugRevisitSnapshotsJson(
+      conversationId,
+      prettyGson.toJson(debugRevisitSnapshots.takeLast(5)),
+    )
+  }
+
+  private fun clearDebugRevisitSnapshots() {
+    val conversationId = debugRevisitConversationId()
+    debugRevisitSnapshots.clear()
+    if (conversationId.isNotBlank()) {
+      settingsStore.clearDebugRevisitSnapshots(conversationId)
+    }
+  }
+
   private fun syncRuntimeChatTraceLog() {
     val conversationId = runtimeConversationId()
     if (conversationId.isBlank()) return
@@ -1911,6 +2035,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun closeDebugDialog(backToCreate: Boolean) {
     debugEndDialog = null
+    debugEndDialogDetail = ""
     if (backToCreate) {
       leaveDebugMode()
       activeTab = "创建"
@@ -1919,6 +2044,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun leaveDebugMode() {
     clearRuntimeRetryState()
+    clearDebugRevisitSnapshots()
     debugMode = false
     debugLoading = false
     debugLoadingStage = ""
@@ -1930,6 +2056,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     debugRuntimeState = null
     debugStatePreview = "{}"
     debugEndDialog = null
+    debugEndDialogDetail = ""
     debugChapterSequence = emptyList()
     debugMessageSeed = 1L
     currentSessionId = ""
@@ -3113,6 +3240,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           messages.removeAll { it.id == message.id }
           messageReactions.remove(messageUiKey(message))
           restoreDebugPlayerTurnAfterDeletion()
+          loadDebugRevisitSnapshots()
+          val validIds = messages.map { it.id }.toSet()
+          val nextSnapshots = debugRevisitSnapshots.filter { validIds.contains(it.messageId) }.sortedBy { it.capturedAt }
+          debugRevisitSnapshots.clear()
+          debugRevisitSnapshots.addAll(nextSnapshots)
+          persistDebugRevisitSnapshots()
         } else {
           if (currentSessionId.isBlank()) error("当前没有可删除的会话")
           repository.deleteMessage(currentSessionId, message.id)
@@ -3166,6 +3299,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return source.filterNot(::isRuntimeRetryMessage)
   }
 
+  private fun normalizeDebugIncomingMessages(incoming: List<MessageItem>, existing: List<MessageItem> = emptyList()): List<MessageItem> {
+    val usedIds = existing.map { it.id }.filter { it > 0L }.toMutableSet()
+    return incoming.map { message ->
+      var messageId = message.id
+      if (messageId <= 0L || usedIds.contains(messageId)) {
+        messageId = debugMessageSeed++
+      }
+      usedIds += messageId
+      message.copy(
+        id = messageId,
+        createTime = if (message.createTime > 0L) message.createTime else System.currentTimeMillis(),
+      )
+    }
+  }
+
   fun isLocalPendingPlayerMessage(message: MessageItem): Boolean {
     if (message.roleType != "player" || message.id >= 0) return false
     val meta = message.meta?.takeIf { it.isJsonObject }?.asJsonObject ?: return false
@@ -3207,6 +3355,98 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         addProperty("nextRoleType", plan.nextRoleType)
       },
     )
+  }
+
+  private fun recordDebugRevisitSnapshot(message: MessageItem?) {
+    if (!debugMode || message == null || message.id <= 0L) return
+    loadDebugRevisitSnapshots()
+    val conversationId = debugRevisitConversationId()
+    if (conversationId.isBlank()) return
+    val nextSnapshot = DebugRevisitSnapshot(
+      conversationId = conversationId,
+      messageId = message.id,
+      chapterId = debugChapterId,
+      chapterTitle = debugChapterTitle,
+      endDialog = debugEndDialog,
+      endDialogDetail = debugEndDialogDetail,
+      capturedAt = System.currentTimeMillis(),
+      state = debugRuntimeState?.deepCopy(),
+      messages = normalizeDebugIncomingMessages(
+        conversationMessages(messages.toList())
+          .filterNot(::isStreamingRuntimeMessage)
+          .map { it.copy(meta = it.meta?.deepCopy()) },
+      ),
+    )
+    val nextSnapshots = debugRevisitSnapshots
+      .filter { it.messageId != message.id }
+      .toMutableList()
+      .apply { add(nextSnapshot) }
+      .sortedBy { it.capturedAt }
+      .takeLast(5)
+    debugRevisitSnapshots.clear()
+    debugRevisitSnapshots.addAll(nextSnapshots)
+    persistDebugRevisitSnapshots()
+  }
+
+  fun canRevisitDebugMessage(message: MessageItem): Boolean {
+    if (!debugMode || message.id <= 0L || isRuntimeRetryMessage(message) || isStreamingRuntimeMessage(message)) return false
+    loadDebugRevisitSnapshots()
+    return debugRevisitSnapshots.any { it.messageId == message.id }
+  }
+
+  fun canRevisitSessionMessage(message: MessageItem): Boolean {
+    if (debugMode || sessionViewMode == "playback" || currentSessionId.isBlank()) return false
+    if (message.id <= 0L || isRuntimeRetryMessage(message) || isStreamingRuntimeMessage(message)) return false
+    val revisitData = message.revisitData
+    return revisitData != null && !revisitData.isJsonNull
+  }
+
+  fun revisitDebugMessage(messageId: Long) {
+    if (!debugMode) {
+      notice = "当前不是章节调试模式"
+      return
+    }
+    loadDebugRevisitSnapshots()
+    val target = debugRevisitSnapshots.firstOrNull { it.messageId == messageId }
+    if (target == null) {
+      notice = "没有找到这句台词的回溯快照"
+      return
+    }
+    debugRuntimeState = target.state?.deepCopy()
+    debugStatePreview = prettyGson.toJson(debugRuntimeState)
+    debugLatestPlan = null
+    debugChapterId = target.chapterId ?: debugChapterId
+    debugChapterTitle = target.chapterTitle.ifBlank { debugChapterTitle }
+    debugEndDialog = target.endDialog
+    debugEndDialogDetail = target.endDialogDetail
+    messages.clear()
+    messages.addAll(normalizeDebugIncomingMessages(target.messages.map { it.copy(meta = it.meta?.deepCopy()) }))
+    val validIds = messages.map { it.id }.toSet()
+    val nextSnapshots = debugRevisitSnapshots.filter { validIds.contains(it.messageId) }.sortedBy { it.capturedAt }
+    debugRevisitSnapshots.clear()
+    debugRevisitSnapshots.addAll(nextSnapshots)
+    persistDebugRevisitSnapshots()
+    updateDebugStatePreview()
+    syncRuntimeChatTraceLog()
+    notice = "已回溯到这句台词，可继续调试编排"
+  }
+
+  fun revisitSessionMessage(messageId: Long) {
+    if (currentSessionId.isBlank()) {
+      notice = "当前没有可回溯的会话"
+      return
+    }
+    viewModelScope.launch {
+      runCatching {
+        repository.revisitMessage(currentSessionId, messageId)
+        refreshCurrentSession()
+      }.onSuccess {
+        notice = "已回溯到这句台词，可继续编排"
+      }.onFailure {
+        throwIfCancellation(it)
+        notice = "回溯失败: ${it.message ?: "未知错误"}"
+      }
+    }
   }
 
   private fun createLocalPendingPlayerMessage(content: String): MessageItem {
@@ -3436,6 +3676,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private fun throwIfCancellation(error: Throwable) {
     if (error is CancellationException) {
       throw error
+    }
+  }
+
+  private fun runtimeUiErrorMessage(error: Throwable?, fallback: String = "未知错误"): String {
+    val text = (error?.message ?: "").trim()
+    if (text.isBlank()) return fallback
+    if (Regex("^(编排师|角色发言|记忆管理)对接的模型异常[:：]").containsMatchIn(text)) {
+      return text
+    }
+    val normalized = text.lowercase(Locale.getDefault())
+    return if (
+      normalized.contains("insufficient account balance")
+      || normalized.contains("insufficient_balance")
+      || normalized.contains("insufficient_user_quota")
+      || normalized.contains("quota exceeded")
+      || normalized.contains("余额不足")
+      || normalized.contains("额度不足")
+      || normalized.contains("配额不足")
+      || normalized.contains("剩余额度")
+    ) {
+      "当前模型余额不足，请充值或切换模型。"
+    } else {
+      text
     }
   }
 
@@ -4284,6 +4547,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return saved
   }
 
+  private fun applySavedChapterToEditor(saved: ChapterItem?) {
+    if (saved == null) return
+    val index = chapters.indexOfFirst { it.id == saved.id }
+    if (index >= 0) {
+      chapters[index] = saved
+    } else {
+      chapters.add(saved)
+    }
+  }
+
   private suspend fun refreshStoryData() {
     logStoryFlow("refreshStoryData start")
     loadWorlds()
@@ -4498,7 +4771,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         debugLoading = false
         debugLoadingStage = ""
         activeTab = "游玩"
-        showRuntimeRetryMessage("进入调试失败: ${it.message ?: "未知错误"}") {
+        showRuntimeRetryMessage("进入调试失败: ${runtimeUiErrorMessage(it)}") {
           performDebugCurrentChapter()
         }
       }
@@ -4515,24 +4788,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     debugWorldName = worldName
     debugWorldIntro = worldIntro
     debugRuntimeState = JsonObject()
+    debugLatestPlan = null
+    debugMessageSeed = System.currentTimeMillis()
+    clearDebugRevisitSnapshots()
     messages.clear()
+    sessionRuntimeStage = ""
     sessionDetail = null
     sendText = ""
-    activeTab = "游玩"
     notice = "进入调试中..."
+    var debugOverlayReleased = false
+    fun releaseDebugLoading() {
+      if (debugOverlayReleased) return
+      debugLoading = false
+      debugLoadingStage = ""
+      debugOverlayReleased = true
+    }
     try {
       debugLoadingStage = "保存草稿"
       saveWorldInternal(SaveWorldStatusMode.PRESERVE)
       val savedChapter = saveEditorChapterInternal(worldPublishStatus.ifBlank { "draft" })
-      if (savedChapter != null) {
-        saveWorldInternal(SaveWorldStatusMode.PRESERVE)
-      }
-      debugLoadingStage = "创建这次会话环境"
-      if (worldId > 0L) {
-        loadChapters(worldId)
-      }
-      refreshStoryData()
+      applySavedChapterToEditor(savedChapter)
       primeStoryEditorPersistState()
+      debugLoadingStage = "创建这次会话环境"
 
       val currentWorld = worlds.firstOrNull { it.id == worldId } ?: WorldItem(
         id = worldId,
@@ -4555,28 +4832,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       debugWorldIntro = currentWorld.intro
       debugSessionTitle = "调试：${currentWorld.name.ifBlank { "未命名故事" }}"
       debugRuntimeState = JsonObject()
+      debugLatestPlan = null
       debugEndDialog = null
       debugMessageSeed = 1L
       currentSessionId = "debug_${System.currentTimeMillis()}"
       sessionDetail = null
       messages.clear()
       sendText = ""
+      activeTab = "游玩"
 
-      debugLoadingStage = "读取记忆"
-      val result = repository.debugOrchestration(
+      releaseDebugLoading()
+      sessionRuntimeStage = "读取记忆"
+      val introResult = repository.debugIntroduction(
         worldId = worldId,
         chapterId = startChapter.id,
         state = debugRuntimeState,
         messages = emptyList(),
+      )
+      applyDebugOrchestrationResult(introResult, startChapter)
+      if (introResult.plan != null && shouldStreamDebugPlan(introResult.plan)) {
+        sessionRuntimeStage = "生成开场白"
+        streamDebugPlan(introResult.plan, emptyList(), null)
+        if (sessionRuntimeStage == "生成开场白") {
+          sessionRuntimeStage = ""
+        }
+      }
+      val result = repository.debugOrchestration(
+        worldId = worldId,
+        chapterId = startChapter.id,
+        state = debugRuntimeState,
+        messages = conversationMessages(),
         playerContent = null,
       )
-      debugLoadingStage = "准备剧情编排完毕"
+      sessionRuntimeStage = "准备剧情编排"
       clearRuntimeRetryState()
       applyDebugOrchestrationResult(result, startChapter)
-      debugLoading = false
-      debugLoadingStage = ""
       if (result.plan != null) {
-        streamDebugPlan(result.plan, emptyList(), null)
+        if (shouldStreamDebugPlan(result.plan)) {
+          sessionRuntimeStage = "生成首轮内容"
+          streamDebugPlan(result.plan, emptyList(), null)
+          if (sessionRuntimeStage == "生成首轮内容") {
+            sessionRuntimeStage = ""
+          }
+        }
+        if (shouldAutoContinueDebugAfterStart(result)) {
+          sessionRuntimeStage = "推进到用户回合"
+          continueDebugNarrative()
+          if (sessionRuntimeStage == "推进到用户回合") {
+            sessionRuntimeStage = ""
+          }
+        }
       } else {
         messages.clear()
       }
@@ -4586,6 +4891,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     } finally {
       debugLoading = false
       debugLoadingStage = ""
+      if (sessionRuntimeStage == "生成首轮内容" || sessionRuntimeStage == "推进到用户回合") {
+        sessionRuntimeStage = ""
+      }
     }
   }
 
@@ -5082,7 +5390,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         continueSessionNarrative()
       }.onFailure {
         if (it is CancellationException) return@onFailure
-        notice = "继续剧情失败: ${it.message ?: "未知错误"}"
+        notice = "继续剧情失败: ${runtimeUiErrorMessage(it)}"
       }
     }
   }
@@ -5188,7 +5496,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         throwIfCancellation(it)
         markLocalPendingPlayerMessageFailed(messageId)
         sendText = content
-        notice = "发送失败: ${it.message ?: "未知错误"}"
+        notice = "发送失败: ${runtimeUiErrorMessage(it)}"
       }.also {
         sendPending = false
       }
@@ -5255,7 +5563,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       true
     }.getOrElse {
       throwIfCancellation(it)
-      showRuntimeRetryMessage("继续剧情失败: ${it.message ?: "未知错误"}") {
+      showRuntimeRetryMessage("继续剧情失败: ${runtimeUiErrorMessage(it)}") {
         performContinueSessionNarrative()
       }
       false
@@ -5277,7 +5585,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         performDebugPlayerMessage(text, appendPlayerMessage = true)
       }.onFailure {
         throwIfCancellation(it)
-        showRuntimeRetryMessage("调试发送失败: ${it.message ?: "未知错误"}") {
+        showRuntimeRetryMessage("调试发送失败: ${runtimeUiErrorMessage(it)}") {
           performDebugPlayerMessage(text, appendPlayerMessage = false)
         }
         updateDebugStatePreview()
@@ -5316,7 +5624,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
     clearRuntimeRetryState()
     applyDebugOrchestrationResult(result, playCurrentChapter())
-    if (result.plan != null) {
+    if (result.plan != null && shouldStreamDebugPlan(result.plan)) {
       streamDebugPlanOrFallback(result.plan, conversationMessages(), text)
     }
     updateDebugStatePreview()
@@ -5324,17 +5632,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   suspend fun continueDebugNarrative(): Boolean {
     if (!debugMode || worldId <= 0L) return false
+    if (continueDebugNarrativeRunning) return false
+    continueDebugNarrativeRunning = true
     clearRuntimeRetryState()
     return runCatching {
       performContinueDebugNarrative()
       true
     }.getOrElse {
       throwIfCancellation(it)
-      showRuntimeRetryMessage("调试推进失败: ${it.message ?: "未知错误"}") {
+      showRuntimeRetryMessage("调试推进失败: ${runtimeUiErrorMessage(it)}") {
         performContinueDebugNarrative()
       }
       updateDebugStatePreview()
       false
+    }.also {
+      continueDebugNarrativeRunning = false
     }
   }
 
@@ -5352,12 +5664,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       )
       clearRuntimeRetryState()
       applyDebugOrchestrationResult(result, playCurrentChapter())
-      if (result.plan != null) {
+      val shouldYieldToUser = shouldYieldToUserFromDebugPlan(result.plan)
+      if (result.plan != null && shouldStreamDebugPlan(result.plan)) {
         streamDebugPlanOrFallback(result.plan, history, null)
       }
       updateDebugStatePreview()
       val canSpeak = debugCanPlayerSpeakFromState()
-      if (conversationMessages().size > beforeCount || debugEndDialog != null || canSpeak) {
+      if (conversationMessages().size > beforeCount || debugEndDialog != null || canSpeak || shouldYieldToUser) {
         advanced = true
         break
       }
@@ -5369,27 +5682,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private fun applyDebugOrchestrationResult(result: com.toonflow.game.data.DebugOrchestrationResult, fallbackChapter: ChapterItem?) {
     debugRuntimeState = result.state
+    debugLatestPlan = result.plan
     if (result.chapterId != null && result.chapterId > 0L) {
       debugChapterId = result.chapterId
     }
     val activeChapter = chapters.firstOrNull { it.id == (result.chapterId ?: debugChapterId) } ?: fallbackChapter
     debugChapterTitle = normalizeChapterTitleLabel(result.chapterTitle.ifBlank { activeChapter?.title.orEmpty() }, activeChapter?.sort ?: 0)
     debugEndDialog = result.endDialog
+    debugEndDialogDetail = result.endDialogDetail.orEmpty()
+    loadDebugRevisitSnapshots()
     updateDebugStatePreview()
   }
 
   private fun applyDebugStepResult(result: DebugStepResult, historyMessages: List<MessageItem>, fallbackChapter: ChapterItem?) {
     debugRuntimeState = result.state
+    debugLatestPlan = null
     if (result.chapterId != null && result.chapterId > 0L) {
       debugChapterId = result.chapterId
     }
     val activeChapter = chapters.firstOrNull { it.id == (result.chapterId ?: debugChapterId) } ?: fallbackChapter
     debugChapterTitle = normalizeChapterTitleLabel(result.chapterTitle.ifBlank { activeChapter?.title.orEmpty() }, activeChapter?.sort ?: 0)
     debugEndDialog = result.endDialog
-    val appendedMessages = DebugSessionHeuristics.stripKnownHistory(historyMessages, result.messages)
+    debugEndDialogDetail = result.endDialogDetail.orEmpty()
+    val appendedMessages = normalizeDebugIncomingMessages(
+      DebugSessionHeuristics.stripKnownHistory(historyMessages, result.messages),
+      historyMessages,
+    )
     messages.clear()
     messages.addAll(historyMessages)
     messages.addAll(appendedMessages)
+    loadDebugRevisitSnapshots()
+    appendedMessages.forEach(::recordDebugRevisitSnapshot)
+    updateDebugStatePreview()
+  }
+
+  private fun applyDebugStreamState(data: JsonObject?, fallbackChapter: ChapterItem?) {
+    if (data == null) return
+    val nextState = data.get("state")
+    if (nextState == null || nextState.isJsonNull) return
+    debugRuntimeState = nextState
+    val nextChapterId = data.get("chapterId")?.takeIf { !it.isJsonNull }?.asLong
+    if (nextChapterId != null && nextChapterId > 0L) {
+      debugChapterId = nextChapterId
+    }
+    val activeChapter = chapters.firstOrNull { it.id == (nextChapterId ?: debugChapterId) } ?: fallbackChapter
+    val nextChapterTitle = data.get("chapterTitle")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+    debugChapterTitle = normalizeChapterTitleLabel(nextChapterTitle.ifBlank { activeChapter?.title.orEmpty() }, activeChapter?.sort ?: 0)
+    debugEndDialog = data.get("endDialog")?.takeIf { !it.isJsonNull }?.asString
+    debugEndDialogDetail = data.get("endDialogDetail")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+    loadDebugRevisitSnapshots()
     updateDebugStatePreview()
   }
 
@@ -5400,6 +5741,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     } catch (_: Throwable) {
       true
     }
+  }
+
+  private fun shouldYieldToUserFromDebugPlan(plan: DebugNarrativePlan?): Boolean {
+    if (plan == null) return false
+    val nextRoleType = plan.nextRoleType.trim().lowercase()
+    return plan.awaitUser || nextRoleType == "player"
+  }
+
+  private fun shouldStreamDebugPlan(plan: DebugNarrativePlan?): Boolean {
+    if (plan == null) return false
+    return plan.role.isNotBlank() && !plan.roleType.trim().equals("player", ignoreCase = true)
+  }
+
+  // 调试首次进入如果仍未轮到用户，继续自动补到真正可交互的节点，避免 opening 后半路被页面 watcher 抢跑。
+  private fun shouldAutoContinueDebugAfterStart(result: DebugOrchestrationResult): Boolean {
+    val plan = result.plan ?: return false
+    if (result.endDialog != null) return false
+    if (debugCanPlayerSpeakFromState(debugRuntimeState)) return false
+    if (shouldYieldToUserFromDebugPlan(plan)) return false
+    val eventType = plan.eventType.trim()
+    return eventType == "on_opening" || !plan.presetContent.isNullOrBlank()
   }
 
   private suspend fun streamDebugPlanOrFallback(
@@ -5469,15 +5831,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           val data = event.getAsJsonObject("data")
           val message = data?.getAsJsonObject("message")
           val finalContent = message?.get("content")?.asString ?: data?.get("content")?.asString.orEmpty()
+          applyDebugStreamState(data, playCurrentChapter())
+          recordDebugRevisitSnapshot(
+            MessageItem(
+              id = placeholder.id,
+              role = message?.get("role")?.asString ?: placeholder.role,
+              roleType = message?.get("roleType")?.asString ?: placeholder.roleType,
+              eventType = message?.get("eventType")?.asString ?: placeholder.eventType,
+              content = finalContent,
+              createTime = placeholder.createTime,
+              meta = JsonObject().apply {
+                addProperty("kind", "runtime_stream")
+                addProperty("streaming", false)
+                addProperty("status", if (debugCanPlayerSpeakFromState()) "waiting_player" else "waiting_next")
+              },
+            ),
+          )
           updateMessageById(placeholder.id) { current ->
             current.copy(
               role = message?.get("role")?.asString ?: current.role,
               roleType = message?.get("roleType")?.asString ?: current.roleType,
               eventType = message?.get("eventType")?.asString ?: current.eventType,
               content = finalContent,
-              meta = buildRuntimeStreamMeta(current.meta, status = "generated", streaming = false),
+              meta = buildRuntimeStreamMeta(
+                current.meta,
+                status = if (debugCanPlayerSpeakFromState()) "waiting_player" else "waiting_next",
+                streaming = false,
+                nextRole = if (debugCanPlayerSpeakFromState()) "用户" else playExpectedSpeaker(),
+                nextRoleType = if (debugCanPlayerSpeakFromState()) "player" else scalarRuntimeText(runtimeTurnStateRoot()?.get("expectedRoleType")).ifBlank { "npc" },
+              ),
             )
           }
+          syncRuntimeChatTraceLog()
         }
 
         "error" -> {
@@ -5864,43 +6249,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val phaseBasics = phases.mapIndexedNotNull { index, element ->
       if (!element.isJsonObject) return@mapIndexedNotNull null
       val obj = element.asJsonObject
-      val id = normalizeScalarEditorText(obj.get("id")?.asString).ifBlank { "phase_${index + 1}" }
-      val label = normalizeScalarEditorText(obj.get("label")?.asString).ifBlank { "阶段 ${index + 1}" }
+      val id = normalizeScalarEditorText(scalarRuntimeText(obj.get("id"))).ifBlank { "phase_${index + 1}" }
+      val label = normalizeScalarEditorText(scalarRuntimeText(obj.get("label"))).ifBlank { "阶段 ${index + 1}" }
       id to label
     }
     val phaseLabelMap = phaseBasics.toMap()
     return phases.mapIndexedNotNull { index, element ->
       if (!element.isJsonObject) return@mapIndexedNotNull null
       val obj = element.asJsonObject
-      val id = normalizeScalarEditorText(obj.get("id")?.asString).ifBlank { "phase_${index + 1}" }
-      val label = normalizeScalarEditorText(obj.get("label")?.asString).ifBlank { "阶段 ${index + 1}" }
-      val kind = normalizeScalarEditorText(obj.get("kind")?.asString).ifBlank { "scene" }
+      val id = normalizeScalarEditorText(scalarRuntimeText(obj.get("id"))).ifBlank { "phase_${index + 1}" }
+      val label = normalizeScalarEditorText(scalarRuntimeText(obj.get("label"))).ifBlank { "阶段 ${index + 1}" }
+      val kind = normalizeScalarEditorText(scalarRuntimeText(obj.get("kind"))).ifBlank { "scene" }
       val allowedSpeakers = obj.getAsJsonArray("allowedSpeakers")
-        ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+        ?.mapNotNull { normalizeScalarEditorText(scalarRuntimeText(it)).trim().takeIf { item -> item.isNotEmpty() } }
         ?.joinToString(" / ")
         .orEmpty()
       val nextPhaseList = obj.getAsJsonArray("nextPhaseIds")
-        ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+        ?.mapNotNull { normalizeScalarEditorText(scalarRuntimeText(it)).trim().takeIf { item -> item.isNotEmpty() } }
         .orEmpty()
       val nextPhaseIds = nextPhaseList
         .map { phaseLabelMap[it] ?: it }
         .joinToString(" -> ")
-      val defaultNextPhaseId = normalizeScalarEditorText(obj.get("defaultNextPhaseId")?.asString).trim()
+      val defaultNextPhaseId = normalizeScalarEditorText(scalarRuntimeText(obj.get("defaultNextPhaseId"))).trim()
         .let { value -> if (value.isNotBlank()) phaseLabelMap[value] ?: value else "" }
       val requiredEventIds = obj.getAsJsonArray("requiredEventIds")
-        ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+        ?.mapNotNull { normalizeScalarEditorText(scalarRuntimeText(it)).trim().takeIf { item -> item.isNotEmpty() } }
         ?.joinToString(" / ")
         .orEmpty()
       val completionEventIds = obj.getAsJsonArray("completionEventIds")
-        ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+        ?.mapNotNull { normalizeScalarEditorText(scalarRuntimeText(it)).trim().takeIf { item -> item.isNotEmpty() } }
         ?.joinToString(" / ")
         .orEmpty()
       val advanceSignals = obj.getAsJsonArray("advanceSignals")
-        ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+        ?.mapNotNull { normalizeScalarEditorText(scalarRuntimeText(it)).trim().takeIf { item -> item.isNotEmpty() } }
         ?.joinToString(" / ")
         .orEmpty()
       val relatedFixedEventIds = obj.getAsJsonArray("relatedFixedEventIds")
-        ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+        ?.mapNotNull { normalizeScalarEditorText(scalarRuntimeText(it)).trim().takeIf { item -> item.isNotEmpty() } }
         ?.joinToString(" / ")
         .orEmpty()
       val flowSummary = if (nextPhaseList.isNotEmpty()) {
@@ -5935,9 +6320,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!element.isJsonObject) return@mapIndexedNotNull null
         val obj = element.asJsonObject
         ChapterUserNodePreview(
-          id = normalizeScalarEditorText(obj.get("id")?.asString).ifBlank { "user_node_${index + 1}" },
-          goal = normalizeScalarEditorText(obj.get("goal")?.asString).ifBlank { normalizeScalarEditorText(obj.get("label")?.asString).ifBlank { "用户节点 ${index + 1}" } },
-          promptRole = normalizeScalarEditorText(obj.get("promptRole")?.asString).ifBlank { "系统" },
+          id = normalizeScalarEditorText(scalarRuntimeText(obj.get("id"))).ifBlank { "user_node_${index + 1}" },
+          goal = normalizeScalarEditorText(scalarRuntimeText(obj.get("goal"))).ifBlank { normalizeScalarEditorText(scalarRuntimeText(obj.get("label"))).ifBlank { "用户节点 ${index + 1}" } },
+          promptRole = normalizeScalarEditorText(scalarRuntimeText(obj.get("promptRole"))).ifBlank { "系统" },
         )
       }
       .orEmpty()
@@ -5946,22 +6331,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!element.isJsonObject) return@mapIndexedNotNull null
         val obj = element.asJsonObject
         ChapterFixedEventPreview(
-          id = normalizeScalarEditorText(obj.get("id")?.asString).ifBlank { "fixed_event_${index + 1}" },
-          label = normalizeScalarEditorText(obj.get("label")?.asString).ifBlank { "固定事件 ${index + 1}" },
+          id = normalizeScalarEditorText(scalarRuntimeText(obj.get("id"))).ifBlank { "fixed_event_${index + 1}" },
+          label = normalizeScalarEditorText(scalarRuntimeText(obj.get("label"))).ifBlank { "固定事件 ${index + 1}" },
         )
       }
       .orEmpty()
     val endingRules = root.getAsJsonObject("endingRules")?.let { rules ->
       ChapterEndingRulesPreview(
         success = rules.getAsJsonArray("success")
-          ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+          ?.mapNotNull { normalizeScalarEditorText(scalarRuntimeText(it)).trim().takeIf { item -> item.isNotEmpty() } }
           ?.joinToString(" / ")
           .orEmpty(),
         failure = rules.getAsJsonArray("failure")
-          ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+          ?.mapNotNull { normalizeScalarEditorText(scalarRuntimeText(it)).trim().takeIf { item -> item.isNotEmpty() } }
           ?.joinToString(" / ")
           .orEmpty(),
-        nextChapterId = normalizeScalarEditorText(rules.get("nextChapterId")?.toString()).trim(),
+        nextChapterId = normalizeScalarEditorText(scalarRuntimeText(rules.get("nextChapterId"))).trim(),
       )
     }
     return ChapterRuntimeOutlinePreview(
@@ -5979,7 +6364,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val pendingGoal = scalarRuntimeText(progress.get("pendingGoal"))
     val userNodeId = scalarRuntimeText(progress.get("userNodeId"))
     val completedEvents = progress.getAsJsonArray("completedEvents")
-      ?.mapNotNull { runCatching { normalizeScalarEditorText(it.asString).trim() }.getOrNull()?.takeIf { item -> item.isNotEmpty() } }
+      ?.mapNotNull { normalizeScalarEditorText(scalarRuntimeText(it)).trim().takeIf { item -> item.isNotEmpty() } }
       ?.joinToString(" / ")
       .orEmpty()
     val chapter = playCurrentChapter()
@@ -6008,6 +6393,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return RuntimeChapterEventItem(
       eventIndex = item.eventIndex,
       eventKind = item.eventKind,
+      eventFlowType = item.eventFlowType,
       eventSummary = item.eventSummary,
       eventStatus = item.eventStatus,
       eventFacts = runtimeStringify(item.eventFacts),
@@ -6024,6 +6410,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val memorySummary = scalarRuntimeText(obj.get("memorySummary"))
     val memoryFacts = scalarRuntimeText(obj.get("memoryFacts"))
     val eventKind = scalarRuntimeText(obj.get("eventKind"))
+    val eventFlowType = scalarRuntimeText(obj.get("eventFlowType"))
     val eventStatus = scalarRuntimeText(obj.get("eventStatus"))
     val eventIndex = runtimeIntValue(obj.get("eventIndex")) ?: 0
     if (
@@ -6032,6 +6419,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       && memorySummary.isBlank()
       && memoryFacts.isBlank()
       && eventKind.isBlank()
+      && eventFlowType.isBlank()
       && eventStatus.isBlank()
       && eventIndex <= 0
     ) {
@@ -6040,6 +6428,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return RuntimeChapterEventItem(
       eventIndex = eventIndex,
       eventKind = eventKind,
+      eventFlowType = eventFlowType,
       eventSummary = summary,
       eventStatus = eventStatus,
       eventFacts = facts,
@@ -6092,42 +6481,109 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  private fun isIntroductionEventItem(item: RuntimeChapterEventItem?): Boolean {
+    if (item == null) return false
+    return item.eventFlowType.trim().equals("introduction", ignoreCase = true)
+      || item.eventKind.trim().equals("opening", ignoreCase = true)
+  }
+
   private fun runtimeOutlineEventItems(): List<RuntimeChapterEventItem> {
     val chapter = playCurrentChapter() ?: return emptyList()
     val runtimeOutline = chapter.runtimeOutline?.takeIf { it.isJsonObject }?.asJsonObject ?: return emptyList()
+    val phases = runtimeOutline.getAsJsonArray("phases")
+    val fixedEvents = runtimeOutline.getAsJsonArray("fixedEvents")
+    if (phases == null && fixedEvents == null) return emptyList()
+    val progress = runtimeStateRoot()?.getAsJsonObject("chapterProgress")
     val phaseId = scalarRuntimeText(runtimeStateRoot()?.getAsJsonObject("chapterProgress")?.get("phaseId"))
-    if (runtimeOutline.getAsJsonArray("phases") == null) return emptyList()
+    val currentEventKind = scalarRuntimeText(progress?.get("eventKind"))
+    val currentEventStatus = scalarRuntimeText(progress?.get("eventStatus")).ifBlank { "未开始" }
+    val currentEventSummary = playCurrentRuntimeEventDigest()?.eventSummary.orEmpty()
+    val completedEvents = progress?.getAsJsonArray("completedEvents")
+      ?.mapNotNull { normalizeScalarEditorText(scalarRuntimeText(it)).trim().takeIf { value -> value.isNotEmpty() } }
+      ?.toSet()
+      .orEmpty()
     val phasePreview = chapterRuntimePhasePreview()
     val activeIndex = phasePreview.indexOfFirst { item -> item.id == phaseId }
-    return phasePreview.mapIndexed { index, item ->
+    val items = mutableListOf<RuntimeChapterEventItem>()
+
+    phasePreview.forEachIndexed { _, item ->
       val status = when {
-        phaseId.isNotBlank() && item.id == phaseId -> "进行中"
-        activeIndex >= 0 && index < activeIndex -> "已完成"
+        phaseId.isNotBlank() && item.id == phaseId -> currentEventStatus
+        activeIndex >= 0 && phasePreview.indexOf(item) < activeIndex -> "已完成"
+        phaseId.isBlank()
+          && currentEventKind.equals(item.kind, ignoreCase = true)
+          && currentEventSummary.isNotBlank()
+          && currentEventSummary == item.label -> currentEventStatus
         else -> "未开始"
       }
-      RuntimeChapterEventItem(
-        eventIndex = index + 1,
+      items += RuntimeChapterEventItem(
+        eventIndex = items.size + 1,
         eventKind = item.kind,
-        eventSummary = item.label.ifBlank { "事件 ${index + 1}" },
+        eventFlowType = "chapter_content",
+        eventSummary = item.label.ifBlank { "事件 ${items.size + 1}" },
         eventStatus = status,
         eventFacts = item.flowSummary,
         memorySummary = "",
         memoryFacts = "",
       )
     }
+
+    fixedEvents?.forEachIndexed { index, element ->
+      val event = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEachIndexed
+      val eventId = scalarRuntimeText(event.get("id"))
+      val summary = scalarRuntimeText(event.get("label")).ifBlank { "固定事件 ${index + 1}" }
+      val status = when {
+        eventId.isNotBlank() && completedEvents.contains(eventId) -> "已完成"
+        (currentEventKind.equals("fixed", ignoreCase = true) || currentEventKind.equals("ending", ignoreCase = true)) && index == 0 ->
+          if (currentEventStatus == "waiting_input") "等待输入" else currentEventStatus
+        else -> "未开始"
+      }
+      items += RuntimeChapterEventItem(
+        eventIndex = items.size + 1,
+        eventKind = "fixed",
+        eventFlowType = "chapter_ending_check",
+        eventSummary = summary,
+        eventStatus = status,
+        eventFacts = "",
+        memorySummary = "",
+        memoryFacts = "",
+      )
+    }
+
+    return items
   }
 
   fun playVisibleChapterEvents(): List<RuntimeChapterEventItem> {
-    val runtimeItems = runtimeEventDigestWindowFromState()
+    val runtimeItems = runtimeEventDigestWindowFromState().filterNot { isIntroductionEventItem(it) }
+    val outlineItems = runtimeOutlineEventItems()
+    if (outlineItems.isNotEmpty() && outlineItems.size > runtimeItems.size) {
+      return outlineItems
+    }
     if (hasReadyRuntimeEventWindow(runtimeItems)) {
       return runtimeItems
     }
-    return runtimeOutlineEventItems()
+    return outlineItems
+  }
+
+  fun playEventFlowLabel(item: RuntimeChapterEventItem): String {
+    return when (item.eventFlowType.trim().lowercase()) {
+      "introduction" -> "开场白"
+      "chapter_ending_check" -> "结束条件检查"
+      "free_runtime" -> "自由剧情"
+      "chapter_content" -> "章节内容"
+      else -> when (item.eventKind.trim().lowercase()) {
+      "opening" -> "开场白"
+      "ending" -> "结束条件检查"
+      "fixed" -> "固定条件"
+      "scene", "user" -> "章节内容"
+      else -> "章节事件"
+      }
+    }
   }
 
   fun playCurrentEventProgressText(): String {
     val currentEvent = playCurrentRuntimeEventDigest()
-    if (currentEvent != null) {
+    if (currentEvent != null && !isIntroductionEventItem(currentEvent)) {
       val parts = mutableListOf<String>()
       if (currentEvent.eventIndex > 0) {
         parts += "事件 ${currentEvent.eventIndex}"
@@ -6155,6 +6611,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       progress?.userNodeLabel?.takeIf { it.isNotBlank() }?.let { "用户节点 $it" },
       progress?.completedEvents?.takeIf { it.isNotBlank() }?.let { "已完成 $it" },
     ).joinToString(" · ").ifBlank { "当前章节事件待生成" }
+  }
+
+  fun playDebugOrchestratorRuntimeText(): String {
+    val runtime = debugLatestPlan?.orchestratorRuntime
+    val planSourceLabel = when (debugLatestPlan?.planSource?.trim()?.lowercase()) {
+      "opening_preset" -> "开场白预设"
+      "ai_orchestrator" -> "正式编排"
+      "rule_orchestrator" -> "规则编排"
+      "fallback_orchestrator" -> "兜底编排"
+      "preset" -> "预设流程"
+      else -> ""
+    }
+    if (runtime == null && planSourceLabel.isBlank()) return ""
+    val modeLabel = if (runtime?.payloadMode?.trim()?.equals("advanced", ignoreCase = true) == true) "高级版" else "精简版"
+    val sourceLabel = if (runtime?.payloadModeSource?.trim()?.equals("explicit", ignoreCase = true) == true) "显式" else "推断"
+    val reasoningLabel = runtime?.reasoningEffort?.trim().orEmpty().ifBlank { "未指定" }
+    val modelLabel = if (runtime != null) {
+      listOf(runtime.manufacturer.trim(), runtime.model.trim()).filter { it.isNotBlank() }.joinToString(" / ")
+    } else {
+      ""
+    }
+    return listOf(
+      planSourceLabel.takeIf { it.isNotBlank() }?.let { "流程：$it" }.orEmpty(),
+      if (runtime != null) "编排运行：$modeLabel（$sourceLabel）" else "",
+      if (runtime != null) "推理强度：$reasoningLabel" else "",
+      modelLabel,
+    )
+      .filter { it.isNotBlank() }
+      .joinToString(" · ")
   }
 
   private fun buildRole(

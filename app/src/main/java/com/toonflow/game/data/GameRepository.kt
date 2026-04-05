@@ -290,6 +290,14 @@ class GameRepository(private val settingsStore: SettingsStore) {
     api().deleteMessage(payload)
   }
 
+  suspend fun revisitMessage(sessionId: String, messageId: Long) {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+      addProperty("messageId", messageId)
+    }
+    api().revisitMessage(payload)
+  }
+
   suspend fun getMessages(sessionId: String): List<MessageItem> {
     val payload = JsonObject().apply {
       addProperty("sessionId", sessionId)
@@ -374,6 +382,23 @@ class GameRepository(private val settingsStore: SettingsStore) {
       add("messages", gson.toJsonTree(messages))
     }
     return api().orchestrateDebug(payload).data
+  }
+
+  suspend fun debugIntroduction(
+    worldId: Long,
+    chapterId: Long?,
+    state: JsonElement?,
+    messages: List<MessageItem>,
+  ): DebugOrchestrationResult {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+      if (chapterId != null && chapterId > 0L) addProperty("chapterId", chapterId)
+      if (state != null && !state.isJsonNull) {
+        add("state", state)
+      }
+      add("messages", gson.toJsonTree(messages))
+    }
+    return api().introduceDebug(payload).data
   }
 
   suspend fun streamDebugLines(
@@ -553,6 +578,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
     outputPricePer1M: Double,
     cacheReadPricePer1M: Double,
     currency: String,
+    reasoningEffort: String,
   ) {
     val payload = JsonObject().apply {
       addProperty("type", type)
@@ -565,6 +591,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("outputPricePer1M", outputPricePer1M)
       addProperty("cacheReadPricePer1M", cacheReadPricePer1M)
       addProperty("currency", currency)
+      addProperty("reasoningEffort", reasoningEffort)
     }
     api().addModelConfig(payload)
   }
@@ -581,6 +608,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
     outputPricePer1M: Double,
     cacheReadPricePer1M: Double,
     currency: String,
+    reasoningEffort: String,
   ) {
     val payload = JsonObject().apply {
       addProperty("id", id)
@@ -594,6 +622,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("outputPricePer1M", outputPricePer1M)
       addProperty("cacheReadPricePer1M", cacheReadPricePer1M)
       addProperty("currency", currency)
+      addProperty("reasoningEffort", reasoningEffort)
     }
     api().updateModelConfig(payload)
   }
@@ -658,6 +687,13 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("configId", configId)
     }
     api().bindModelConfig(payload)
+  }
+
+  suspend fun saveStoryRuntimeConfig(mode: String): StoryRuntimeConfig {
+    val payload = JsonObject().apply {
+      addProperty("storyOrchestratorPayloadMode", if (mode == "advanced") "advanced" else "compact")
+    }
+    return unwrapEnvelope("setting/saveStoryRuntimeConfig", api().saveStoryRuntimeConfig(payload))
   }
 
   suspend fun getPrompts(): List<PromptItem> {
@@ -846,12 +882,13 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return data.get("prompt")?.asString?.trim().orEmpty()
   }
 
-  suspend fun testTextModel(model: String, apiKey: String, baseUrl: String, manufacturer: String): String {
+  suspend fun testTextModel(model: String, apiKey: String, baseUrl: String, manufacturer: String, reasoningEffort: String): String {
     val payload = JsonObject().apply {
       addProperty("modelName", model)
       addProperty("apiKey", apiKey)
       if (baseUrl.isNotBlank()) addProperty("baseURL", baseUrl)
       addProperty("manufacturer", manufacturer)
+      addProperty("reasoningEffort", reasoningEffort.ifBlank { "minimal" })
     }
     return api().testTextModel(payload).data
   }
