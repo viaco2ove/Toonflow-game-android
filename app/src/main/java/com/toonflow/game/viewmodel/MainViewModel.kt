@@ -6629,7 +6629,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val syntheticFixedEvents = if (fixedEvents == null || fixedEvents.size() == 0) {
       listOf(completionBranches.first, completionBranches.second)
         .filter { it.isNotBlank() }
-        .mapIndexed { index, label -> ChapterFixedEventPreview("synthetic_fixed_event_${index + 1}", label, index == 0) }
+        .mapIndexed { index, label -> ChapterFixedEventPreview("synthetic_fixed_event_${index + 1}", label) }
     } else {
       emptyList()
     }
