@@ -36,7 +36,9 @@ import com.toonflow.game.data.SessionDetail
 import com.toonflow.game.data.SessionItem
 import com.toonflow.game.data.SessionNarrativeResult
 import com.toonflow.game.data.SessionOrchestrationResult
+import com.toonflow.game.data.SessionSnapshot
 import com.toonflow.game.data.SettingsStore
+import com.toonflow.game.data.StoryInitResult
 import com.toonflow.game.data.StoryRole
 import com.toonflow.game.data.UploadedVoiceAudioResult
 import com.toonflow.game.data.AiModelMapItem
@@ -3659,6 +3661,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sessionRuntimeStage = ""
   }
 
+  private fun applyInitializedSessionDetail(world: WorldItem, result: StoryInitResult) {
+    val chapterId = result.chapterId
+    val chapterTitle = result.chapterTitle.trim()
+    currentSessionId = result.sessionId.trim()
+    sessionDetail = SessionDetail(
+      sessionId = currentSessionId,
+      title = world.name.ifBlank { "会话" },
+      status = "active",
+      chapterId = chapterId,
+      state = result.state,
+      latestSnapshot = SessionSnapshot(state = result.state),
+      world = world,
+      chapter = if (chapterId != null && chapterId > 0L) {
+        ChapterItem(
+          id = chapterId,
+          title = chapterTitle.ifBlank { "第 ${chapterId} 章" },
+        )
+      } else null,
+      messages = emptyList(),
+      currentEventDigest = result.currentEventDigest,
+      eventDigestWindow = result.eventDigestWindow,
+      eventDigestWindowText = result.eventDigestWindowText,
+    )
+    messages.clear()
+    sessionRuntimeStage = ""
+    sessionOpenError = ""
+    syncRuntimeChatTraceLog()
+  }
+
+  private fun buildInitializedSessionOrchestrationResult(
+    result: StoryInitResult,
+    plan: DebugNarrativePlan?,
+  ): SessionOrchestrationResult {
+    return SessionOrchestrationResult(
+      sessionId = result.sessionId.trim(),
+      status = "active",
+      chapterId = result.chapterId,
+      expectedRole = plan?.nextRole?.trim().orEmpty(),
+      expectedRoleType = plan?.nextRoleType?.trim().orEmpty(),
+      plan = plan,
+      currentEventDigest = result.currentEventDigest,
+      eventDigestWindow = result.eventDigestWindow,
+      eventDigestWindowText = result.eventDigestWindowText,
+    )
+  }
+
+  private fun shouldStreamSessionPlanFromPlan(plan: DebugNarrativePlan?): Boolean {
+    if (plan == null) return false
+    return plan.role.isNotBlank() && !plan.roleType.trim().equals("player", ignoreCase = true)
+  }
+
   private fun clearRuntimeRetryMessage() {
     val nextMessages = conversationMessages()
     if (nextMessages.size == messages.size) return
@@ -4781,7 +4834,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private suspend fun performDebugCurrentChapter() {
     debugMode = true
     debugLoading = true
-    debugLoadingStage = "进入调试界面"
+    debugLoadingStage = "正在进入调试界面..."
     debugEndDialog = null
     currentSessionId = "debug_${System.currentTimeMillis()}"
     debugSessionTitle = "调试：${worldName.ifBlank { "未命名故事" }}"
@@ -4795,6 +4848,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sessionRuntimeStage = ""
     sessionDetail = null
     sendText = ""
+    activeTab = "游玩"
     notice = "进入调试中..."
     var debugOverlayReleased = false
     fun releaseDebugLoading() {
@@ -4804,12 +4858,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       debugOverlayReleased = true
     }
     try {
-      debugLoadingStage = "保存草稿"
+      debugLoadingStage = "正在保存草稿..."
       saveWorldInternal(SaveWorldStatusMode.PRESERVE)
       val savedChapter = saveEditorChapterInternal(worldPublishStatus.ifBlank { "draft" })
       applySavedChapterToEditor(savedChapter)
       primeStoryEditorPersistState()
-      debugLoadingStage = "创建这次会话环境"
+      debugLoadingStage = "正在初始化调试环境..."
 
       val currentWorld = worlds.firstOrNull { it.id == worldId } ?: WorldItem(
         id = worldId,
@@ -4839,35 +4893,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       sessionDetail = null
       messages.clear()
       sendText = ""
-      activeTab = "游玩"
-
-      releaseDebugLoading()
-      sessionRuntimeStage = "读取记忆"
-      val introResult = repository.debugIntroduction(
+      sessionRuntimeStage = "初始化章节"
+      val initResult = repository.initDebug(
         worldId = worldId,
         chapterId = startChapter.id,
         state = debugRuntimeState,
         messages = emptyList(),
       )
+
+      releaseDebugLoading()
+      debugRuntimeState = initResult.state?.deepCopy() ?: JsonObject()
+      debugChapterId = initResult.chapterId
+      debugChapterTitle = initResult.chapterTitle.ifBlank { normalizeChapterTitleLabel(startChapter.title, startChapter.sort) }
+
+      sessionRuntimeStage = "生成开场白"
+      val introResult = repository.debugIntroduction(
+        worldId = worldId,
+        chapterId = initResult.chapterId ?: startChapter.id,
+        state = debugRuntimeState,
+        messages = emptyList(),
+      )
       applyDebugOrchestrationResult(introResult, startChapter)
       if (introResult.plan != null && shouldStreamDebugPlan(introResult.plan)) {
-        sessionRuntimeStage = "生成开场白"
         streamDebugPlan(introResult.plan, emptyList(), null)
-        if (sessionRuntimeStage == "生成开场白") {
-          sessionRuntimeStage = ""
-        }
       }
+      if (sessionRuntimeStage == "生成开场白") {
+        sessionRuntimeStage = ""
+      }
+
+      clearRuntimeRetryState()
+      sessionRuntimeStage = "准备剧情编排"
       val result = repository.debugOrchestration(
         worldId = worldId,
-        chapterId = startChapter.id,
+        chapterId = initResult.chapterId ?: startChapter.id,
         state = debugRuntimeState,
-        messages = conversationMessages(),
-        playerContent = null,
+        messages = conversationMessages(messages.toList()),
       )
-      sessionRuntimeStage = "准备剧情编排"
-      clearRuntimeRetryState()
-      applyDebugOrchestrationResult(result, startChapter)
       if (result.plan != null) {
+        applyDebugOrchestrationResult(result, startChapter)
         if (shouldStreamDebugPlan(result.plan)) {
           sessionRuntimeStage = "生成首轮内容"
           streamDebugPlan(result.plan, emptyList(), null)
@@ -4891,7 +4954,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     } finally {
       debugLoading = false
       debugLoadingStage = ""
-      if (sessionRuntimeStage == "生成首轮内容" || sessionRuntimeStage == "推进到用户回合") {
+      if (
+        sessionRuntimeStage == "初始化章节"
+        || sessionRuntimeStage == "生成开场白"
+        || sessionRuntimeStage == "准备剧情编排"
+        || sessionRuntimeStage == "生成首轮内容"
+        || sessionRuntimeStage == "推进到用户回合"
+      ) {
         sessionRuntimeStage = ""
       }
     }
@@ -4940,7 +5009,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (debugMode) leaveDebugMode()
     activeTab = "游玩"
     sessionOpening = true
-    sessionOpeningStage = "初始化会话"
+    sessionOpeningStage = "正在初始化故事..."
     sessionOpenError = ""
     sessionRuntimeStage = ""
     sessionResumeLatestOnOpen = false
@@ -4963,17 +5032,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
               .orEmpty()
           }
         if (existingSessionId.isNotBlank()) {
+          sessionOpeningStage = "正在继续上次故事..."
+          notice = "正在继续上次故事..."
           openResolvedSession(existingSessionId, playback = false, playbackIndex = 0, firstMessage = firstMessage, resumeLatest = true)
           return@runCatching
         }
         if ((world.chapterCount ?: 0) <= 0) {
           error("该故事还没有章节，暂时无法游玩")
         }
-        sessionOpeningStage = "创建会话"
-        notice = "正在创建会话..."
-        val sid = repository.startSession(world.id, world.projectId, null)
-        if (sid.isBlank()) error("未返回 sessionId")
-        openResolvedSession(sid, playback = false, playbackIndex = 0, firstMessage = firstMessage, resumeLatest = false)
+        sessionOpeningStage = "正在初始化故事..."
+        notice = "正在初始化故事..."
+        val initResult = repository.initStory(
+          worldId = world.id,
+          projectId = world.projectId,
+          title = world.name.ifBlank { "会话" },
+          skipOpening = false,
+        )
+        applyInitializedSessionDetail(world, initResult)
+        sessionOpening = false
+        sessionOpeningStage = ""
+
+        val openingResult = buildInitializedSessionOrchestrationResult(initResult, initResult.opening)
+        val firstChapterResult = buildInitializedSessionOrchestrationResult(initResult, initResult.firstChapter)
+
+        if (openingResult.plan != null) {
+          applySessionOrchestrationResult(openingResult)
+          if (shouldStreamSessionPlanFromPlan(openingResult.plan)) {
+            sessionRuntimeStage = "播放开场白"
+            streamSessionPlan(openingResult, emptyList())
+            if (sessionRuntimeStage == "播放开场白") {
+              sessionRuntimeStage = ""
+            }
+          }
+        }
+
+        if (firstChapterResult.plan != null) {
+          val history = conversationMessages(messages.toList())
+          applySessionOrchestrationResult(
+            firstChapterResult.copy(
+              currentEventDigest = sessionDetail?.currentEventDigest ?: firstChapterResult.currentEventDigest,
+              eventDigestWindow = sessionDetail?.eventDigestWindow ?: firstChapterResult.eventDigestWindow,
+              eventDigestWindowText = sessionDetail?.eventDigestWindowText ?: firstChapterResult.eventDigestWindowText,
+            ),
+          )
+          if (shouldStreamSessionPlanFromPlan(firstChapterResult.plan)) {
+            sessionRuntimeStage = "生成第一章内容"
+            streamSessionPlan(firstChapterResult, history)
+            if (sessionRuntimeStage == "生成第一章内容") {
+              sessionRuntimeStage = ""
+            }
+          }
+        }
+
+        runCatching {
+          loadSessions()
+        }.onFailure {
+          throwIfCancellation(it)
+          sessionListError = it.message ?: "会话列表刷新失败"
+        }
+        if (firstMessage.isNotBlank()) {
+          performSessionPlayerMessage(currentSessionId, firstMessage)
+        }
       }.onFailure {
         val message = it.message ?: "未知错误"
         sessionOpenError = message
@@ -4990,7 +5109,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     clearRuntimeRetryState()
     activeTab = "游玩"
     sessionOpening = true
-    sessionOpeningStage = if (playback) "加载回放进度" else "定位会话"
+    sessionOpeningStage = if (playback) "正在加载回放..." else "正在继续上次故事..."
     sessionOpenError = ""
     sessionRuntimeStage = ""
     sessionDetail = null
@@ -5526,7 +5645,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         val plan = orchestration.plan
         val shouldYieldToUser = plan?.awaitUser == true || plan?.nextRoleType?.trim()?.equals("player", ignoreCase = true) == true
-        val shouldStreamPlan = plan != null && !shouldYieldToUser && plan.role.isNotBlank() && !plan.roleType.trim().equals("player", ignoreCase = true)
+        val shouldStreamPlan = shouldStreamSessionPlanFromPlan(plan)
         if (shouldStreamPlan) {
           streamSessionPlan(orchestration, history)
         }
@@ -6487,15 +6606,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       || item.eventKind.trim().equals("opening", ignoreCase = true)
   }
 
+  private fun splitCompletionConditionText(raw: String): Pair<String, String> {
+    val text = raw.trim()
+    if (text.isBlank()) return "" to ""
+    val matched = Regex("""^(.*?)[（(]\s*([^()（）]+?)\s*[)）]\s*$""").find(text)
+      ?: return text to ""
+    val successText = matched.groupValues.getOrNull(1)?.trim().orEmpty()
+    val failureText = matched.groupValues.getOrNull(2)?.trim().orEmpty()
+    if (successText.isBlank() || failureText.isBlank() || !Regex("失败|fail|failed|failure", RegexOption.IGNORE_CASE).containsMatchIn(failureText)) {
+      return text to ""
+    }
+    return successText to failureText
+  }
+
   private fun runtimeOutlineEventItems(): List<RuntimeChapterEventItem> {
     val chapter = playCurrentChapter() ?: return emptyList()
     val runtimeOutline = chapter.runtimeOutline?.takeIf { it.isJsonObject }?.asJsonObject ?: return emptyList()
     val phases = runtimeOutline.getAsJsonArray("phases")
     val fixedEvents = runtimeOutline.getAsJsonArray("fixedEvents")
-    if (phases == null && fixedEvents == null) return emptyList()
+    val completionConditionText = normalizeConditionEditorText(chapter.completionCondition)
+    val completionBranches = splitCompletionConditionText(completionConditionText)
+    val syntheticFixedEvents = if (fixedEvents == null || fixedEvents.size() == 0) {
+      listOf(completionBranches.first, completionBranches.second)
+        .filter { it.isNotBlank() }
+        .mapIndexed { index, label -> ChapterFixedEventPreview("synthetic_fixed_event_${index + 1}", label, index == 0) }
+    } else {
+      emptyList()
+    }
+    if (phases == null && fixedEvents == null && syntheticFixedEvents.isEmpty()) return emptyList()
     val progress = runtimeStateRoot()?.getAsJsonObject("chapterProgress")
     val phaseId = scalarRuntimeText(runtimeStateRoot()?.getAsJsonObject("chapterProgress")?.get("phaseId"))
     val currentEventKind = scalarRuntimeText(progress?.get("eventKind"))
+    val currentEventFlowType = playCurrentRuntimeEventDigest()?.eventFlowType.orEmpty()
     val currentEventStatus = scalarRuntimeText(progress?.get("eventStatus")).ifBlank { "未开始" }
     val currentEventSummary = playCurrentRuntimeEventDigest()?.eventSummary.orEmpty()
     val completedEvents = progress?.getAsJsonArray("completedEvents")
@@ -6534,7 +6676,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       val summary = scalarRuntimeText(event.get("label")).ifBlank { "固定事件 ${index + 1}" }
       val status = when {
         eventId.isNotBlank() && completedEvents.contains(eventId) -> "已完成"
-        (currentEventKind.equals("fixed", ignoreCase = true) || currentEventKind.equals("ending", ignoreCase = true)) && index == 0 ->
+        (currentEventFlowType.equals("chapter_ending_check", ignoreCase = true)
+          || currentEventKind.equals("fixed", ignoreCase = true)
+          || currentEventKind.equals("ending", ignoreCase = true)) && index == 0 ->
           if (currentEventStatus == "waiting_input") "等待输入" else currentEventStatus
         else -> "未开始"
       }
@@ -6543,6 +6687,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         eventKind = "fixed",
         eventFlowType = "chapter_ending_check",
         eventSummary = summary,
+        eventStatus = status,
+        eventFacts = "",
+        memorySummary = "",
+        memoryFacts = "",
+      )
+    }
+
+    syntheticFixedEvents.forEachIndexed { index, event ->
+      val status = if ((currentEventFlowType.equals("chapter_ending_check", ignoreCase = true)
+          || currentEventKind.equals("fixed", ignoreCase = true)
+          || currentEventKind.equals("ending", ignoreCase = true)) && index == 0
+      ) {
+        if (currentEventStatus == "waiting_input") "等待输入" else currentEventStatus
+      } else {
+        "未开始"
+      }
+      items += RuntimeChapterEventItem(
+        eventIndex = items.size + 1,
+        eventKind = "fixed",
+        eventFlowType = "chapter_ending_check",
+        eventSummary = event.label.ifBlank { "固定事件 ${index + 1}" },
         eventStatus = status,
         eventFacts = "",
         memorySummary = "",

@@ -276,6 +276,31 @@ data class DebugOrchestrationResult(
   @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
 )
 
+data class DebugInitResult(
+  @SerializedName("worldId") val worldId: Long = 0L,
+  @SerializedName("chapterId") val chapterId: Long? = null,
+  @SerializedName("chapterTitle") val chapterTitle: String = "",
+  @SerializedName("state") val state: JsonElement? = null,
+  @SerializedName("endDialog") val endDialog: String? = null,
+  @SerializedName("endDialogDetail") val endDialogDetail: String? = null,
+  @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
+  @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
+  @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
+)
+
+data class StoryInitResult(
+  @SerializedName("sessionId") val sessionId: String = "",
+  @SerializedName("worldId") val worldId: Long = 0L,
+  @SerializedName("chapterId") val chapterId: Long? = null,
+  @SerializedName("chapterTitle") val chapterTitle: String = "",
+  @SerializedName("state") val state: JsonElement? = null,
+  @SerializedName("opening") val opening: DebugNarrativePlan? = null,
+  @SerializedName("firstChapter") val firstChapter: DebugNarrativePlan? = null,
+  @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
+  @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
+  @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
+)
+
 data class AiTokenUsageLogItem(
   @SerializedName("id") val id: Long = 0L,
   @SerializedName("createTime") val createTime: Long = 0L,

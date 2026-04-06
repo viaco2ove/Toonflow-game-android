@@ -254,6 +254,21 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return unwrapEnvelope("game/startSession", api().startSession(payload)).get("sessionId")?.asString ?: ""
   }
 
+  suspend fun initStory(
+    worldId: Long,
+    projectId: Long,
+    title: String,
+    skipOpening: Boolean = false,
+  ): StoryInitResult {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+      addProperty("projectId", projectId)
+      if (title.isNotBlank()) addProperty("title", title)
+      if (skipOpening) addProperty("skipOpening", true)
+    }
+    return unwrapEnvelope("game/initStory", api().initStory(payload))
+  }
+
   suspend fun listSession(projectId: Long? = null, worldId: Long? = null): List<SessionItem> {
     val payload = JsonObject().apply {
       if (projectId != null && projectId > 0L) {
@@ -399,6 +414,23 @@ class GameRepository(private val settingsStore: SettingsStore) {
       add("messages", gson.toJsonTree(messages))
     }
     return api().introduceDebug(payload).data
+  }
+
+  suspend fun initDebug(
+    worldId: Long,
+    chapterId: Long?,
+    state: JsonElement?,
+    messages: List<MessageItem>,
+  ): DebugInitResult {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+      if (chapterId != null && chapterId > 0L) addProperty("chapterId", chapterId)
+      if (state != null && !state.isJsonNull) {
+        add("state", state)
+      }
+      add("messages", gson.toJsonTree(messages))
+    }
+    return unwrapEnvelope("game/initDebug", api().initDebug(payload))
   }
 
   suspend fun streamDebugLines(
