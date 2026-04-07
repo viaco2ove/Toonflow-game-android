@@ -3486,7 +3486,7 @@ private fun PlayScene(
     runtimeVoiceMessageKey,
     runtimeVoicePhase,
   ) {
-    if (mode != "live" || vm.debugLoading || vm.debugEndDialog != null) {
+    if (mode != "live" || vm.debugLoading || vm.runtimeProcessingPending || vm.debugEndDialog != null) {
       return@LaunchedEffect
     }
     val latest = latestRevealedMessage ?: return@LaunchedEffect

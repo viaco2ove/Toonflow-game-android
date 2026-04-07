@@ -4859,6 +4859,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sendText = ""
     activeTab = "游玩"
     notice = "进入调试中..."
+    runtimeProcessingPending = true
     var debugOverlayReleased = false
     fun releaseDebugLoading() {
       if (debugOverlayReleased) return
@@ -4963,6 +4964,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     } finally {
       debugLoading = false
       debugLoadingStage = ""
+      runtimeProcessingPending = false
       if (
         sessionRuntimeStage == "初始化章节"
         || sessionRuntimeStage == "生成开场白"
