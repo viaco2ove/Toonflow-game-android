@@ -213,6 +213,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   val baseTabs = listOf("主页", "创建", "聊过", "我的")
   val settingsModelSlots = listOf(
     SettingsModelSlot("storyOrchestratorModel", "编排师", "text"),
+    SettingsModelSlot("storyChapterJudgeModel", "章节判定", "text"),
     SettingsModelSlot("storyFastSpeakerModel", "快速角色发言", "text"),
     SettingsModelSlot("storySpeakerModel", "角色发言", "text"),
     SettingsModelSlot("storyMemoryModel", "记忆管理", "text"),
@@ -233,7 +234,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     StoryRuntimeOption("high", "high"),
   )
   val storyPromptCodes = listOf(
-    "story-main",
     "story-orchestrator-compact",
     "story-orchestrator-advanced",
     "story-speaker",
@@ -6619,6 +6619,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return successText to failureText
   }
 
+  private fun buildEndingOutlineSummary(
+    completionCondition: String,
+    fixedEvents: List<ChapterFixedEventPreview>,
+  ): String {
+    val normalized = normalizeConditionEditorText(completionCondition)
+    if (normalized.isNotBlank()) {
+      return "结束条件：$normalized"
+    }
+    val labels = fixedEvents.map { it.label.trim() }.filter { it.isNotBlank() }
+    return if (labels.isNotEmpty()) "结束条件：${labels.joinToString("；")}" else "结束条件检查"
+  }
+
+  private fun buildEndingOutlineFacts(fixedEvents: List<ChapterFixedEventPreview>): String {
+    val labels = fixedEvents.map { it.label.trim() }.filter { it.isNotBlank() }
+    if (labels.isEmpty()) return ""
+    return labels.mapIndexed { index, label ->
+      if (index == 0) "成功条件：$label" else "失败条件：$label"
+    }.joinToString(" / ")
+  }
+
   private fun runtimeOutlineEventItems(): List<RuntimeChapterEventItem> {
     val chapter = playCurrentChapter() ?: return emptyList()
     val runtimeOutline = chapter.runtimeOutline?.takeIf { it.isJsonObject }?.asJsonObject ?: return emptyList()
@@ -6670,46 +6690,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       )
     }
 
-    fixedEvents?.forEachIndexed { index, element ->
-      val event = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEachIndexed
-      val eventId = scalarRuntimeText(event.get("id"))
-      val summary = scalarRuntimeText(event.get("label")).ifBlank { "固定事件 ${index + 1}" }
+    val allFixedEvents = buildList {
+      fixedEvents?.forEach { element ->
+        val event = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@forEach
+        add(
+          ChapterFixedEventPreview(
+            scalarRuntimeText(event.get("id")),
+            scalarRuntimeText(event.get("label")),
+          ),
+        )
+      }
+      addAll(syntheticFixedEvents)
+    }.filter { it.label.isNotBlank() || it.id.isNotBlank() }
+
+    if (allFixedEvents.isNotEmpty()) {
+      val anyCompleted = allFixedEvents.any { it.id.isNotBlank() && completedEvents.contains(it.id) }
       val status = when {
-        eventId.isNotBlank() && completedEvents.contains(eventId) -> "已完成"
-        (currentEventFlowType.equals("chapter_ending_check", ignoreCase = true)
+        currentEventFlowType.equals("chapter_ending_check", ignoreCase = true)
           || currentEventKind.equals("fixed", ignoreCase = true)
-          || currentEventKind.equals("ending", ignoreCase = true)) && index == 0 ->
+          || currentEventKind.equals("ending", ignoreCase = true) ->
           if (currentEventStatus == "waiting_input") "等待输入" else currentEventStatus
+        anyCompleted -> "已完成"
         else -> "未开始"
       }
       items += RuntimeChapterEventItem(
         eventIndex = items.size + 1,
         eventKind = "fixed",
         eventFlowType = "chapter_ending_check",
-        eventSummary = summary,
+        eventSummary = buildEndingOutlineSummary(normalizeConditionEditorText(chapter.completionCondition), allFixedEvents),
         eventStatus = status,
-        eventFacts = "",
-        memorySummary = "",
-        memoryFacts = "",
-      )
-    }
-
-    syntheticFixedEvents.forEachIndexed { index, event ->
-      val status = if ((currentEventFlowType.equals("chapter_ending_check", ignoreCase = true)
-          || currentEventKind.equals("fixed", ignoreCase = true)
-          || currentEventKind.equals("ending", ignoreCase = true)) && index == 0
-      ) {
-        if (currentEventStatus == "waiting_input") "等待输入" else currentEventStatus
-      } else {
-        "未开始"
-      }
-      items += RuntimeChapterEventItem(
-        eventIndex = items.size + 1,
-        eventKind = "fixed",
-        eventFlowType = "chapter_ending_check",
-        eventSummary = event.label.ifBlank { "固定事件 ${index + 1}" },
-        eventStatus = status,
-        eventFacts = "",
+        eventFacts = buildEndingOutlineFacts(allFixedEvents),
         memorySummary = "",
         memoryFacts = "",
       )
