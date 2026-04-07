@@ -355,7 +355,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private val messageReactions = mutableStateMapOf<String, String>()
   var sendText by mutableStateOf("")
   var sendPending by mutableStateOf(false)
-  private var continueSessionNarrativeJob: Job? = null
+  var runtimeProcessingPending by mutableStateOf(false)
 
   var debugMode by mutableStateOf(false)
   var debugSessionTitle by mutableStateOf("")
@@ -1591,6 +1591,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private fun playCurrentRuntimeStatus(): String {
     if (sessionOpening) return "session_opening"
     if (sessionOpenError.isNotBlank()) return "session_error"
+    if (sendPending || runtimeProcessingPending) return "sending"
     if (playRuntimeMiniGame()?.acceptsTextInput == true) return "waiting_player"
     val latest = conversationMessages().lastOrNull()
     val status = latest?.let { runtimeMessageStatus(it) }.orEmpty()
@@ -1610,6 +1611,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun playCanPlayerInput(): Boolean {
     if (sessionOpening) return false
     if (sessionOpenError.isNotBlank()) return false
+    if (sendPending || runtimeProcessingPending) return false
     if (sessionRuntimeStage.isNotBlank()) return false
     if (playRuntimeMiniGame()?.acceptsTextInput == true) return true
     return playCanPlayerSpeak() && playCurrentRuntimeStatus() == "waiting_player"
@@ -1628,7 +1630,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val runtimeStatus = playCurrentRuntimeStatus()
     val status = playSessionStatus().trim().lowercase()
     if (runtimeStatus == "sending") {
-      return "发送中..."
+      return "处理中..."
     }
     if (sessionRuntimeStage.isNotBlank()) return sessionRuntimeStage
     if (runtimeStatus == "waiting_player" && playCanPlayerSpeak()) {
@@ -1652,7 +1654,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val runtimeStatus = playCurrentRuntimeStatus()
     val status = playSessionStatus().trim().lowercase()
     if (runtimeStatus == "sending") {
-      return "正在发送中..."
+      return "正在处理中..."
     }
     if (runtimeStatus == "error") {
       return "发送失败，可重试或重新输入。"
@@ -3496,10 +3498,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     syncRuntimeChatTraceLog()
   }
 
+  private fun commitLocalPendingPlayerMessage(messageId: Long) {
+    updateMessageById(messageId) { message ->
+      message.copy(meta = buildRuntimeStreamMeta(message.meta, status = "generated", streaming = false))
+    }
+    syncRuntimeChatTraceLog()
+  }
+
   fun playerPendingStatusText(message: MessageItem): String {
     if (!isLocalPendingPlayerMessage(message)) return ""
     val status = runtimeMessageStatus(message)
-    return if (status == "error") "发送失败" else "发送中..."
+    return if (status == "error") "发送失败" else "处理中..."
   }
 
   private fun buildRuntimeStreamMeta(
@@ -4992,7 +5001,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     notice = if (playback) "正在同步回放进度..." else "正在同步游戏进度..."
     refreshCurrentSession()
     if (!playback && conversationMessages(messages.toList()).isEmpty() && !playCanPlayerSpeak()) {
-      continueSessionNarrativeInBackground()
+      viewModelScope.launch {
+        continueSessionNarrative()
+      }
     }
     if (firstMessage.isNotBlank()) {
       performSessionPlayerMessage(sessionId, firstMessage)
@@ -5263,8 +5274,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun sendMessage() {
     val sid = currentSessionId
     val text = sendText.trim()
-    if (sid.isBlank() || text.isBlank() || sendPending) {
-      logStoryFlow("sendMessage skipped sessionId=${sid.trim()} textBlank=${text.isBlank()} pending=$sendPending")
+    if (sid.isBlank() || text.isBlank() || sendPending || runtimeProcessingPending) {
+      logStoryFlow("sendMessage skipped sessionId=${sid.trim()} textBlank=${text.isBlank()} pending=$sendPending runtimePending=$runtimeProcessingPending")
       return
     }
 
@@ -5302,8 +5313,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun sendMiniGameAction(action: String) {
     val sid = currentSessionId
     val text = action.trim()
-    if (sid.isBlank() || text.isBlank() || sendPending) {
-      logStoryFlow("sendMiniGameAction skipped sessionId=${sid.trim()} textBlank=${text.isBlank()} pending=$sendPending")
+    if (sid.isBlank() || text.isBlank() || sendPending || runtimeProcessingPending) {
+      logStoryFlow("sendMiniGameAction skipped sessionId=${sid.trim()} textBlank=${text.isBlank()} pending=$sendPending runtimePending=$runtimeProcessingPending")
       return
     }
     sendText = text
@@ -5487,7 +5498,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       sendText = ""
       clearRuntimeRetryState()
       applySessionNarrativeResult(result)
-      continueSessionNarrativeInBackground()
+      continueSessionNarrative()
       viewModelScope.launch {
         runCatching { loadSessions() }.onFailure {
           throwIfCancellation(it)
@@ -5497,19 +5508,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     } finally {
       if (sessionRuntimeStage == "提交用户发言") {
         sessionRuntimeStage = ""
-      }
-    }
-  }
-
-  private fun continueSessionNarrativeInBackground() {
-    val previousJob = continueSessionNarrativeJob
-    continueSessionNarrativeJob = viewModelScope.launch {
-      previousJob?.join()
-      runCatching {
-        continueSessionNarrative()
-      }.onFailure {
-        if (it is CancellationException) return@onFailure
-        notice = "继续剧情失败: ${runtimeUiErrorMessage(it)}"
       }
     }
   }
@@ -5599,7 +5597,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun retryFailedPlayerMessage(messageId: Long) {
     val target = messages.firstOrNull { it.id == messageId } ?: return
     if (!isLocalPendingPlayerMessage(target) || runtimeMessageStatus(target) != "error") return
-    if (sendPending) return
+    if (sendPending || runtimeProcessingPending) return
     val content = target.content.trim()
     if (content.isBlank()) return
     updateMessageById(messageId) { message ->
@@ -5610,7 +5608,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sendPending = true
     viewModelScope.launch {
       runCatching {
-        performSessionPlayerMessage(currentSessionId, content, messageId)
+        if (debugMode) {
+          performDebugPlayerMessage(content, appendPlayerMessage = false, optimisticMessageId = messageId)
+        } else {
+          performSessionPlayerMessage(currentSessionId, content, messageId)
+        }
       }.onFailure {
         throwIfCancellation(it)
         markLocalPendingPlayerMessageFailed(messageId)
@@ -5677,6 +5679,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   suspend fun continueSessionNarrative(): Boolean {
     if (currentSessionId.isBlank()) return false
     clearRuntimeRetryState()
+    runtimeProcessingPending = true
     return runCatching {
       performContinueSessionNarrative()
       true
@@ -5686,6 +5689,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         performContinueSessionNarrative()
       }
       false
+    }.also {
+      runtimeProcessingPending = false
     }
   }
 
@@ -5696,17 +5701,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       updateDebugStatePreview()
       return
     }
-    if (sendPending) return
+    if (sendPending || runtimeProcessingPending) return
     clearRuntimeRetryState()
+    val optimistic = appendLocalPendingPlayerMessage(text)
+    sendText = ""
     sendPending = true
     viewModelScope.launch {
       runCatching {
-        performDebugPlayerMessage(text, appendPlayerMessage = true)
+        performDebugPlayerMessage(text, appendPlayerMessage = false, optimisticMessageId = optimistic.id)
       }.onFailure {
         throwIfCancellation(it)
-        showRuntimeRetryMessage("调试发送失败: ${runtimeUiErrorMessage(it)}") {
-          performDebugPlayerMessage(text, appendPlayerMessage = false)
-        }
+        markLocalPendingPlayerMessageFailed(optimistic.id)
+        sendText = text
+        notice = "调试发送失败: ${runtimeUiErrorMessage(it)}"
         updateDebugStatePreview()
       }.also {
         sendPending = false
@@ -5714,7 +5721,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
-  private suspend fun performDebugPlayerMessage(text: String, appendPlayerMessage: Boolean) {
+  private suspend fun performDebugPlayerMessage(text: String, appendPlayerMessage: Boolean, optimisticMessageId: Long? = null) {
     if (appendPlayerMessage) {
       messages.add(
         MessageItem(
@@ -5743,8 +5750,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
     clearRuntimeRetryState()
     applyDebugOrchestrationResult(result, playCurrentChapter())
+    if (optimisticMessageId != null) {
+      commitLocalPendingPlayerMessage(optimisticMessageId)
+    }
     if (result.plan != null && shouldStreamDebugPlan(result.plan)) {
+      sessionRuntimeStage = "继续编排下一轮剧情"
       streamDebugPlanOrFallback(result.plan, conversationMessages(), text)
+      if (sessionRuntimeStage == "继续编排下一轮剧情") {
+        sessionRuntimeStage = ""
+      }
     }
     updateDebugStatePreview()
   }
@@ -5754,6 +5768,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (continueDebugNarrativeRunning) return false
     continueDebugNarrativeRunning = true
     clearRuntimeRetryState()
+    runtimeProcessingPending = true
     return runCatching {
       performContinueDebugNarrative()
       true
@@ -5765,6 +5780,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       updateDebugStatePreview()
       false
     }.also {
+      runtimeProcessingPending = false
       continueDebugNarrativeRunning = false
     }
   }

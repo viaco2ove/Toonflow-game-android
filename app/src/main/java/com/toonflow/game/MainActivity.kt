@@ -4091,6 +4091,7 @@ private fun PlayScene(
         chapterObjectivePreview = chapterObjectivePreview,
         canPlayerInput = canPlayerInput,
         sendPending = vm.sendPending,
+        runtimeProcessingPending = vm.runtimeProcessingPending,
         inputMode = inputMode,
         voiceListening = voiceListening,
         voiceTranscribing = voiceTranscribing,
@@ -4139,8 +4140,8 @@ private fun PlayScene(
           }
         },
         onVoicePressStart = {
-          if (vm.sendPending) {
-            vm.notice = "发送中，请稍候"
+          if (vm.sendPending || vm.runtimeProcessingPending) {
+            vm.notice = "处理中，请稍候"
           } else if (!vm.playCanPlayerInput()) {
             vm.notice = vm.playTurnHint().ifBlank { "当前还没轮到用户发言" }
           } else if (voiceTranscribing || voiceListening) {
@@ -5296,6 +5297,7 @@ private fun FooterBar(
   chapterObjectivePreview: String,
   canPlayerInput: Boolean,
   sendPending: Boolean,
+  runtimeProcessingPending: Boolean,
   inputMode: String,
   voiceListening: Boolean,
   voiceTranscribing: Boolean,
@@ -5526,7 +5528,7 @@ private fun FooterBar(
           value = sendText,
           onValueChange = onSendTextChange,
           modifier = Modifier.weight(1f),
-          enabled = canPlayerInput && !sendPending,
+          enabled = canPlayerInput && !sendPending && !runtimeProcessingPending,
           placeholder = { Text(inputPlaceholder) },
           maxLines = 2,
           colors = OutlinedTextFieldDefaults.colors(
@@ -5550,7 +5552,7 @@ private fun FooterBar(
         Spacer(modifier = Modifier.width(8.dp))
         Button(
           onClick = onSend,
-          enabled = canPlayerInput && !sendPending,
+          enabled = canPlayerInput && !sendPending && !runtimeProcessingPending,
           shape = RoundedCornerShape(12.dp),
           colors = ButtonDefaults.buttonColors(
             containerColor = Color(0xFFF7FBFF),
@@ -5559,7 +5561,7 @@ private fun FooterBar(
             disabledContentColor = Color(0xFFE3EEFF),
           ),
         ) {
-          Text(if (sendPending) "发送中..." else "发送")
+          Text(if (sendPending || runtimeProcessingPending) "处理中..." else "发送")
         }
       }
     } else {
@@ -5576,14 +5578,14 @@ private fun FooterBar(
         Surface(
           modifier = Modifier.weight(1f),
           shape = RoundedCornerShape(12.dp),
-          color = if (canPlayerInput && !sendPending && !voiceTranscribing) Color(0xFFF7FBFF) else Color(0x66F7FBFF),
+          color = if (canPlayerInput && !sendPending && !runtimeProcessingPending && !voiceTranscribing) Color(0xFFF7FBFF) else Color(0x66F7FBFF),
         ) {
           Box(
             modifier = Modifier
               .fillMaxWidth()
               .defaultMinSize(minHeight = 48.dp)
               .pointerInteropFilter { event ->
-                if (!canPlayerInput || sendPending || voiceTranscribing) {
+                if (!canPlayerInput || sendPending || runtimeProcessingPending || voiceTranscribing) {
                   return@pointerInteropFilter false
                 }
                 when (event.actionMasked) {
@@ -5618,12 +5620,12 @@ private fun FooterBar(
             Text(
               when {
                 voiceTranscribing -> "识别处理中..."
-                sendPending -> "发送中..."
+                sendPending || runtimeProcessingPending -> "处理中..."
                 voiceListening && holdCancelPending -> "松开取消"
                 voiceListening -> "松开发送，上滑取消"
                 else -> "按住说话"
               },
-              color = if (canPlayerInput && !sendPending && !voiceTranscribing) Color(0xFF20304A) else Color(0xFFE3EEFF),
+              color = if (canPlayerInput && !sendPending && !runtimeProcessingPending && !voiceTranscribing) Color(0xFF20304A) else Color(0xFFE3EEFF),
             )
           }
         }
@@ -5636,7 +5638,7 @@ private fun FooterBar(
 
 private fun runtimeStatusLabel(status: String): String {
   return when (status.trim()) {
-    "sending" -> "发送中"
+    "sending" -> "处理中"
     "orchestrated" -> "已编排"
     "waiting_next" -> "等待下一位"
     "waiting_player" -> "等待用户"
