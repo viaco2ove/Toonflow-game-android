@@ -2057,7 +2057,7 @@ private fun CreateScene(
           )
         }
         Text(
-          "提及用户扮演的角色时，请用“用户”一词称呼",
+          "提及用户扮演的角色时，请用“用户”一词称呼。help",
           style = MaterialTheme.typography.bodySmall,
           color = Color(0xFF7B8EA8),
         )
