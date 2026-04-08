@@ -288,6 +288,14 @@ data class DebugInitResult(
   @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
 )
 
+data class DebugRevisitResult(
+  @SerializedName("state") val state: JsonElement? = null,
+  @SerializedName("messages") val messages: List<MessageItem> = emptyList(),
+  @SerializedName("round") val round: Int? = null,
+  @SerializedName("chapterId") val chapterId: Long? = null,
+  @SerializedName("messageCount") val messageCount: Int? = null,
+)
+
 data class StoryInitResult(
   @SerializedName("sessionId") val sessionId: String = "",
   @SerializedName("worldId") val worldId: Long = 0L,

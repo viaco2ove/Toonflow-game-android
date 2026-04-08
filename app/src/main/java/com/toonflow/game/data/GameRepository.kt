@@ -313,6 +313,14 @@ class GameRepository(private val settingsStore: SettingsStore) {
     api().revisitMessage(payload)
   }
 
+  suspend fun debugRevisitMessage(debugRuntimeKey: String, messageCount: Int): DebugRevisitResult {
+    val payload = JsonObject().apply {
+      addProperty("debugRuntimeKey", debugRuntimeKey)
+      addProperty("messageCount", messageCount)
+    }
+    return unwrapEnvelope("game/debugRuntimeShared/revisit", api().debugRevisitMessage(payload))
+  }
+
   suspend fun getMessages(sessionId: String): List<MessageItem> {
     val payload = JsonObject().apply {
       addProperty("sessionId", sessionId)

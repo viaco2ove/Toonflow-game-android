@@ -195,6 +195,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private data class DebugRevisitSnapshot(
     val conversationId: String,
     val messageId: Long,
+    val messageCount: Int,
     val chapterId: Long?,
     val chapterTitle: String,
     val endDialog: String?,
@@ -3369,6 +3370,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val nextSnapshot = DebugRevisitSnapshot(
       conversationId = conversationId,
       messageId = message.id,
+      messageCount = normalizeDebugIncomingMessages(
+        conversationMessages(messages.toList())
+          .filterNot(::isStreamingRuntimeMessage)
+          .map { it.copy(meta = it.meta?.deepCopy()) },
+      ).size,
       chapterId = debugChapterId,
       chapterTitle = debugChapterTitle,
       endDialog = debugEndDialog,
@@ -3394,8 +3400,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun canRevisitDebugMessage(message: MessageItem): Boolean {
     if (!debugMode || message.id <= 0L || isRuntimeRetryMessage(message) || isStreamingRuntimeMessage(message)) return false
-    loadDebugRevisitSnapshots()
-    return debugRevisitSnapshots.any { it.messageId == message.id }
+    return true
   }
 
   fun canRevisitSessionMessage(message: MessageItem): Boolean {
@@ -3410,29 +3415,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       notice = "当前不是章节调试模式"
       return
     }
-    loadDebugRevisitSnapshots()
-    val target = debugRevisitSnapshots.firstOrNull { it.messageId == messageId }
-    if (target == null) {
-      notice = "没有找到这句台词的回溯快照"
+    val debugRuntimeKey = debugRuntimeState
+      ?.takeIf { it.isJsonObject }
+      ?.asJsonObject
+      ?.get("debugRuntimeKey")
+      ?.takeIf { !it.isJsonNull }
+      ?.asString
+      ?.trim()
+      .orEmpty()
+    if (debugRuntimeKey.isBlank()) {
+      notice = "当前调试环境缺少回溯标识"
       return
     }
-    debugRuntimeState = target.state?.deepCopy()
-    debugStatePreview = prettyGson.toJson(debugRuntimeState)
-    debugLatestPlan = null
-    debugChapterId = target.chapterId ?: debugChapterId
-    debugChapterTitle = target.chapterTitle.ifBlank { debugChapterTitle }
-    debugEndDialog = target.endDialog
-    debugEndDialogDetail = target.endDialogDetail
-    messages.clear()
-    messages.addAll(normalizeDebugIncomingMessages(target.messages.map { it.copy(meta = it.meta?.deepCopy()) }))
-    val validIds = messages.map { it.id }.toSet()
-    val nextSnapshots = debugRevisitSnapshots.filter { validIds.contains(it.messageId) }.sortedBy { it.capturedAt }
-    debugRevisitSnapshots.clear()
-    debugRevisitSnapshots.addAll(nextSnapshots)
-    persistDebugRevisitSnapshots()
-    updateDebugStatePreview()
-    syncRuntimeChatTraceLog()
-    notice = "已回溯到这句台词，可继续调试编排"
+    val stableMessages = conversationMessages(messages.toList())
+      .filterNot(::isRuntimeRetryMessage)
+      .filterNot(::isStreamingRuntimeMessage)
+    val targetIndex = stableMessages.indexOfFirst { it.id == messageId }
+    if (targetIndex < 0) {
+      notice = "没有找到这句台词的回溯位置"
+      return
+    }
+    val messageCount = targetIndex + 1
+    viewModelScope.launch {
+      runCatching {
+        repository.debugRevisitMessage(debugRuntimeKey, messageCount)
+      }.onSuccess { result ->
+        val backendMessages = normalizeDebugIncomingMessages(result.messages.map { it.copy(meta = it.meta?.deepCopy()) })
+        if (backendMessages.isEmpty()) {
+          error("后端未返回可恢复的调试消息")
+        }
+        if (result.chapterId != null && result.chapterId > 0L) {
+          debugChapterId = result.chapterId
+        }
+        debugRuntimeState = result.state?.deepCopy()
+        debugStatePreview = prettyGson.toJson(debugRuntimeState)
+        debugLatestPlan = null
+        debugEndDialog = null
+        debugEndDialogDetail = ""
+        messages.clear()
+        messages.addAll(backendMessages)
+        updateDebugStatePreview()
+        syncRuntimeChatTraceLog()
+        notice = "已回溯到这句台词，可继续调试编排"
+      }.onFailure {
+        throwIfCancellation(it)
+        notice = "回溯失败: ${it.message ?: "未知错误"}"
+      }
+    }
   }
 
   fun revisitSessionMessage(messageId: Long) {

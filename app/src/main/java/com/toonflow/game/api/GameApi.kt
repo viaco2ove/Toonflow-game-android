@@ -10,6 +10,7 @@ import com.toonflow.game.data.AiTokenUsageStatsItem
 import com.toonflow.game.data.ChapterItem
 import com.toonflow.game.data.DebugInitResult
 import com.toonflow.game.data.DebugOrchestrationResult
+import com.toonflow.game.data.DebugRevisitResult
 import com.toonflow.game.data.DebugStepResult
 import com.toonflow.game.data.GeneratedImageResult
 import com.toonflow.game.data.LocalAvatarMattingStatus
@@ -128,6 +129,9 @@ interface GameApi {
 
   @POST("game/initDebug")
   suspend fun initDebug(@Body payload: JsonObject): ApiEnvelope<DebugInitResult>
+
+  @POST("game/debugRuntimeShared/revisit")
+  suspend fun debugRevisitMessage(@Body payload: JsonObject): ApiEnvelope<DebugRevisitResult>
 
   @POST("game/initStory")
   suspend fun initStory(@Body payload: JsonObject): ApiEnvelope<StoryInitResult>
