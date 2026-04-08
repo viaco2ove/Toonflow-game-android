@@ -3743,23 +3743,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     syncRuntimeChatTraceLog()
   }
 
-  private fun buildInitializedSessionOrchestrationResult(
-    result: StoryInitResult,
-    plan: DebugNarrativePlan?,
-  ): SessionOrchestrationResult {
-    return SessionOrchestrationResult(
-      sessionId = result.sessionId.trim(),
-      status = "active",
-      chapterId = result.chapterId,
-      expectedRole = plan?.nextRole?.trim().orEmpty(),
-      expectedRoleType = plan?.nextRoleType?.trim().orEmpty(),
-      plan = plan,
-      currentEventDigest = result.currentEventDigest,
-      eventDigestWindow = result.eventDigestWindow,
-      eventDigestWindowText = result.eventDigestWindowText,
-    )
-  }
-
   private fun shouldStreamSessionPlanFromPlan(plan: DebugNarrativePlan?): Boolean {
     if (plan == null) return false
     return plan.role.isNotBlank() && !plan.roleType.trim().equals("player", ignoreCase = true)
@@ -5109,9 +5092,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         sessionOpening = false
         sessionOpeningStage = ""
 
-        val openingResult = buildInitializedSessionOrchestrationResult(initResult, initResult.opening)
-        val firstChapterResult = buildInitializedSessionOrchestrationResult(initResult, initResult.firstChapter)
-
+        // 正式游玩也拆成独立开场白请求，再进入第一章编排，避免继续把计划塞回 initStory。
+        val openingResult = repository.introduceStory(currentSessionId)
         if (openingResult.plan != null) {
           applySessionOrchestrationResult(openingResult)
           if (shouldStreamSessionPlanFromPlan(openingResult.plan)) {
@@ -5123,6 +5105,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           }
         }
 
+        val firstChapterResult = repository.orchestrateSession(currentSessionId)
         if (firstChapterResult.plan != null) {
           val history = conversationMessages(messages.toList())
           applySessionOrchestrationResult(
