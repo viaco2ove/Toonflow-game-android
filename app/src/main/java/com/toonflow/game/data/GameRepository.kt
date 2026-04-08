@@ -269,6 +269,16 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return unwrapEnvelope("game/initStory", api().initStory(payload))
   }
 
+  /**
+   * 正式游玩开场白独立请求，和章节调试保持同一启动顺序。
+   */
+  suspend fun introduceStory(sessionId: String): SessionOrchestrationResult {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+    }
+    return unwrapEnvelope("game/introduction", api().introduceStory(payload))
+  }
+
   suspend fun listSession(projectId: Long? = null, worldId: Long? = null): List<SessionItem> {
     val payload = JsonObject().apply {
       if (projectId != null && projectId > 0L) {

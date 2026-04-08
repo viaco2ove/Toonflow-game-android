@@ -136,6 +136,9 @@ interface GameApi {
   @POST("game/initStory")
   suspend fun initStory(@Body payload: JsonObject): ApiEnvelope<StoryInitResult>
 
+  @POST("game/introduction")
+  suspend fun introduceStory(@Body payload: JsonObject): ApiEnvelope<SessionOrchestrationResult>
+
   @POST("game/orchestration")
   suspend fun orchestrateSession(@Body payload: JsonObject): ApiEnvelope<SessionOrchestrationResult>
 
