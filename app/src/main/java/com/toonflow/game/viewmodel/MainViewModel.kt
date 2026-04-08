@@ -3306,15 +3306,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private fun normalizeDebugIncomingMessages(incoming: List<MessageItem>, existing: List<MessageItem> = emptyList()): List<MessageItem> {
     val usedIds = existing.map { it.id }.filter { it > 0L }.toMutableSet()
-    return incoming.map { message ->
+    val existingStableCount = existing.size
+    return incoming.mapIndexed { index, message ->
       var messageId = message.id
       if (messageId <= 0L || usedIds.contains(messageId)) {
         messageId = debugMessageSeed++
       }
       usedIds += messageId
+      val revisitData = when {
+        message.revisitData != null && !message.revisitData.isJsonNull -> message.revisitData
+        else -> JsonObject().apply {
+          addProperty("messageCount", existingStableCount + index + 1)
+        }
+      }
       message.copy(
         id = messageId,
         createTime = if (message.createTime > 0L) message.createTime else System.currentTimeMillis(),
+        revisitData = revisitData,
       )
     }
   }
@@ -3430,12 +3438,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val stableMessages = conversationMessages(messages.toList())
       .filterNot(::isRuntimeRetryMessage)
       .filterNot(::isStreamingRuntimeMessage)
-    val targetIndex = stableMessages.indexOfFirst { it.id == messageId }
-    if (targetIndex < 0) {
+    val targetMessage = stableMessages.firstOrNull { it.id == messageId }
+    if (targetMessage == null) {
       notice = "没有找到这句台词的回溯位置"
       return
     }
-    val messageCount = targetIndex + 1
+    val revisitData = targetMessage.revisitData?.takeIf { it.isJsonObject }?.asJsonObject
+    val targetIndex = stableMessages.indexOfFirst { it.id == messageId }
+    val messageCount = revisitData?.get("messageCount")?.asLong?.toInt()
+      ?: if (targetIndex >= 0) targetIndex + 1 else 0
+    if (messageCount <= 0) {
+      notice = "当前台词缺少回溯锚点"
+      return
+    }
     viewModelScope.launch {
       runCatching {
         repository.debugRevisitMessage(debugRuntimeKey, messageCount)
