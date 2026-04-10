@@ -816,6 +816,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
     configId: Long?,
     text: String,
     mode: String = "text",
+    roleId: String = "",
     voiceId: String = "",
     referenceAudioPath: String = "",
     referenceText: String = "",
@@ -826,6 +827,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
   ): String {
     val payload = JsonObject().apply {
       if (configId != null && configId > 0L) addProperty("configId", configId)
+      if (roleId.isNotBlank()) addProperty("roleId", roleId)
       addProperty("text", text)
       addProperty("mode", mode)
       if (format.isNotBlank()) addProperty("format", format)
@@ -923,10 +925,20 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return data.get("text")?.asString?.trim().orEmpty()
   }
 
-  suspend fun polishVoicePrompt(text: String, style: String = ""): String {
+  /**
+   * 根据当前模式与语音配置，把润色请求交给后端选择更合适的策略。
+   */
+  suspend fun polishVoicePrompt(
+    text: String,
+    configId: Long? = null,
+    mode: String = "",
+    provider: String = "",
+  ): String {
     val payload = JsonObject().apply {
       addProperty("text", text)
-      if (style.isNotBlank()) addProperty("style", style)
+      if (configId != null && configId > 0L) addProperty("configId", configId)
+      if (mode.isNotBlank()) addProperty("mode", mode)
+      if (provider.isNotBlank()) addProperty("provider", provider)
     }
     val data = api().polishVoicePrompt(payload).data
     return data.get("prompt")?.asString?.trim().orEmpty()

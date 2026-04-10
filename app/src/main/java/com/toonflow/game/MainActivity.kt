@@ -66,6 +66,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.AlertDialog
@@ -1214,6 +1216,7 @@ private fun CreateScene(
   var showNpcAvatarPreviewDialog by remember { mutableStateOf(false) }
   var showCoverActionDialog by remember { mutableStateOf(false) }
   var showChapterBgActionDialog by remember { mutableStateOf(false) }
+  var showChapterWritingGuideDialog by remember { mutableStateOf(false) }
   var showUserVoiceDialog by remember { mutableStateOf(false) }
   var showNpcVoiceDialog by remember { mutableStateOf(false) }
   var showNarratorVoiceDialog by remember { mutableStateOf(false) }
@@ -1303,6 +1306,7 @@ private fun CreateScene(
     append(vm.chapterOpeningLine).append('|')
     append(vm.chapterBackground).append('|')
     append(vm.chapterMusic).append('|')
+    append(vm.chapterMusicAutoPlay).append('|')
     append(vm.chapterConditionVisible).append('|')
     vm.npcRoles.forEach { role ->
       append(role.id).append(':')
@@ -1550,6 +1554,7 @@ private fun CreateScene(
           VoicePickerDialog(
             vm = vm,
             title = "选择用户音色",
+            roleId = "player",
             initialLabel = vm.playerVoice,
             initialPresetId = vm.playerVoicePresetId,
             initialMode = vm.playerVoiceMode,
@@ -1776,6 +1781,7 @@ private fun CreateScene(
           VoicePickerDialog(
             vm = vm,
             title = "选择角色音色",
+            roleId = if (editingNpcIndex >= 0) vm.npcRoles.getOrNull(editingNpcIndex)?.id.orEmpty() else "",
             initialLabel = npcVoice,
             initialPresetId = npcVoicePresetId,
             initialMode = npcVoiceMode,
@@ -2056,11 +2062,25 @@ private fun CreateScene(
             modifier = Modifier.clickable { vm.debugCurrentChapter() },
           )
         }
-        Text(
-          "提及用户扮演的角色时，请用“用户”一词称呼。help",
-          style = MaterialTheme.typography.bodySmall,
-          color = Color(0xFF7B8EA8),
-        )
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(
+            "提及用户扮演的角色时，请用“用户”一词称呼。",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF7B8EA8),
+            modifier = Modifier.weight(1f),
+          )
+          Text(
+            "编写说明",
+            color = Color(0xFF4768C9),
+            fontWeight = FontWeight.ExtraBold,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.clickable { showChapterWritingGuideDialog = true },
+          )
+        }
         ScrollableOutlinedTextField(
           value = vm.chapterContent,
           onValueChange = { vm.chapterContent = it },
@@ -2074,6 +2094,65 @@ private fun CreateScene(
           Text("$chapterUsed/1500", style = MaterialTheme.typography.bodySmall, color = Color(0xFF98A8C0))
         }
       }
+    }
+
+    if (showChapterWritingGuideDialog) {
+      AlertDialog(
+        onDismissRequest = { showChapterWritingGuideDialog = false },
+        title = { Text("章节编写说明") },
+        text = {
+          Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            ChapterWritingGuideSection(
+              title = "怎么写章节内容",
+              lines = listOf(
+                "这里写的是这一章真正会发生的内容，例如场景变化、人物行动、冲突推进、用户会被要求做什么。",
+                "对白请直接写成“@角色名：台词”，旁白也一样。",
+                "提及用户扮演的角色时，请统一写“用户”，不要混用“你”或别的代称。",
+                "章节内容使用**Markdown格式**，通过二级标题(`##`)来划分不同的阶段"
+              ),
+            )
+            ChapterWritingGuideSection(
+              title = "事件是怎么区分的",
+              lines = listOf(
+                "系统默认会把正文识别成“章节内容”事件，这是本章推进剧情的主体事件。",
+                "成功条件会被单独识别成“结束条件检查”事件，用来判断这一章是继续、成功还是失败。",
+                "如果没有填写成功条件，这一章默认只有“章节内容”事件，不会触发章节判定。",
+              ),
+            )
+            ChapterWritingGuideSection(
+              title = "推荐写法",
+              lines = listOf(
+                "先写本章开场和场景，再写角色互动，最后写用户需要完成的目标。",
+                "成功条件里只写结局判断，例如“用户输入了姓名、性别、年龄”。",
+                "更复杂的阶段切换、固定事件、用户节点，再去用下面的 Phase Graph 高级配置。",
+              ),
+            )
+            Text(
+              "章节内容使用**Markdown格式**，通过二级标题(`##`)来划分不同的阶段\n示例：\n## 场景\n@旁白：乌坦城的风沙停了下来。\n@萧炎：这不是我熟悉的地方。\n\n## 用户行动\n@旁白：请告知你的姓名、性别与年龄，让众人确认你的身份。\n" +
+                      "## 非事件:任务分类（只是提供给旁白用来推荐任务）\n"+
+                      "### 生存类\n" +
+                      "- 收集止血草与基础药材\n" +
+                      "- 寻找临时修炼地点\n" +
+                      "- 避开城外魔兽巡游区\n" +
+                      "- 修复破损装备\n" +
+                      "- 获取基础食物资源\n" +
+                      "- 侦测周围危险气息\n" +
+                      "- 躲避强者气息压制\n" +
+                      "- 建立临时落脚点\n" +
+                      "- 处理夜间威胁\n" +
+                      "- 维持体力与状态",
+              style = MaterialTheme.typography.bodySmall,
+              color = Color(0xFF415673),
+              lineHeight = 20.sp,
+            )
+          }
+        },
+        confirmButton = {
+          TextButton(onClick = { showChapterWritingGuideDialog = false }) {
+            Text("知道了")
+          }
+        },
+      )
     }
 
     Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
@@ -2238,6 +2317,27 @@ private fun CreateScene(
     Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
       Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("背景音乐（可选）", fontWeight = FontWeight.Bold, color = Color(0xFF232F43))
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0xFFF8FBFF))
+            .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+            .clickable { vm.chapterMusicAutoPlay = !vm.chapterMusicAutoPlay }
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text("章节调试和故事游玩时自动播放", color = Color(0xFF41597D))
+          Checkbox(
+            checked = vm.chapterMusicAutoPlay,
+            onCheckedChange = { checked -> vm.chapterMusicAutoPlay = checked },
+            colors = CheckboxDefaults.colors(
+              checkedColor = Color(0xFF4B74F0),
+              uncheckedColor = Color(0xFF8DA2C5),
+            ),
+          )
+        }
         Box(
           modifier = Modifier
             .fillMaxWidth()
@@ -2324,6 +2424,7 @@ private fun CreateScene(
           VoicePickerDialog(
             vm = vm,
             title = "选择旁白音色",
+            roleId = "narrator",
             initialLabel = vm.narratorVoice,
             initialPresetId = vm.narratorVoicePresetId,
             initialMode = vm.narratorVoiceMode,
@@ -2390,6 +2491,24 @@ private fun CreateScene(
     RenderImageGenerateDialog()
 
     Spacer(modifier = Modifier.height(60.dp))
+  }
+}
+
+@Composable
+private fun ChapterWritingGuideSection(
+  title: String,
+  lines: List<String>,
+) {
+  Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Text(title, color = Color(0xFF23314A), fontWeight = FontWeight.Bold)
+    lines.forEach { line ->
+      Text(
+        line,
+        style = MaterialTheme.typography.bodySmall,
+        color = Color(0xFF5D728E),
+        lineHeight = 19.sp,
+      )
+    }
   }
 }
 
@@ -2581,6 +2700,8 @@ private fun PlayScene(
   var recorder by remember(vm.currentSessionId) { mutableStateOf<MediaRecorder?>(null) }
   var recordFile by remember(vm.currentSessionId) { mutableStateOf<File?>(null) }
   var playbackPlayer by remember(vm.currentSessionId) { mutableStateOf<MediaPlayer?>(null) }
+  var chapterBgmPlayer by remember(vm.currentSessionId) { mutableStateOf<MediaPlayer?>(null) }
+  var chapterBgmSource by remember(vm.currentSessionId) { mutableStateOf("") }
   var playbackRequestId by remember(vm.currentSessionId) { mutableStateOf(0) }
   val runtimeVoicePreviewCache = remember(vm.currentSessionId) { mutableMapOf<String, String>() }
   val runtimeVoicePreviewInflight = remember(vm.currentSessionId) { mutableMapOf<String, CompletableDeferred<String>>() }
@@ -2643,6 +2764,73 @@ private fun PlayScene(
     runtimeVoiceAutoJob?.cancel()
     runtimeVoiceAutoJob = null
     stopRuntimePlayback(invalidate)
+  }
+
+  /**
+   * 彻底释放章节背景音乐播放器，避免切章节或退出页面后继续串音。
+   */
+  fun stopChapterBgmPlayback() {
+    chapterBgmPlayer?.let { player ->
+      runCatching { player.stop() }
+      player.release()
+    }
+    chapterBgmPlayer = null
+    chapterBgmSource = ""
+  }
+
+  /**
+   * 把章节背景音乐的播放状态与当前“有声/静音”开关保持一致。
+   * 关闭时暂停保留进度，恢复时从当前位置继续播放。
+   */
+  fun syncChapterBgmAudibility() {
+    val player = chapterBgmPlayer ?: return
+    if (!autoVoice) {
+      runCatching { player.pause() }
+      return
+    }
+    player.setVolume(0.35f, 0.35f)
+    runCatching {
+      if (!player.isPlaying) {
+        player.start()
+      }
+    }
+  }
+
+  /**
+   * 按当前章节的 bgmPath 同步背景音乐；没有配置时立即停止。
+   */
+  fun syncChapterBgmPlayback(audioUrl: String) {
+    if (audioUrl.isBlank()) {
+      stopChapterBgmPlayback()
+      return
+    }
+    val resolvedAudioUrl = vm.resolveMediaPath(audioUrl)
+    if (resolvedAudioUrl.isBlank()) {
+      stopChapterBgmPlayback()
+      return
+    }
+    if (chapterBgmSource == resolvedAudioUrl && chapterBgmPlayer != null) {
+      syncChapterBgmAudibility()
+      return
+    }
+    stopChapterBgmPlayback()
+    val player = MediaPlayer()
+    chapterBgmPlayer = player
+    chapterBgmSource = resolvedAudioUrl
+    runCatching {
+      player.isLooping = true
+      player.setDataSource(context, Uri.parse(resolvedAudioUrl))
+      player.setOnPreparedListener {
+        syncChapterBgmAudibility()
+      }
+      player.setOnErrorListener { _, _, _ ->
+        stopChapterBgmPlayback()
+        true
+      }
+      player.prepareAsync()
+    }.onFailure {
+      stopChapterBgmPlayback()
+    }
   }
 
   fun stopPlaybackSequence() {
@@ -2891,7 +3079,7 @@ private fun PlayScene(
     val bindingKey = runtimeVoiceBindingKey(binding)
     if (!runtimeVoiceWarmCache.add(bindingKey)) return
     runCatching {
-      resolveRuntimeVoiceUrl(binding, "你好啊，有什么可以帮到你")
+      resolveRuntimeVoiceUrl(binding, "恭喜，已成功复刻或生成了属于角色的声音！")
     }
   }
 
@@ -3245,11 +3433,20 @@ private fun PlayScene(
         runCatching { engine.shutdown() }
       }
       systemTts = null
+      stopChapterBgmPlayback()
     }
   }
 
   val sessionTitle = vm.playSessionTitle()
   val currentChapter = vm.playCurrentChapter()
+  val currentChapterBgmUrl = remember(currentChapter?.bgmPath, currentChapter?.bgmAutoPlay) {
+    // 仅在章节明确允许自动播放背景音乐时，才把 BGM 地址交给播放器。
+    if (currentChapter?.bgmAutoPlay == false) {
+      ""
+    } else {
+      vm.resolveMediaPath(currentChapter?.bgmPath)
+    }
+  }
   val allMessages = vm.messages.toList()
   val playbackMessages = remember(allMessages) { allMessages.filterNot(vm::isRuntimeRetryMessage) }
   val latestPendingPlayerMessage = remember(allMessages) {
@@ -3552,6 +3749,11 @@ private fun PlayScene(
     if (!autoVoice) {
       stopRuntimeAutoVoiceQueue()
     }
+    syncChapterBgmAudibility()
+  }
+
+  LaunchedEffect(vm.currentSessionId, currentChapterBgmUrl) {
+    syncChapterBgmPlayback(currentChapterBgmUrl)
   }
 
   val tipOptions = vm.buildAiTipOptions()
@@ -6766,6 +6968,7 @@ private fun VoicePickerField(value: String, onClick: () -> Unit) {
 private fun VoicePickerDialog(
   vm: MainViewModel,
   title: String,
+  roleId: String,
   initialLabel: String,
   initialPresetId: String,
   initialMode: String,
@@ -6798,7 +7001,7 @@ private fun VoicePickerDialog(
       addAll(initialMixVoices.ifEmpty { listOf(VoiceMixItem(weight = 0.7)) })
     }
   }
-  var previewText by remember(title) { mutableStateOf("你好啊，有什么可以帮到你") }
+  var previewText by remember(title) { mutableStateOf("恭喜，已成功复刻或生成了属于角色的声音！") }
   var previewLoading by remember { mutableStateOf(false) }
   var promptPolishing by remember { mutableStateOf(false) }
   var audioUploading by remember { mutableStateOf(false) }
@@ -7145,7 +7348,9 @@ private fun VoicePickerDialog(
                       val selectedPresetProvider = presets.firstOrNull { it.voiceId == selectedPresetId }?.provider?.trim()?.takeIf { it.isNotBlank() }
                       vm.polishVoicePrompt(
                         text = rawText,
-                        style = listOfNotNull(selectedModel?.model, selectedModel?.manufacturer, selectedPresetProvider).joinToString(" · "),
+                        configId = effectiveConfigId,
+                        mode = selectedMode,
+                        provider = selectedPresetProvider.orEmpty(),
                       )
                     }.onSuccess {
                       if (it.isNotBlank()) {
@@ -7223,6 +7428,7 @@ private fun VoicePickerDialog(
                     configId = effectiveConfigId,
                     text = previewText.trim(),
                     mode = selectedMode,
+                    roleId = roleId,
                     presetId = selectedPresetId,
                     referenceAudioPath = referenceAudioPath,
                     referenceText = referenceText.trim(),

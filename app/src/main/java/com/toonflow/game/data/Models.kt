@@ -62,6 +62,7 @@ data class VoiceMixItem(
 data class VoiceBindingDraft(
   val label: String = "",
   val configId: Long? = null,
+  val roleId: String = "",
   val presetId: String = "",
   val mode: String = "text",
   val referenceAudioPath: String = "",
@@ -78,6 +79,7 @@ data class ChapterExtra(
   @SerializedName("openingLine") val openingLine: String = "",
   @SerializedName("background") val background: String = "",
   @SerializedName("music") val music: String = "",
+  @SerializedName("musicAutoPlay") val musicAutoPlay: Boolean = true,
   @SerializedName("conditionVisible") val conditionVisible: Boolean = true,
 )
 
@@ -130,6 +132,7 @@ data class ChapterItem(
   @SerializedName("openingRole") val openingRole: String = "",
   @SerializedName("openingText") val openingText: String = "",
   @SerializedName("bgmPath") val bgmPath: String = "",
+  @SerializedName("bgmAutoPlay") val bgmAutoPlay: Boolean = true,
   @SerializedName("showCompletionCondition") val showCompletionCondition: Boolean = true,
   @SerializedName("runtimeOutline") val runtimeOutline: JsonElement? = null,
 )

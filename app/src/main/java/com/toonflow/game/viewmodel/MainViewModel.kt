@@ -332,7 +332,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var chapterOpeningLine by mutableStateOf("")
   var chapterBackground by mutableStateOf("")
   var chapterMusic by mutableStateOf("")
+  var chapterMusicAutoPlay by mutableStateOf(true)
   var chapterConditionVisible by mutableStateOf(true)
+  var chapterRuntimeOutlineAutoGenerate by mutableStateOf(true)
   var chapterRuntimeOutlineText by mutableStateOf("")
   val chapters = mutableStateListOf<ChapterItem>()
   var selectedChapterId by mutableStateOf<Long?>(null)
@@ -419,7 +421,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val chapterOpeningLine: String,
     val chapterBackground: String,
     val chapterMusic: String,
+    val chapterMusicAutoPlay: Boolean,
     val chapterConditionVisible: Boolean,
+    val chapterRuntimeOutlineAutoGenerate: Boolean,
     val chapterRuntimeOutlineText: String,
   )
   private var storyEditorAutoPersistJob: Job? = null
@@ -774,7 +778,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       chapterOpeningLine = chapterOpeningLine,
       chapterBackground = chapterBackground,
       chapterMusic = chapterMusic,
+      chapterMusicAutoPlay = chapterMusicAutoPlay,
       chapterConditionVisible = chapterConditionVisible,
+      chapterRuntimeOutlineAutoGenerate = chapterRuntimeOutlineAutoGenerate,
       chapterRuntimeOutlineText = chapterRuntimeOutlineText,
     )
   }
@@ -830,7 +836,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     chapterOpeningLine = snapshotOpeningLine
     chapterBackground = snapshot.chapterBackground
     chapterMusic = snapshot.chapterMusic
+    chapterMusicAutoPlay = snapshot.chapterMusicAutoPlay
     chapterConditionVisible = snapshot.chapterConditionVisible
+    chapterRuntimeOutlineAutoGenerate = snapshot.chapterRuntimeOutlineAutoGenerate
     chapterRuntimeOutlineText = normalizeRuntimeOutlineEditorText(snapshot.chapterRuntimeOutlineText)
   }
 
@@ -840,6 +848,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (snapshot.worldCoverPath.isNotBlank() || snapshot.playerDesc.isNotBlank() || snapshot.globalBackground.isNotBlank()) return true
     if (snapshot.chapterTitle.isNotBlank() || snapshot.chapterContent.isNotBlank() || snapshot.chapterOpeningLine.isNotBlank()) return true
     if (snapshot.chapterEntryCondition.isNotBlank() || snapshot.chapterCondition.isNotBlank()) return true
+    if (!snapshot.chapterRuntimeOutlineAutoGenerate) return true
     if (snapshot.chapterRuntimeOutlineText.isNotBlank()) return true
     if (snapshot.chapterBackground.isNotBlank() || snapshot.chapterMusic.isNotBlank()) return true
     return snapshot.npcRoles.any { role ->
@@ -1245,6 +1254,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     configId: Long?,
     text: String,
     mode: String = "text",
+    roleId: String = "",
     presetId: String = "",
     referenceAudioPath: String = "",
     referenceText: String = "",
@@ -1257,6 +1267,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       configId = configId,
       text = text,
       mode = mode,
+      roleId = roleId,
       voiceId = presetId,
       referenceAudioPath = referenceAudioPath,
       referenceText = referenceText,
@@ -1293,8 +1304,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
   }
 
-  suspend fun polishVoicePrompt(text: String, style: String = ""): String {
-    return repository.polishVoicePrompt(text, style)
+  /**
+   * 把当前语音模式和配置 id 一起传给后端，让后端按目标语音接口选择润色策略。
+   */
+  suspend fun polishVoicePrompt(
+    text: String,
+    configId: Long? = null,
+    mode: String = "",
+    provider: String = "",
+  ): String {
+    return repository.polishVoicePrompt(text, configId, mode, provider)
   }
 
   suspend fun transcribeRuntimeVoice(audioBase64: String, sessionId: String = ""): String {
@@ -4218,6 +4237,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (!hasCurrentChapterDraft()) return null
     val sort = currentChapterSort()
     val title = normalizeChapterTitleLabel(chapterTitle, sort).ifBlank { "第 $sort 章" }
+    // 自动生成开启时由后端重建运行模板，不把旧的手写 JSON 再送回保存接口。
+    val runtimeOutline = if (chapterRuntimeOutlineAutoGenerate) null else parseRuntimeOutlineEditorText(chapterRuntimeOutlineText)
     return ChapterItem(
       id = selectedChapterId ?: -sort.toLong(),
       title = title,
@@ -4231,8 +4252,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       openingRole = chapterOpeningRole.ifBlank { narratorName.ifBlank { "旁白" } },
       openingText = chapterOpeningLine,
       bgmPath = chapterMusic,
+      bgmAutoPlay = chapterMusicAutoPlay,
       showCompletionCondition = chapterConditionVisible,
-      runtimeOutline = parseRuntimeOutlineEditorText(chapterRuntimeOutlineText),
+      runtimeOutline = runtimeOutline,
     )
   }
 
@@ -4248,7 +4270,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       chapterOpeningLine = ""
       chapterBackground = ""
       chapterMusic = ""
+      chapterMusicAutoPlay = true
       chapterConditionVisible = true
+      chapterRuntimeOutlineAutoGenerate = true
       chapterRuntimeOutlineText = ""
       primeStoryEditorPersistState()
       return
@@ -4284,7 +4308,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     chapterMusic = normalizeScalarEditorText(extra?.music).ifBlank {
       normalizeScalarEditorText(chapter.bgmPath)
     }
+    chapterMusicAutoPlay = extra?.musicAutoPlay ?: chapter.bgmAutoPlay
     chapterConditionVisible = extra?.conditionVisible ?: chapter.showCompletionCondition
+    chapterRuntimeOutlineAutoGenerate = true
     chapterRuntimeOutlineText = normalizeRuntimeOutlineEditorText(chapter.runtimeOutline)
     primeStoryEditorPersistState()
   }
@@ -4425,7 +4451,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     chapterOpeningLine = ""
     chapterBackground = ""
     chapterMusic = ""
+    // 新章节默认允许在调试和正式游玩时自动播放章节背景音乐。
+    chapterMusicAutoPlay = true
     chapterConditionVisible = true
+    chapterRuntimeOutlineAutoGenerate = true
     chapterRuntimeOutlineText = ""
     primeStoryEditorPersistState()
   }
@@ -4444,6 +4473,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       openingLine = chapterOpeningLine,
       background = normalizeStoredMediaPath(chapterBackground),
       music = chapterMusic,
+      // 把章节背景音乐自动播放配置和其他章节附加配置一起持久化，避免切换章节后丢失。
+      musicAutoPlay = chapterMusicAutoPlay,
       conditionVisible = chapterConditionVisible,
     )
     val idx = chapterExtras.indexOfFirst {
@@ -4621,6 +4652,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       addProperty("openingRole", normalizedOpeningRole)
       addProperty("openingText", normalizedOpeningLine)
       addProperty("bgmPath", normalizedChapterMusic)
+      // 明确把章节背景音乐自动播放开关发给后端，旧章节缺字段时后端会按默认开启处理。
+      addProperty("bgmAutoPlay", chapterMusicAutoPlay)
       addProperty("showCompletionCondition", chapterConditionVisible)
       parseChapterCondition(chapterEntryCondition)?.let { add("entryCondition", it) }
       parseChapterCondition(chapterCondition)?.let { add("completionCondition", it) }
@@ -6957,6 +6990,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     chapterOpeningLine = ""
     chapterBackground = ""
     chapterMusic = ""
+    chapterMusicAutoPlay = true
     chapterConditionVisible = true
     selectedChapterId = null
     homeRecommendWorldId = null
@@ -7061,6 +7095,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     chapterOpeningLine = ""
     chapterBackground = ""
     chapterMusic = ""
+    chapterMusicAutoPlay = true
     chapterConditionVisible = true
   }
 
