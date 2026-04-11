@@ -6296,7 +6296,11 @@ private fun ProfileScene(
             onClick = null,
             actions = if (firstPublished != null) {
               {
-                ProfileActionBtn(text = "编辑", modifier = Modifier.fillMaxWidth()) { vm.reopenPublishedWorldAsDraft(firstPublished) }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                  // 已发布卡片需要同时支持“编辑副本”和“复制副本”两种入口。
+                  ProfileActionBtn(text = "编辑", modifier = Modifier.fillMaxWidth()) { vm.reopenPublishedWorldAsDraft(firstPublished) }
+                  ProfileActionBtn(text = "复制", modifier = Modifier.fillMaxWidth()) { vm.copyPublishedWorldAsDraft(firstPublished) }
+                }
               }
             } else {
               null
@@ -6326,7 +6330,11 @@ private fun ProfileScene(
                 statusLabel = vm.worldPublishStatusLabel(world),
                 onClick = null,
                 actions = {
-                  ProfileActionBtn(text = "编辑", modifier = Modifier.fillMaxWidth()) { vm.reopenPublishedWorldAsDraft(world) }
+                  Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // 复制后的故事会在草稿箱中生成独立副本，再跳转到草稿编辑页。
+                    ProfileActionBtn(text = "编辑", modifier = Modifier.fillMaxWidth()) { vm.reopenPublishedWorldAsDraft(world) }
+                    ProfileActionBtn(text = "复制", modifier = Modifier.fillMaxWidth()) { vm.copyPublishedWorldAsDraft(world) }
+                  }
                 },
               )
             }

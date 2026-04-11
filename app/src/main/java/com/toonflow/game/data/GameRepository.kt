@@ -134,6 +134,17 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return unwrapEnvelope("game/saveWorld", api().saveWorld(payload))
   }
 
+  /**
+   * 复制现有故事为新的草稿世界。
+   * 后端会把封面、章节资源和世界配置都复制成独立副本。
+   */
+  suspend fun copyWorld(worldId: Long): WorldItem {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+    }
+    return unwrapEnvelope("game/copyWorld", api().copyWorld(payload))
+  }
+
   suspend fun deleteWorld(worldId: Long) {
     val payload = JsonObject().apply {
       addProperty("worldId", worldId)

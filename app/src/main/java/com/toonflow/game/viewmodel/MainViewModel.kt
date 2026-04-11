@@ -4733,6 +4733,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  /**
+   * 复制发布故事为全新的草稿副本，并直接进入副本编辑页。
+   * 副本和原故事完全独立，后续修改不会影响原故事资源和发布态。
+   */
+  fun copyPublishedWorldAsDraft(world: WorldItem) {
+    if (!canEditWorld(world)) {
+      notice = "只能复制自己的故事"
+      return
+    }
+    if (selectedProjectId != world.projectId) {
+      selectedProjectId = world.projectId
+    }
+    viewModelScope.launch {
+      runCatching {
+        val copied = repository.copyWorld(world.id)
+        refreshStoryData()
+        loadWorldEditor(copied.id) ?: error("未找到复制后的故事")
+        activeTab = "创建"
+        notice = "已复制为草稿"
+      }.onFailure {
+        notice = "复制故事失败: ${it.message ?: "未知错误"}"
+      }
+    }
+  }
+
   fun deleteWorld(world: WorldItem) {
     viewModelScope.launch {
       runCatching {

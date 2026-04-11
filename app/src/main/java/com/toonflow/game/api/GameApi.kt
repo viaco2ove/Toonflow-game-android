@@ -61,6 +61,9 @@ interface GameApi {
   @POST("game/saveWorld")
   suspend fun saveWorld(@Body payload: JsonObject): ApiEnvelope<WorldItem>
 
+  @POST("game/copyWorld")
+  suspend fun copyWorld(@Body payload: JsonObject): ApiEnvelope<WorldItem>
+
   @POST("game/deleteWorld")
   suspend fun deleteWorld(@Body payload: JsonObject): ApiEnvelope<JsonElement>
 
