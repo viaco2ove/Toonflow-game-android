@@ -159,6 +159,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val value: String,
   )
 
+  data class RuntimeBattleEnemy(
+    val enemyId: String,
+    val name: String,
+    val description: String,
+    val level: Int,
+    val hp: Int,
+    val maxHp: Int,
+    val mp: Int,
+    val maxMp: Int,
+    val avatarPath: String,
+    val avatarBgPath: String,
+    val isRoleEnemy: Boolean,
+  )
+
   data class RuntimeMiniGameView(
     val gameType: String,
     val displayName: String,
@@ -171,6 +185,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val acceptsTextInput: Boolean,
     val inputHint: String,
     val stateItems: List<RuntimeMiniGameStateItem>,
+    val battleEnemies: List<RuntimeBattleEnemy>,
     val playerOptions: List<RuntimeMiniGameAction>,
     val controlOptions: List<String>,
   )
@@ -215,6 +230,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   val settingsModelSlots = listOf(
     SettingsModelSlot("storyOrchestratorModel", "编排师", "text"),
     SettingsModelSlot("storyChapterJudgeModel", "章节判定", "text"),
+    SettingsModelSlot("storyEventProgressModel", "事件进度检测", "text"),
     SettingsModelSlot("storyFastSpeakerModel", "快速角色发言", "text"),
     SettingsModelSlot("storySpeakerModel", "角色发言", "text"),
     SettingsModelSlot("storyMemoryModel", "记忆管理", "text"),
@@ -240,6 +256,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     "story-speaker",
     "story-memory",
     "story-chapter",
+    "story-event-progress",
     "story-mini-game",
     "story-safety",
   )
@@ -1904,6 +1921,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       .take(10)
   }
 
+  /**
+   * 把小游戏 public_state 中的 enemy_list 映射成设置面板需要的敌人资料。
+   * battle 规则本会把临时敌人的数值和头像一并写进 public_state，这里只做安全解析。
+   */
+  private fun runtimeMiniGameEnemies(gameType: String, publicState: JsonObject): List<RuntimeBattleEnemy> {
+    if (gameType != "battle") return emptyList()
+    val enemyArray = publicState.get("enemy_list")?.takeIf { it.isJsonArray }?.asJsonArray ?: return emptyList()
+    return enemyArray.mapIndexedNotNull { index, item ->
+      if (!item.isJsonObject) return@mapIndexedNotNull null
+      val obj = item.asJsonObject
+      val hp = runCatching { obj.get("hp")?.asInt ?: 0 }.getOrDefault(0)
+      val maxHp = maxOf(runCatching { obj.get("maxHp")?.asInt ?: obj.get("max_hp")?.asInt ?: hp }.getOrDefault(hp), hp)
+      val mp = runCatching { obj.get("mp")?.asInt ?: 0 }.getOrDefault(0)
+      val maxMp = maxOf(runCatching { obj.get("maxMp")?.asInt ?: obj.get("max_mp")?.asInt ?: mp }.getOrDefault(mp), mp)
+      val name = scalarRuntimeText(obj.get("name")).ifBlank { "敌人${index + 1}" }
+      RuntimeBattleEnemy(
+        enemyId = scalarRuntimeText(obj.get("enemyId")).ifBlank {
+          scalarRuntimeText(obj.get("enemy_id")).ifBlank { "enemy_$index" }
+        },
+        name = name,
+        description = scalarRuntimeText(obj.get("description")).ifBlank { "临时敌人" },
+        level = runCatching { obj.get("level")?.asInt ?: 1 }.getOrDefault(1),
+        hp = hp,
+        maxHp = maxHp,
+        mp = mp,
+        maxMp = maxMp,
+        avatarPath = scalarRuntimeText(obj.get("avatarPath")).ifBlank { scalarRuntimeText(obj.get("avatar_path")) },
+        avatarBgPath = scalarRuntimeText(obj.get("avatarBgPath")).ifBlank { scalarRuntimeText(obj.get("avatar_bg_path")) },
+        isRoleEnemy = runCatching { obj.get("isRoleEnemy")?.asBoolean ?: obj.get("is_role_enemy")?.asBoolean ?: false }.getOrDefault(false),
+      )
+    }
+  }
+
   private fun runtimeMiniGameControlOptions(gameType: String, status: String, pendingExit: Boolean): List<String> {
     if (gameType == "fishing") {
       return if (pendingExit) listOf("继续钓鱼", "退出钓鱼") else listOf("退出钓鱼")
@@ -1946,6 +1996,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (!visibleStatuses.contains(status) && playerOptions.isEmpty() && !pendingExit) return null
     val publicState = session.getAsJsonObject("public_state") ?: JsonObject()
     val stateItems = runtimeMiniGameStateItems(gameType, ui, publicState)
+    val battleEnemies = runtimeMiniGameEnemies(gameType, publicState)
     val controlOptions = runtimeMiniGameControlOptions(gameType, status, pendingExit)
     return RuntimeMiniGameView(
       gameType = gameType,
@@ -1959,6 +2010,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       acceptsTextInput = acceptsTextInput,
       inputHint = inputHint,
       stateItems = stateItems,
+      battleEnemies = battleEnemies,
       playerOptions = playerOptions,
       controlOptions = controlOptions,
     )

@@ -708,6 +708,7 @@ private fun storyPromptUiMeta(code: String): StoryPromptUiMeta {
     "story-speaker" -> StoryPromptUiMeta("story_speaker", "src/agents/story/speaker/index.ts")
     "story-memory" -> StoryPromptUiMeta("memory_manager", "src/agents/story/memory_manager/index.ts")
     "story-chapter" -> StoryPromptUiMeta("chapter_judge", "src/agents/story/chapter_judge/index.ts")
+    "story-event-progress" -> StoryPromptUiMeta("event_progress", "src/agents/story/event_progress/index.ts")
     "story-mini-game" -> StoryPromptUiMeta("mini_game_agent", "src/agents/story/mini_game/index.ts")
     "story-safety" -> StoryPromptUiMeta("safety_agent", "src/agents/story/safety/index.ts")
     else -> StoryPromptUiMeta(code, "src/agents/story/unknown.ts")
@@ -736,6 +737,7 @@ private fun PrototypeAndroidApp(vm: MainViewModel = viewModel()) {
   var autoVoice by remember { mutableStateOf(vm.autoVoiceEnabled()) }
   var showDialogMenu by remember { mutableStateOf(false) }
   var showStorySettingDetail by remember { mutableStateOf(false) }
+  var showEnemyStatusDetail by remember { mutableStateOf(false) }
   var showChapterEventDetail by remember { mutableStateOf(false) }
   val toggleAutoVoice = {
     val next = !autoVoice
@@ -815,6 +817,8 @@ private fun PrototypeAndroidApp(vm: MainViewModel = viewModel()) {
             onCloseDialogMenu = { showDialogMenu = false },
             showStorySettingDetail = showStorySettingDetail,
             onToggleStorySettingDetail = { showStorySettingDetail = !showStorySettingDetail },
+            showEnemyStatusDetail = showEnemyStatusDetail,
+            onToggleEnemyStatusDetail = { showEnemyStatusDetail = !showEnemyStatusDetail },
             showChapterEventDetail = showChapterEventDetail,
             onToggleChapterEventDetail = { showChapterEventDetail = !showChapterEventDetail },
             onCloseSetting = { playMode = "live" },
@@ -2676,6 +2680,8 @@ private fun PlayScene(
   onCloseDialogMenu: () -> Unit,
   showStorySettingDetail: Boolean,
   onToggleStorySettingDetail: () -> Unit,
+  showEnemyStatusDetail: Boolean,
+  onToggleEnemyStatusDetail: () -> Unit,
   showChapterEventDetail: Boolean,
   onToggleChapterEventDetail: () -> Unit,
   onCloseSetting: () -> Unit,
@@ -4070,6 +4076,9 @@ private fun PlayScene(
               statePreview = statePreview,
               showStorySettingDetail = showStorySettingDetail,
               onToggleStorySettingDetail = onToggleStorySettingDetail,
+              battleEnemies = activeMiniGame?.battleEnemies.orEmpty(),
+              showEnemyStatusDetail = showEnemyStatusDetail,
+              onToggleEnemyStatusDetail = onToggleEnemyStatusDetail,
               showChapterEventDetail = showChapterEventDetail,
               onToggleChapterEventDetail = onToggleChapterEventDetail,
               onClose = onCloseSetting,
@@ -5161,6 +5170,9 @@ private fun StorySettingPanel(
   statePreview: String,
   showStorySettingDetail: Boolean,
   onToggleStorySettingDetail: () -> Unit,
+  battleEnemies: List<MainViewModel.RuntimeBattleEnemy>,
+  showEnemyStatusDetail: Boolean,
+  onToggleEnemyStatusDetail: () -> Unit,
   showChapterEventDetail: Boolean,
   onToggleChapterEventDetail: () -> Unit,
   onClose: () -> Unit,
@@ -5250,6 +5262,36 @@ private fun StorySettingPanel(
               Divider(color = Color(0x22FFFFFF))
               Text("参数卡", color = Color.White, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
               ParameterCardDetail(card)
+            }
+          }
+        }
+      }
+      Card(
+        modifier = Modifier.fillMaxWidth().clickable { onToggleEnemyStatusDetail() },
+        colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
+        shape = RoundedCornerShape(10.dp),
+      ) {
+        Row(
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text("敌人状态${if (battleEnemies.isNotEmpty()) "（${battleEnemies.size}）" else ""}", color = Color.White, fontWeight = FontWeight.SemiBold)
+          Text(if (showEnemyStatusDetail) "收起 >" else "> ", color = Color(0xFFD5EBFF), style = MaterialTheme.typography.bodySmall)
+        }
+      }
+      if (showEnemyStatusDetail) {
+        Card(
+          colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
+          shape = RoundedCornerShape(12.dp),
+        ) {
+          Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (battleEnemies.isEmpty()) {
+              Text("当前没有敌人。", color = Color(0xFFBFD3F1), style = MaterialTheme.typography.bodySmall)
+            } else {
+              battleEnemies.forEach { enemy ->
+                EnemyStatusCard(enemy = enemy)
+              }
             }
           }
         }
@@ -5359,6 +5401,65 @@ private fun StorySettingPanel(
         }
       }
     }
+  }
+}
+
+/**
+ * 把战斗小游戏里的敌人快照渲染成状态卡片，统一展示头像、简介和血蓝进度。
+ */
+@Composable
+private fun EnemyStatusCard(enemy: MainViewModel.RuntimeBattleEnemy) {
+  Column(
+    modifier = Modifier
+      .fillMaxWidth()
+      .clip(RoundedCornerShape(12.dp))
+      .background(Color(0x12000000))
+      .padding(10.dp),
+    verticalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
+    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.Top) {
+      SmallAvatar(
+        foregroundPath = enemy.avatarPath.trim().ifBlank { null },
+        backgroundPath = enemy.avatarBgPath.trim().ifBlank { null },
+        title = enemy.name,
+        size = 40.dp,
+      )
+      Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(enemy.name, color = Color.White, fontWeight = FontWeight.Bold)
+        Text(
+          text = if (enemy.isRoleEnemy) "角色敌人" else "临时敌人",
+          color = Color(0xFFBFD3F1),
+          style = MaterialTheme.typography.labelSmall,
+        )
+        Text("简介：${enemy.description.ifBlank { "暂无简介" }}", color = Color(0xFFDCEEFF), style = MaterialTheme.typography.bodySmall)
+        Text("等级 ${enemy.level} · HP ${enemy.hp}/${enemy.maxHp} · MP ${enemy.mp}/${enemy.maxMp}", color = Color(0xFFDCEEFF), style = MaterialTheme.typography.bodySmall)
+      }
+    }
+    EnemyGauge(progress = enemy.hp, max = enemy.maxHp, fill = Brush.horizontalGradient(listOf(Color(0xFFFF8C7A), Color(0xFFFFC16B))))
+    EnemyGauge(progress = enemy.mp, max = enemy.maxMp, fill = Brush.horizontalGradient(listOf(Color(0xFF6FB7FF), Color(0xFF7AE6FF))))
+  }
+}
+
+/**
+ * 用统一的样式渲染敌人的血量/蓝量进度，避免在多个卡片里重复写布局。
+ */
+@Composable
+private fun EnemyGauge(progress: Int, max: Int, fill: Brush) {
+  val ratio = if (max <= 0) 0f else (progress.toFloat() / max.toFloat()).coerceIn(0f, 1f)
+  Box(
+    modifier = Modifier
+      .fillMaxWidth()
+      .height(6.dp)
+      .clip(RoundedCornerShape(999.dp))
+      .background(Color(0x22FFFFFF)),
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxHeight()
+        .fillMaxWidth(ratio)
+        .clip(RoundedCornerShape(999.dp))
+        .background(fill),
+    )
   }
 }
 
