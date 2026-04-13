@@ -38,6 +38,7 @@ import com.toonflow.game.data.SessionNarrativeResult
 import com.toonflow.game.data.SessionOrchestrationResult
 import com.toonflow.game.data.SessionSnapshot
 import com.toonflow.game.data.SettingsStore
+import com.toonflow.game.data.StoryInfoResult
 import com.toonflow.game.data.StoryInitResult
 import com.toonflow.game.data.StoryRole
 import com.toonflow.game.data.UploadedVoiceAudioResult
@@ -3535,6 +3536,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         debugRuntimeState = result.state?.deepCopy()
         debugStatePreview = prettyGson.toJson(debugRuntimeState)
+        refreshDebugStoryInfo(playCurrentChapter())
         debugLatestPlan = null
         debugEndDialog = null
         debugEndDialogDetail = ""
@@ -3767,6 +3769,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sessionRuntimeStage = ""
   }
 
+  /**
+   * 把独立 storyInfo 接口返回的正式会话运行信息覆盖到当前会话详情。
+   *
+   * 用途：
+   * - 让故事设定、当前章节事件、事件窗口只依赖 `/game/storyInfo`；
+   * - 避免继续吃 orchestration/streamlines 里附带的大杂烩状态。
+   */
+  private fun applySessionStoryInfoResult(result: StoryInfoResult) {
+    val existingDetail = sessionDetail
+    val mergedState = result.state?.deepCopy() ?: existingDetail?.state?.deepCopy()
+    val mergedWorld = result.world ?: existingDetail?.world
+    val mergedChapter = result.chapter ?: existingDetail?.chapter
+    val mergedMessages = existingDetail?.messages ?: messages.toList()
+    sessionDetail = SessionDetail(
+      sessionId = currentSessionId.ifBlank { existingDetail?.sessionId.orEmpty() },
+      title = existingDetail?.title?.ifBlank { mergedWorld?.name.orEmpty() }.orEmpty(),
+      status = existingDetail?.status.orEmpty(),
+      chapterId = result.chapterId ?: mergedChapter?.id ?: existingDetail?.chapterId,
+      state = mergedState,
+      latestSnapshot = SessionSnapshot(state = mergedState?.deepCopy()),
+      world = mergedWorld,
+      chapter = mergedChapter,
+      messages = mergedMessages,
+      currentEventDigest = result.currentEventDigest,
+      eventDigestWindow = result.eventDigestWindow,
+      eventDigestWindowText = result.eventDigestWindowText,
+    )
+    mergedChapter?.let { chapter ->
+      val index = playChapters.indexOfFirst { it.id == chapter.id }
+      if (index >= 0) {
+        playChapters[index] = chapter
+      } else {
+        playChapters.add(chapter)
+      }
+    }
+  }
+
+  /**
+   * 主动刷新正式会话的故事运行信息。
+   *
+   * 用途：
+   * - 在 initStory、orchestration、streamlines 完成后补齐最新 state；
+   * - 统一让 UI 从 storyInfo 读取当前章节事件和故事设定。
+   */
+  private suspend fun refreshSessionStoryInfo(): StoryInfoResult? {
+    val sessionId = currentSessionId.trim()
+    if (sessionId.isBlank()) return null
+    return runCatching {
+      repository.storyInfo(sessionId = sessionId)
+    }.onSuccess { result ->
+      applySessionStoryInfoResult(result)
+    }.getOrNull()
+  }
+
   private fun applySessionOrchestrationResult(result: SessionOrchestrationResult) {
     val existingDetail = sessionDetail
     sessionDetail = SessionDetail(
@@ -3783,6 +3839,59 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     applyAwaitUserTurnFromPlan(result.plan)
     syncRuntimeChatTraceLog()
     sessionRuntimeStage = ""
+  }
+
+  /**
+   * 把独立 storyInfo 接口返回的调试运行信息覆盖到当前调试状态。
+   *
+   * 用途：
+   * - 让调试态的故事设定、当前章节事件、运行态预览都从 `/game/storyInfo` 刷新；
+   * - 避免依赖 orchestration/streamlines 旧的大杂烩返回。
+   */
+  private fun applyDebugStoryInfoResult(result: StoryInfoResult, fallbackChapter: ChapterItem?) {
+    result.state?.takeIf { !it.isJsonNull }?.deepCopy()?.let { nextState ->
+      debugRuntimeState = nextState
+    }
+    if (result.chapterId != null && result.chapterId > 0L) {
+      debugChapterId = result.chapterId
+    }
+    result.world?.let { world ->
+      debugWorldName = world.name
+      debugWorldIntro = world.intro
+    }
+    result.chapter?.let { storyChapter ->
+      val index = chapters.indexOfFirst { it.id == storyChapter.id }
+      if (index >= 0) {
+        chapters[index] = storyChapter
+      }
+    }
+    val activeChapter = chapters.firstOrNull { it.id == (result.chapterId ?: debugChapterId) } ?: result.chapter ?: fallbackChapter
+    debugChapterTitle = normalizeChapterTitleLabel(
+      result.chapterTitle.ifBlank { activeChapter?.title.orEmpty() },
+      activeChapter?.sort ?: 0,
+    )
+    loadDebugRevisitSnapshots()
+    updateDebugStatePreview()
+  }
+
+  /**
+   * 主动刷新章节调试的故事运行信息。
+   *
+   * 用途：
+   * - 在调试 introduction、orchestration、streamlines 完成后补齐最新 state；
+   * - 让调试 UI 不再依赖旧接口附带的状态字段。
+   */
+  private suspend fun refreshDebugStoryInfo(fallbackChapter: ChapterItem? = null): StoryInfoResult? {
+    if (worldId <= 0L) return null
+    return runCatching {
+      repository.storyInfo(
+        worldId = worldId,
+        chapterId = debugChapterId,
+        state = debugRuntimeState,
+      )
+    }.onSuccess { result ->
+      applyDebugStoryInfoResult(result, fallbackChapter)
+    }.getOrNull()
   }
 
   private fun applyInitializedSessionDetail(world: WorldItem, result: StoryInitResult) {
@@ -5052,6 +5161,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       debugRuntimeState = initResult.state?.deepCopy() ?: JsonObject()
       debugChapterId = initResult.chapterId
       debugChapterTitle = initResult.chapterTitle.ifBlank { normalizeChapterTitleLabel(startChapter.title, startChapter.sort) }
+      refreshDebugStoryInfo(startChapter)
 
       sessionRuntimeStage = "生成开场白"
       val introResult = repository.debugIntroduction(
@@ -5061,6 +5171,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         messages = emptyList(),
       )
       applyDebugOrchestrationResult(introResult, startChapter)
+      refreshDebugStoryInfo(startChapter)
       if (introResult.plan != null && shouldStreamDebugPlan(introResult.plan)) {
         streamDebugPlan(introResult.plan, emptyList(), null)
       }
@@ -5078,6 +5189,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       )
       if (result.plan != null) {
         applyDebugOrchestrationResult(result, startChapter)
+        refreshDebugStoryInfo(startChapter)
         if (shouldStreamDebugPlan(result.plan)) {
           sessionRuntimeStage = "生成首轮内容"
           streamDebugPlan(result.plan, emptyList(), null)
@@ -5199,6 +5311,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           skipOpening = false,
         )
         applyInitializedSessionDetail(world, initResult)
+        refreshSessionStoryInfo()
         sessionOpening = false
         sessionOpeningStage = ""
 
@@ -5206,6 +5319,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val openingResult = repository.introduceStory(currentSessionId)
         if (openingResult.plan != null) {
           applySessionOrchestrationResult(openingResult)
+          refreshSessionStoryInfo()
           if (shouldStreamSessionPlanFromPlan(openingResult.plan)) {
             sessionRuntimeStage = "播放开场白"
             streamSessionPlan(openingResult, emptyList())
@@ -5225,6 +5339,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
               eventDigestWindowText = sessionDetail?.eventDigestWindowText ?: firstChapterResult.eventDigestWindowText,
             ),
           )
+          refreshSessionStoryInfo()
           if (shouldStreamSessionPlanFromPlan(firstChapterResult.plan)) {
             sessionRuntimeStage = "生成第一章内容"
             streamSessionPlan(firstChapterResult, history)
@@ -5600,6 +5715,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       sessionDetail = detail.copy(messages = loadedMessages)
       messages.addAll(loadedMessages)
     }
+    refreshSessionStoryInfo()
     syncRuntimeChatTraceLog()
   }
 
@@ -5637,6 +5753,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       sendText = ""
       clearRuntimeRetryState()
       applySessionNarrativeResult(result)
+      refreshSessionStoryInfo()
       continueSessionNarrative()
       viewModelScope.launch {
         runCatching { loadSessions() }.onFailure {
@@ -5731,6 +5848,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     messages.addAll(historyMessages)
     syncRuntimeChatTraceLog()
     applySessionNarrativeResult(committed)
+    refreshSessionStoryInfo()
   }
 
   fun retryFailedPlayerMessage(messageId: Long) {
@@ -5781,6 +5899,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val orchestration = repository.orchestrateSession(currentSessionId)
         clearRuntimeRetryState()
         applySessionOrchestrationResult(orchestration)
+        refreshSessionStoryInfo()
         logStoryFlow(
           "continueSession orchestration sessionId=$currentSessionId planRole=${orchestration.plan?.role.orEmpty()} nextRole=${orchestration.plan?.nextRole.orEmpty()} status=${orchestration.status}",
         )
@@ -5889,12 +6008,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
     clearRuntimeRetryState()
     applyDebugOrchestrationResult(result, playCurrentChapter())
+    refreshDebugStoryInfo(playCurrentChapter())
     if (optimisticMessageId != null) {
       commitLocalPendingPlayerMessage(optimisticMessageId)
     }
     if (result.plan != null && shouldStreamDebugPlan(result.plan)) {
       sessionRuntimeStage = "继续编排下一轮剧情"
       streamDebugPlanOrFallback(result.plan, conversationMessages(), text)
+      refreshDebugStoryInfo(playCurrentChapter())
       if (sessionRuntimeStage == "继续编排下一轮剧情") {
         sessionRuntimeStage = ""
       }
@@ -5938,9 +6059,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       )
       clearRuntimeRetryState()
       applyDebugOrchestrationResult(result, playCurrentChapter())
+      refreshDebugStoryInfo(playCurrentChapter())
       val shouldYieldToUser = shouldYieldToUserFromDebugPlan(result.plan)
       if (result.plan != null && shouldStreamDebugPlan(result.plan)) {
         streamDebugPlanOrFallback(result.plan, history, null)
+        refreshDebugStoryInfo(playCurrentChapter())
       }
       updateDebugStatePreview()
       val canSpeak = debugCanPlayerSpeakFromState()
@@ -5955,7 +6078,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private fun applyDebugOrchestrationResult(result: com.toonflow.game.data.DebugOrchestrationResult, fallbackChapter: ChapterItem?) {
-    debugRuntimeState = result.state
+    result.state?.takeIf { !it.isJsonNull }?.deepCopy()?.let { nextState ->
+      debugRuntimeState = nextState
+    }
     debugLatestPlan = result.plan
     if (result.chapterId != null && result.chapterId > 0L) {
       debugChapterId = result.chapterId
@@ -5969,7 +6094,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private fun applyDebugStepResult(result: DebugStepResult, historyMessages: List<MessageItem>, fallbackChapter: ChapterItem?) {
-    debugRuntimeState = result.state
+    result.state?.takeIf { !it.isJsonNull }?.deepCopy()?.let { nextState ->
+      debugRuntimeState = nextState
+    }
     debugLatestPlan = null
     if (result.chapterId != null && result.chapterId > 0L) {
       debugChapterId = result.chapterId
@@ -6056,6 +6183,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       )
       clearRuntimeRetryState()
       applyDebugStepResult(fallbackResult, historyMessages, playCurrentChapter())
+      refreshDebugStoryInfo(playCurrentChapter())
       val advanced = conversationMessages().size > historyMessages.size || debugEndDialog != null || debugCanPlayerSpeakFromState(fallbackResult.state)
       if (!advanced) {
         throw streamError
@@ -6150,6 +6278,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       updateMessageById(placeholder.id) { null }
       error("台词流未正常结束")
     }
+    refreshDebugStoryInfo(playCurrentChapter())
   }
 
   private fun appendDebugPlayer(content: String) {
