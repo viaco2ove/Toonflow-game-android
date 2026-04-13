@@ -390,6 +390,28 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return unwrapEnvelope("game/orchestration", api().orchestrateSession(payload))
   }
 
+  /**
+   * 统一读取正式会话或章节调试的故事运行信息。
+   *
+   * 用途：
+   * - 让故事设定、当前章节事件、调试锚点都从单独接口读取；
+   * - 避免继续依赖 orchestration/streamlines 的附带状态。
+   */
+  suspend fun storyInfo(
+    sessionId: String? = null,
+    worldId: Long? = null,
+    chapterId: Long? = null,
+    state: JsonElement? = null,
+  ): StoryInfoResult {
+    val payload = JsonObject().apply {
+      if (!sessionId.isNullOrBlank()) addProperty("sessionId", sessionId)
+      if (worldId != null && worldId > 0L) addProperty("worldId", worldId)
+      if (chapterId != null && chapterId > 0L) addProperty("chapterId", chapterId)
+      if (state != null && !state.isJsonNull) add("state", state)
+    }
+    return unwrapEnvelope("game/storyInfo", api().storyInfo(payload))
+  }
+
   suspend fun debugStep(
     worldId: Long,
     chapterId: Long?,

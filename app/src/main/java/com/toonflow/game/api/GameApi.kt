@@ -26,6 +26,7 @@ import com.toonflow.game.data.SessionNarrativeResult
 import com.toonflow.game.data.SessionOrchestrationResult
 import com.toonflow.game.data.StoryRuntimeConfig
 import com.toonflow.game.data.StoryInitResult
+import com.toonflow.game.data.StoryInfoResult
 import com.toonflow.game.data.UploadedVoiceAudioResult
 import com.toonflow.game.data.VoiceModelConfig
 import com.toonflow.game.data.WorldItem
@@ -144,6 +145,9 @@ interface GameApi {
 
   @POST("game/orchestration")
   suspend fun orchestrateSession(@Body payload: JsonObject): ApiEnvelope<SessionOrchestrationResult>
+
+  @POST("game/storyInfo")
+  suspend fun storyInfo(@Body payload: JsonObject): ApiEnvelope<StoryInfoResult>
 
   @POST("setting/getVoiceModelList")
   suspend fun getVoiceModelList(@Body payload: JsonObject = JsonObject()): ApiEnvelope<List<VoiceModelConfig>>

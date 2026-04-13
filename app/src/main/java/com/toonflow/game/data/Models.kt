@@ -312,6 +312,25 @@ data class StoryInitResult(
   @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
 )
 
+/**
+ * 统一的故事运行信息返回。
+ *
+ * 用途：
+ * - 承载故事设定、当前章节事件和调试锚点等非台词数据；
+ * - 替代 orchestration/streamlines 里夹带的大杂烩状态。
+ */
+data class StoryInfoResult(
+  @SerializedName("worldId") val worldId: Long = 0L,
+  @SerializedName("chapterId") val chapterId: Long? = null,
+  @SerializedName("chapterTitle") val chapterTitle: String = "",
+  @SerializedName("state") val state: JsonElement? = null,
+  @SerializedName("world") val world: WorldItem? = null,
+  @SerializedName("chapter") val chapter: ChapterItem? = null,
+  @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
+  @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
+  @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
+)
+
 data class AiTokenUsageLogItem(
   @SerializedName("id") val id: Long = 0L,
   @SerializedName("createTime") val createTime: Long = 0L,
