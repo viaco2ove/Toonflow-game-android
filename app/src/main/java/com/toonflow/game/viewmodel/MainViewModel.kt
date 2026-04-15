@@ -1630,7 +1630,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (sessionOpening) return "session_opening"
     if (sessionOpenError.isNotBlank()) return "session_error"
     if (sendPending || runtimeProcessingPending) return "sending"
-    if (playRuntimeMiniGame()?.acceptsTextInput == true) return "waiting_player"
+    if (playRuntimeMiniGame() != null) return "waiting_player"
     val latest = conversationMessages().lastOrNull()
     val status = latest?.let { runtimeMessageStatus(it) }.orEmpty()
     if (status == "sending") return "sending"
@@ -1651,7 +1651,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (sessionOpenError.isNotBlank()) return false
     if (sendPending || runtimeProcessingPending) return false
     if (sessionRuntimeStage.isNotBlank()) return false
-    if (playRuntimeMiniGame()?.acceptsTextInput == true) return true
+    if (playRuntimeMiniGame() != null) return true
     return playCanPlayerSpeak() && playCurrentRuntimeStatus() == "waiting_player"
   }
 
@@ -1662,8 +1662,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun playInputPlaceholder(textMode: Boolean): String {
     if (sessionOpening) return sessionOpeningStage.ifBlank { "正在进入故事..." }
     if (sessionOpenError.isNotBlank()) return "打开会话失败，请重试"
-    playRuntimeMiniGame()?.takeIf { it.acceptsTextInput }?.let { miniGame ->
-      return miniGame.inputHint.ifBlank { "直接输入方案" }
+    playRuntimeMiniGame()?.let { miniGame ->
+      return miniGame.inputHint.ifBlank { "小游戏进行中，直接输入动作或方案，#退出 可强制退出" }
     }
     val runtimeStatus = playCurrentRuntimeStatus()
     val status = playSessionStatus().trim().lowercase()
@@ -1686,8 +1686,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun playTurnHint(): String {
     if (sessionOpening) return sessionOpeningStage.ifBlank { "正在进入故事..." }
     if (sessionOpenError.isNotBlank()) return "打开会话失败：$sessionOpenError"
-    if (playRuntimeMiniGame()?.acceptsTextInput == true) {
-      return "小游戏进行中，直接输入方案即可。"
+    if (playRuntimeMiniGame() != null) {
+      return "小游戏进行中，请直接通过聊天框输入动作或方案，#退出 可强制退出。"
     }
     val runtimeStatus = playCurrentRuntimeStatus()
     val status = playSessionStatus().trim().lowercase()
@@ -1875,7 +1875,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private fun runtimeMiniGamePhaseLabel(gameType: String, phase: String, uiPhaseLabel: String): String {
     if (uiPhaseLabel.isNotBlank()) return uiPhaseLabel
-    if (setOf("research_skill", "alchemy", "upgrade_equipment").contains(gameType)) {
+    if (setOf("research_skill", "alchemy", "upgrade_equipment", "battle").contains(gameType)) {
       return when (phase) {
         "await_input" -> "等待方案"
         "result" -> "已评估"
@@ -1991,7 +1991,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       )
     }
     val pendingExit = session.get("pending_exit")?.asBoolean ?: false
-    val acceptsTextInput = (ui.get("accepts_text_input")?.asBoolean == true) || setOf("research_skill", "alchemy", "upgrade_equipment").contains(gameType)
+    val acceptsTextInput = (ui.get("accepts_text_input")?.asBoolean == true) || setOf("research_skill", "alchemy", "upgrade_equipment", "battle").contains(gameType)
     val inputHint = scalarRuntimeText(ui.get("input_hint"))
     val visibleStatuses = setOf("preparing", "active", "settling", "suspended")
     if (!visibleStatuses.contains(status) && playerOptions.isEmpty() && !pendingExit) return null

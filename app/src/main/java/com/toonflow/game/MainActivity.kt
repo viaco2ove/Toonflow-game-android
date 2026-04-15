@@ -5819,9 +5819,9 @@ private fun FooterBar(
         color = Color(0xFFD7E7FF),
         style = MaterialTheme.typography.bodySmall,
       )
-    } else if (miniGameActive && miniGame?.acceptsTextInput != true) {
+    } else if (miniGameActive) {
       Text(
-        "小游戏进行中，请使用上方面板操作。",
+        "小游戏进行中，请直接通过聊天框输入动作或方案，#退出 可强制退出。",
         color = Color(0xFFD7E7FF),
         style = MaterialTheme.typography.bodySmall,
       )
@@ -6017,6 +6017,7 @@ private fun MiniGamePanel(
   miniGame: MainViewModel.RuntimeMiniGameView,
   onAction: (String) -> Unit,
 ) {
+  var expanded by remember { mutableStateOf(false) }
   Card(
     modifier = Modifier.fillMaxWidth(),
     colors = CardDefaults.cardColors(containerColor = Color(0xCC132844)),
@@ -6045,25 +6046,26 @@ private fun MiniGamePanel(
         }
         Box(
           modifier = Modifier
+            .clickable { expanded = !expanded }
             .clip(RoundedCornerShape(999.dp))
             .background(Color(0x223A7BFF))
             .padding(horizontal = 10.dp, vertical = 4.dp),
         ) {
           Text(
-            miniGame.status.ifBlank { "active" },
+            if (expanded) "收起" else "展开",
             color = Color(0xFFDCEAFF),
             style = MaterialTheme.typography.labelSmall,
           )
         }
       }
-      if (miniGame.ruleSummary.isNotBlank()) {
+      if (expanded && miniGame.ruleSummary.isNotBlank()) {
         Text(
           miniGame.ruleSummary,
           color = Color(0xFFBFD4F1),
           style = MaterialTheme.typography.bodySmall,
         )
       }
-      if (miniGame.stateItems.isNotEmpty()) {
+      if (expanded && miniGame.stateItems.isNotEmpty()) {
         Card(
           colors = CardDefaults.cardColors(containerColor = Color(0x18FFFFFF)),
           shape = RoundedCornerShape(10.dp),
@@ -6093,33 +6095,19 @@ private fun MiniGamePanel(
           }
         }
       }
-      if (miniGame.narration.isNotBlank()) {
+      if (expanded && miniGame.narration.isNotBlank()) {
         Text(
           miniGame.narration,
           color = Color(0xFFE6F1FF),
           style = MaterialTheme.typography.bodySmall,
         )
       }
-      if (!miniGame.pendingExit && miniGame.playerOptions.isNotEmpty()) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-          miniGame.playerOptions.forEach { option ->
-            MiniBtn(
-              text = option.label,
-              onClick = { onAction(option.label) },
-              full = true,
-            )
-          }
-        }
-      }
-      if (miniGame.controlOptions.isNotEmpty()) {
-        Row(
-          modifier = Modifier.horizontalScroll(rememberScrollState()),
-          horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-          miniGame.controlOptions.forEach { action ->
-            MiniBtn(text = action, onClick = { onAction(action) })
-          }
-        }
+      if (expanded) {
+        Text(
+          "该小游戏只通过聊天框交互。输入动作或方案继续，输入 #退出 可强制退出。",
+          color = Color(0xFFD7E7FF),
+          style = MaterialTheme.typography.bodySmall,
+        )
       }
     }
   }
