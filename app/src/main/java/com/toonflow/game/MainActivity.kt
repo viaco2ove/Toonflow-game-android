@@ -4413,9 +4413,6 @@ private fun PlayScene(
             }
           }
         },
-        onMiniGameAction = {
-          vm.sendMiniGameAction(it)
-        },
       )
     }
   }
@@ -5621,14 +5618,13 @@ private fun FooterBar(
   onToggleInputMode: () -> Unit,
   onVoicePressStart: () -> Unit,
   onVoicePressFinish: (Boolean) -> Unit,
-  onMiniGameAction: (String) -> Unit,
 ) {
   val miniGameActive = miniGame != null && mode != "tips" && mode != "setting"
   val playbackModeActive = mode == "history" && isSessionPlaybackMode
   Column(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     if (miniGameActive) {
       miniGame?.let { active ->
-        MiniGamePanel(miniGame = active, onAction = onMiniGameAction)
+        MiniGamePanel(miniGame = active)
       }
     }
     if (chapterObjectivePreview.isNotBlank() && mode != "history" && mode != "tips" && mode != "setting") {
@@ -6015,7 +6011,6 @@ private fun audioFileToBase64Payload(file: File): String {
 @Composable
 private fun MiniGamePanel(
   miniGame: MainViewModel.RuntimeMiniGameView,
-  onAction: (String) -> Unit,
 ) {
   var expanded by remember { mutableStateOf(false) }
   Card(

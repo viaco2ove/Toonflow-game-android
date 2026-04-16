@@ -149,12 +149,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val memoryFacts: String,
   )
 
-  data class RuntimeMiniGameAction(
-    val actionId: String,
-    val label: String,
-    val desc: String,
-  )
-
   data class RuntimeMiniGameStateItem(
     val key: String,
     val value: String,
@@ -187,8 +181,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val inputHint: String,
     val stateItems: List<RuntimeMiniGameStateItem>,
     val battleEnemies: List<RuntimeBattleEnemy>,
-    val playerOptions: List<RuntimeMiniGameAction>,
-    val controlOptions: List<String>,
   )
 
   data class RuntimeChatDebugItem(
@@ -1955,17 +1947,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
-  private fun runtimeMiniGameControlOptions(gameType: String, status: String, pendingExit: Boolean): List<String> {
-    if (gameType == "fishing") {
-      return if (pendingExit) listOf("继续钓鱼", "退出钓鱼") else listOf("退出钓鱼")
-    }
-    return when {
-      status == "suspended" -> listOf("恢复小游戏", "查看状态", "查看规则", "申请退出")
-      pendingExit -> listOf("确认退出", "继续", "查看状态")
-      else -> listOf("查看状态", "查看规则", "暂停", "申请退出")
-    }
-  }
-
   fun playRuntimeMiniGame(): RuntimeMiniGameView? {
     val root = runtimeStateRoot()?.getAsJsonObject("miniGame") ?: return null
     val session = root.getAsJsonObject("session") ?: JsonObject()
@@ -1973,32 +1954,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val status = scalarRuntimeText(session.get("status"))
     val gameType = scalarRuntimeText(session.get("game_type")).ifBlank { scalarRuntimeText(session.get("gameType")) }
     if (gameType.isBlank()) return null
-    val playerOptionsSource = when {
-      ui.get("player_options")?.isJsonArray == true -> ui.getAsJsonArray("player_options")
-      session.get("player_options")?.isJsonArray == true -> session.getAsJsonArray("player_options")
-      else -> JsonArray()
-    }
-    val playerOptions = playerOptionsSource.mapNotNull { item ->
-      if (!item.isJsonObject) return@mapNotNull null
-      val obj = item.asJsonObject
-      val actionId = scalarRuntimeText(obj.get("action_id"))
-      val label = scalarRuntimeText(obj.get("label")).ifBlank { actionId }
-      if (label.isBlank()) return@mapNotNull null
-      RuntimeMiniGameAction(
-        actionId = actionId.ifBlank { label },
-        label = label,
-        desc = scalarRuntimeText(obj.get("desc")),
-      )
-    }
     val pendingExit = session.get("pending_exit")?.asBoolean ?: false
     val acceptsTextInput = (ui.get("accepts_text_input")?.asBoolean == true) || setOf("research_skill", "alchemy", "upgrade_equipment", "battle").contains(gameType)
     val inputHint = scalarRuntimeText(ui.get("input_hint"))
     val visibleStatuses = setOf("preparing", "active", "settling", "suspended")
-    if (!visibleStatuses.contains(status) && playerOptions.isEmpty() && !pendingExit) return null
+    if (!visibleStatuses.contains(status) && !pendingExit) return null
     val publicState = session.getAsJsonObject("public_state") ?: JsonObject()
     val stateItems = runtimeMiniGameStateItems(gameType, ui, publicState)
     val battleEnemies = runtimeMiniGameEnemies(gameType, publicState)
-    val controlOptions = runtimeMiniGameControlOptions(gameType, status, pendingExit)
     return RuntimeMiniGameView(
       gameType = gameType,
       displayName = scalarRuntimeText(root.getAsJsonObject("rulebook")?.get("displayName")).ifBlank { gameType },
@@ -2012,8 +1975,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       inputHint = inputHint,
       stateItems = stateItems,
       battleEnemies = battleEnemies,
-      playerOptions = playerOptions,
-      controlOptions = controlOptions,
     )
   }
 
@@ -5557,44 +5518,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           markLocalPendingPlayerMessageFailed(optimistic.id)
           sendText = text
           notice = "发送失败: $message"
-        }
-      }.also {
-        sendPending = false
-      }
-    }
-  }
-
-  fun sendMiniGameAction(action: String) {
-    val sid = currentSessionId
-    val text = action.trim()
-    if (sid.isBlank() || text.isBlank() || sendPending || runtimeProcessingPending) {
-      logStoryFlow("sendMiniGameAction skipped sessionId=${sid.trim()} textBlank=${text.isBlank()} pending=$sendPending runtimePending=$runtimeProcessingPending")
-      return
-    }
-    sendText = text
-    if (debugMode) {
-      sendDebugMessage(text)
-      return
-    }
-    clearRuntimeRetryState()
-    logStoryFlow("sendMiniGameAction request sessionId=$sid text=${VueTagLogger.sanitize(text, 240)}")
-    val optimistic = appendLocalPendingPlayerMessage(text)
-    sendText = ""
-    sendPending = true
-    viewModelScope.launch {
-      runCatching {
-        performSessionPlayerMessage(sid, text, optimistic.id)
-      }.onFailure {
-        val message = it.message ?: "未知错误"
-        if (message.contains("当前还没轮到用户发言") || message.contains("HTTP 409")) {
-          removeLocalPendingPlayerMessage(optimistic.id)
-          sendText = text
-          notice = message
-          refreshPlaySessionNow(showNoticeOnFailure = false)
-        } else {
-          markLocalPendingPlayerMessageFailed(optimistic.id)
-          sendText = text
-          notice = "小游戏操作失败: $message"
         }
       }.also {
         sendPending = false
