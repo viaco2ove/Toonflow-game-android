@@ -28,6 +28,7 @@ import com.toonflow.game.data.StoryRuntimeConfig
 import com.toonflow.game.data.StoryInitResult
 import com.toonflow.game.data.StoryInfoResult
 import com.toonflow.game.data.UploadedVoiceAudioResult
+import com.toonflow.game.data.GeneratedVoiceBindingResult
 import com.toonflow.game.data.VoiceModelConfig
 import com.toonflow.game.data.WorldItem
 import retrofit2.http.Body
@@ -202,6 +203,9 @@ interface GameApi {
 
   @POST("voice/preview")
   suspend fun previewVoice(@Body payload: JsonObject): ApiEnvelope<JsonObject>
+
+  @POST("voice/generateBindingVoice")
+  suspend fun generateBindingVoice(@Body payload: JsonObject): ApiEnvelope<GeneratedVoiceBindingResult>
 
   @POST("game/streamvoice")
   suspend fun streamVoice(@Body payload: JsonObject): ApiEnvelope<JsonObject>

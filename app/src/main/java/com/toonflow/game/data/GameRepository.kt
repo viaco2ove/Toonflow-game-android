@@ -894,6 +894,49 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return data.get("audioUrl")?.asString?.trim().orEmpty()
   }
 
+  /**
+   * 先按当前绑定模式生成稳定参考音频文件，供运行时统一转 clone 通道使用。
+   */
+  suspend fun generateVoiceBinding(
+    configId: Long?,
+    mode: String,
+    voiceId: String = "",
+    referenceAudioPath: String = "",
+    referenceText: String = "",
+    promptText: String = "",
+    mixVoices: List<VoiceMixItem> = emptyList(),
+  ): GeneratedVoiceBindingResult {
+    val payload = JsonObject().apply {
+      if (configId != null && configId > 0L) addProperty("configId", configId)
+      addProperty("mode", mode)
+      when (mode) {
+        "text" -> if (voiceId.isNotBlank()) {
+          addProperty("voiceId", voiceId)
+        }
+        "clone" -> {
+          if (referenceAudioPath.isNotBlank()) addProperty("referenceAudioPath", referenceAudioPath)
+          if (referenceText.isNotBlank()) addProperty("referenceText", referenceText)
+        }
+        "mix" -> {
+          add("mixVoices", JsonArray().apply {
+            mixVoices
+              .filter { it.voiceId.isNotBlank() }
+              .forEach { item ->
+                add(JsonObject().apply {
+                  addProperty("voiceId", item.voiceId)
+                  addProperty("weight", item.weight)
+                })
+              }
+          })
+        }
+        "prompt_voice" -> if (promptText.isNotBlank()) {
+          addProperty("promptText", promptText)
+        }
+      }
+    }
+    return unwrapEnvelope("voice/generateBindingVoice", api().generateBindingVoice(payload))
+  }
+
   suspend fun streamVoice(
     configId: Long?,
     text: String,

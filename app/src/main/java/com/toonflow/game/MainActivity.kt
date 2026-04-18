@@ -710,6 +710,14 @@ private fun storyPromptUiMeta(code: String): StoryPromptUiMeta {
     "story-chapter" -> StoryPromptUiMeta("chapter_judge", "src/agents/story/chapter_judge/index.ts")
     "story-event-progress" -> StoryPromptUiMeta("event_progress", "src/agents/story/event_progress/index.ts")
     "story-mini-game" -> StoryPromptUiMeta("mini_game_agent", "src/agents/story/mini_game/index.ts")
+    "story-mini-game-battle" -> StoryPromptUiMeta("mini_game_battle", "src/agents/story/mini_game/index.ts")
+    "story-mini-game-fishing" -> StoryPromptUiMeta("mini_game_fishing", "src/agents/story/mini_game/index.ts")
+    "story-mini-game-werewolf" -> StoryPromptUiMeta("mini_game_werewolf", "src/agents/story/mini_game/index.ts")
+    "story-mini-game-cultivation" -> StoryPromptUiMeta("mini_game_cultivation", "src/agents/story/mini_game/index.ts")
+    "story-mini-game-mining" -> StoryPromptUiMeta("mini_game_mining", "src/agents/story/mini_game/index.ts")
+    "story-mini-game-research-skill" -> StoryPromptUiMeta("mini_game_research_skill", "src/agents/story/mini_game/index.ts")
+    "story-mini-game-alchemy" -> StoryPromptUiMeta("mini_game_alchemy", "src/agents/story/mini_game/index.ts")
+    "story-mini-game-upgrade-equipment" -> StoryPromptUiMeta("mini_game_upgrade_equipment", "src/agents/story/mini_game/index.ts")
     "story-safety" -> StoryPromptUiMeta("safety_agent", "src/agents/story/safety/index.ts")
     else -> StoryPromptUiMeta(code, "src/agents/story/unknown.ts")
   }
@@ -2711,6 +2719,8 @@ private fun PlayScene(
   var playbackRequestId by remember(vm.currentSessionId) { mutableStateOf(0) }
   val runtimeVoicePreviewCache = remember(vm.currentSessionId) { mutableMapOf<String, String>() }
   val runtimeVoicePreviewInflight = remember(vm.currentSessionId) { mutableMapOf<String, CompletableDeferred<String>>() }
+  val runtimeVoiceCloneBindingCache = remember(vm.currentSessionId) { mutableMapOf<String, VoiceBindingDraft>() }
+  val runtimeVoiceCloneInflight = remember(vm.currentSessionId) { mutableMapOf<String, CompletableDeferred<VoiceBindingDraft>>() }
   val runtimeVoiceAudioPathCache = remember(vm.currentSessionId) { mutableMapOf<String, String>() }
   val runtimeVoiceAudioInflight = remember(vm.currentSessionId) { mutableMapOf<String, CompletableDeferred<String>>() }
   val runtimeVoiceFallbackBindingCache = remember(vm.currentSessionId) { mutableMapOf<String, VoiceBindingDraft>() }
@@ -2944,6 +2954,53 @@ private fun PlayScene(
     return runtimeVoiceBindingKey(binding) + "|" + text
   }
 
+  /**
+   * 调试和正式游玩统一优先使用 clone 通道。
+   * 如果当前绑定还没有参考音频，就先按原模式生成一个稳定参考音频，再切换成 clone。
+   */
+  suspend fun ensureRuntimeCloneBinding(binding: VoiceBindingDraft): VoiceBindingDraft {
+    if (binding.mode == "clone" && binding.referenceAudioPath.isNotBlank()) {
+      return binding
+    }
+    if (binding.referenceAudioPath.isNotBlank()) {
+      return binding.copy(mode = "clone")
+    }
+    val cacheKey = runtimeVoiceBindingKey(binding)
+    runtimeVoiceCloneBindingCache[cacheKey]?.let { return it }
+    runtimeVoiceCloneInflight[cacheKey]?.let { return it.await() }
+    val deferred = CompletableDeferred<VoiceBindingDraft>()
+    runtimeVoiceCloneInflight[cacheKey] = deferred
+    try {
+      val generated = vm.generateVoiceBinding(
+        configId = binding.configId,
+        mode = binding.mode,
+        presetId = binding.presetId,
+        referenceAudioPath = binding.referenceAudioPath,
+        referenceText = binding.referenceText,
+        promptText = binding.promptText,
+        mixVoices = binding.mixVoices,
+      )
+      val audioPath = generated.audioPath.trim()
+      if (audioPath.isBlank()) {
+        throw IllegalStateException("未生成可复用的参考音频")
+      }
+      val cloneBinding = binding.copy(
+        mode = "clone",
+        referenceAudioPath = audioPath,
+        referenceAudioName = generated.audioName.ifBlank { binding.referenceAudioName },
+        referenceText = generated.referenceText.ifBlank { binding.referenceText },
+      )
+      setLimitedCacheValue(runtimeVoiceCloneBindingCache, cacheKey, cloneBinding)
+      deferred.complete(cloneBinding)
+      return cloneBinding
+    } catch (err: Throwable) {
+      deferred.completeExceptionally(err)
+      throw err
+    } finally {
+      runtimeVoiceCloneInflight.remove(cacheKey)
+    }
+  }
+
   fun isDeterministicRuntimeVoiceError(error: Throwable): Boolean {
     val message = (error.message ?: error.toString()).lowercase()
     return listOf(
@@ -3009,7 +3066,8 @@ private fun PlayScene(
   }
 
   suspend fun resolveRuntimeVoiceUrl(binding: VoiceBindingDraft, text: String): String {
-    val cacheKey = runtimeVoicePreviewKey(binding, text)
+    val playableBinding = ensureRuntimeCloneBinding(binding)
+    val cacheKey = runtimeVoicePreviewKey(playableBinding, text)
     runtimeVoicePreviewCache[cacheKey]?.takeIf { it.isNotBlank() }?.let { return it }
     runtimeVoicePreviewInflight[cacheKey]?.let { return it.await() }
     val deferred = CompletableDeferred<String>()
@@ -3017,14 +3075,14 @@ private fun PlayScene(
     try {
       val url = withTimeoutOrNull(15000L) {
         vm.streamVoice(
-          configId = binding.configId,
+          configId = playableBinding.configId,
           text = text,
-          mode = binding.mode,
-          presetId = binding.presetId,
-          referenceAudioPath = binding.referenceAudioPath,
-          referenceText = binding.referenceText,
-          promptText = binding.promptText,
-          mixVoices = binding.mixVoices,
+          mode = playableBinding.mode,
+          presetId = playableBinding.presetId,
+          referenceAudioPath = playableBinding.referenceAudioPath,
+          referenceText = playableBinding.referenceText,
+          promptText = playableBinding.promptText,
+          mixVoices = playableBinding.mixVoices,
           format = "mp3",
           sampleRate = 16000,
         )
@@ -5815,13 +5873,7 @@ private fun FooterBar(
         color = Color(0xFFD7E7FF),
         style = MaterialTheme.typography.bodySmall,
       )
-    } else if (miniGameActive) {
-      Text(
-        "小游戏进行中，请直接通过聊天框输入动作或方案，#退出 可强制退出。",
-        color = Color(0xFFD7E7FF),
-        style = MaterialTheme.typography.bodySmall,
-      )
-    } else if (inputMode == "text") {
+    } else if (inputMode == "text" || miniGameActive) {
       Row(verticalAlignment = Alignment.CenterVertically) {
         OutlinedTextField(
           value = sendText,
@@ -6094,13 +6146,6 @@ private fun MiniGamePanel(
         Text(
           miniGame.narration,
           color = Color(0xFFE6F1FF),
-          style = MaterialTheme.typography.bodySmall,
-        )
-      }
-      if (expanded) {
-        Text(
-          "该小游戏只通过聊天框交互。输入动作或方案继续，输入 #退出 可强制退出。",
-          color = Color(0xFFD7E7FF),
           style = MaterialTheme.typography.bodySmall,
         )
       }
@@ -8008,6 +8053,7 @@ private fun SettingsScene(vm: MainViewModel) {
   val promptDrafts = remember { mutableStateMapOf<String, String>() }
   var showModelManager by remember { mutableStateOf(false) }
   var activeModelSlot by remember { mutableStateOf<MainViewModel.SettingsModelSlot?>(null) }
+  var showMiniGamePrompts by remember { mutableStateOf(false) }
   val isProfileEditor = vm.settingsPageMode == "profile"
 
   fun openAccountDialog(mode: String) {
@@ -8174,7 +8220,25 @@ private fun SettingsScene(vm: MainViewModel) {
 
       if (vm.token.isNotBlank() && vm.isAdminAccount()) {
         SettingsSectionCard(title = "提示词配置") {
-          vm.storyPrompts.forEach { prompt ->
+          val miniGamePromptCodes = remember {
+            setOf(
+              "story-mini-game",
+              "story-mini-game-battle",
+              "story-mini-game-fishing",
+              "story-mini-game-werewolf",
+              "story-mini-game-cultivation",
+              "story-mini-game-mining",
+              "story-mini-game-research-skill",
+              "story-mini-game-alchemy",
+              "story-mini-game-upgrade-equipment",
+            )
+          }
+          val basePrompts = vm.storyPrompts.filterNot { it.code in miniGamePromptCodes }
+          val miniGamePrompts = vm.storyPrompts.filter { it.code in miniGamePromptCodes }
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            MiniBtn(text = "小游戏Agent", onClick = { showMiniGamePrompts = !showMiniGamePrompts })
+          }
+          basePrompts.forEach { prompt ->
             val isCustom = prompt.customValue?.isNotBlank() == true
             val meta = storyPromptUiMeta(prompt.code)
             val isOrchestratorPrompt = prompt.code == "story-orchestrator-compact" || prompt.code == "story-orchestrator-advanced"
@@ -8248,6 +8312,65 @@ private fun SettingsScene(vm: MainViewModel) {
                 style = MaterialTheme.typography.bodySmall,
                 color = Color(0xFF7889A1),
               )
+            }
+          }
+          if (showMiniGamePrompts) {
+            Text("小游戏Agent 提示词", fontWeight = FontWeight.Bold, color = Color(0xFF1F2430))
+            miniGamePrompts.forEach { prompt ->
+              val isCustom = prompt.customValue?.isNotBlank() == true
+              val meta = storyPromptUiMeta(prompt.code)
+              Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    Text(prompt.name ?: prompt.code, fontWeight = FontWeight.Bold, color = Color(0xFF1F2430))
+                    Text(
+                      if (isCustom) "自定义" else "默认值",
+                      color = if (isCustom) Color(0xFFBE7A16) else Color(0xFF61738E),
+                      style = MaterialTheme.typography.bodySmall,
+                      modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(if (isCustom) Color(0xFFFFF2D8) else Color(0xFFE4F6EA))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    )
+                  }
+                  Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MiniBtn(text = "重置提示词", onClick = {
+                      vm.resetStoryPrompt(prompt.code)
+                      promptDrafts[prompt.code] = vm.currentStoryPromptValue(prompt.code)
+                    })
+                    MiniBtn(text = "保存", primary = true, onClick = {
+                      vm.saveStoryPrompt(prompt.code, promptDrafts[prompt.code] ?: "")
+                    })
+                  }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                  PromptMetaChip("Agent", label = true)
+                  PromptMetaChip(meta.agentLabel)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                  PromptMetaChip("TS", label = true)
+                  PromptMetaChip(meta.tsLabel, multiLine = true)
+                }
+                ScrollableOutlinedTextField(
+                  value = promptDrafts[prompt.code] ?: vm.currentStoryPromptValue(prompt.code),
+                  onValueChange = { promptDrafts[prompt.code] = it },
+                  modifier = Modifier.fillMaxWidth(),
+                  minLines = 5,
+                )
+                Text(
+                  if (isCustom) "*当前使用自定义提示词，点击重置将恢复默认值" else "*当前使用默认值，编辑后将保存为自定义值",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = Color(0xFF7889A1),
+                )
+              }
             }
           }
         }

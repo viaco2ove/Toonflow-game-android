@@ -49,6 +49,7 @@ import com.toonflow.game.data.AiTokenUsageStatsItem
 import com.toonflow.game.data.DebugNarrativePlan
 import com.toonflow.game.data.DebugOrchestrationResult
 import com.toonflow.game.data.DebugStepResult
+import com.toonflow.game.data.GeneratedVoiceBindingResult
 import com.toonflow.game.data.VoiceBindingDraft
 import com.toonflow.game.data.VoiceModelConfig
 import com.toonflow.game.data.VoiceMixItem
@@ -224,6 +225,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     SettingsModelSlot("storyOrchestratorModel", "编排师", "text"),
     SettingsModelSlot("storyChapterJudgeModel", "章节判定", "text"),
     SettingsModelSlot("storyEventProgressModel", "事件进度检测", "text"),
+    SettingsModelSlot("storyMiniGameModel", "小游戏动作解析", "text"),
     SettingsModelSlot("storyFastSpeakerModel", "快速角色发言", "text"),
     SettingsModelSlot("storySpeakerModel", "角色发言", "text"),
     SettingsModelSlot("storyMemoryModel", "记忆管理", "text"),
@@ -251,6 +253,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     "story-chapter",
     "story-event-progress",
     "story-mini-game",
+    "story-mini-game-battle",
+    "story-mini-game-fishing",
+    "story-mini-game-werewolf",
+    "story-mini-game-cultivation",
+    "story-mini-game-mining",
+    "story-mini-game-research-skill",
+    "story-mini-game-alchemy",
+    "story-mini-game-upgrade-equipment",
     "story-safety",
   )
 
@@ -1315,6 +1325,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   /**
+   * 按当前绑定模式生成可复用参考音频，供运行时统一改走 clone 通道。
+   */
+  suspend fun generateVoiceBinding(
+    configId: Long?,
+    mode: String,
+    presetId: String = "",
+    referenceAudioPath: String = "",
+    referenceText: String = "",
+    promptText: String = "",
+    mixVoices: List<VoiceMixItem> = emptyList(),
+  ): GeneratedVoiceBindingResult {
+    return repository.generateVoiceBinding(
+      configId = configId,
+      mode = mode,
+      voiceId = presetId,
+      referenceAudioPath = referenceAudioPath,
+      referenceText = referenceText,
+      promptText = promptText,
+      mixVoices = normalizedMixVoices(mixVoices),
+    )
+  }
+
+  /**
    * 把当前语音模式和配置 id 一起传给后端，让后端按目标语音接口选择润色策略。
    */
   suspend fun polishVoicePrompt(
@@ -1654,8 +1687,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun playInputPlaceholder(textMode: Boolean): String {
     if (sessionOpening) return sessionOpeningStage.ifBlank { "正在进入故事..." }
     if (sessionOpenError.isNotBlank()) return "打开会话失败，请重试"
-    playRuntimeMiniGame()?.let { miniGame ->
-      return miniGame.inputHint.ifBlank { "小游戏进行中，直接输入动作或方案，#退出 可强制退出" }
+    playRuntimeMiniGame()?.let {
+      // 小游戏统一改成聊天流后，输入框不再重复显示动作提示，避免和状态面板文字叠加。
+      return ""
     }
     val runtimeStatus = playCurrentRuntimeStatus()
     val status = playSessionStatus().trim().lowercase()
@@ -1679,7 +1713,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (sessionOpening) return sessionOpeningStage.ifBlank { "正在进入故事..." }
     if (sessionOpenError.isNotBlank()) return "打开会话失败：$sessionOpenError"
     if (playRuntimeMiniGame() != null) {
-      return "小游戏进行中，请直接通过聊天框输入动作或方案，#退出 可强制退出。"
+      return ""
     }
     val runtimeStatus = playCurrentRuntimeStatus()
     val status = playSessionStatus().trim().lowercase()

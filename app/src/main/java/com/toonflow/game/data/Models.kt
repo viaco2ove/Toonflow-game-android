@@ -72,6 +72,17 @@ data class VoiceBindingDraft(
   val mixVoices: List<VoiceMixItem> = emptyList(),
 )
 
+data class GeneratedVoiceBindingResult(
+  val audioPath: String = "",
+  val audioName: String = "",
+  val audioUrl: String = "",
+  val referenceText: String = "",
+  val customVoiceId: String = "",
+  val customVoiceMode: String = "",
+  val requestModel: String = "",
+  val targetModel: String = "",
+)
+
 data class ChapterExtra(
   @SerializedName("chapterId") val chapterId: Long? = null,
   @SerializedName("sort") val sort: Int = 0,
