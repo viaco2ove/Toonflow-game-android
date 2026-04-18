@@ -2724,7 +2724,9 @@ private fun PlayScene(
   val runtimeVoiceAudioPathCache = remember(vm.currentSessionId) { mutableMapOf<String, String>() }
   val runtimeVoiceAudioInflight = remember(vm.currentSessionId) { mutableMapOf<String, CompletableDeferred<String>>() }
   val runtimeVoiceFallbackBindingCache = remember(vm.currentSessionId) { mutableMapOf<String, VoiceBindingDraft>() }
-  val runtimeVoiceWarmCache = remember(vm.currentSessionId) { mutableSetOf<String>() }
+  // clone 通道首次生成在阿里侧经常需要十几秒，15 秒会被安卓端自己提前掐断。
+  // 这里统一放宽到 45 秒，避免客户端把仍在服务端处理中 的 streamvoice 误判为超时失败。
+  val runtimeVoiceRequestTimeoutMs = 45_000L
   var systemTts by remember { mutableStateOf<TextToSpeech?>(null) }
   var systemTtsInit by remember { mutableStateOf<CompletableDeferred<TextToSpeech>?>(null) }
   val revealedMessages = remember(vm.currentSessionId) { mutableStateListOf<MessageItem>() }
@@ -3073,7 +3075,7 @@ private fun PlayScene(
     val deferred = CompletableDeferred<String>()
     runtimeVoicePreviewInflight[cacheKey] = deferred
     try {
-      val url = withTimeoutOrNull(15000L) {
+      val url = withTimeoutOrNull(runtimeVoiceRequestTimeoutMs) {
         vm.streamVoice(
           configId = playableBinding.configId,
           text = text,
@@ -3139,12 +3141,10 @@ private fun PlayScene(
   }
 
   suspend fun warmVoiceBinding(binding: VoiceBindingDraft) {
-    if (binding.mode != "text") return
-    val bindingKey = runtimeVoiceBindingKey(binding)
-    if (!runtimeVoiceWarmCache.add(bindingKey)) return
-    runCatching {
-      resolveRuntimeVoiceUrl(binding, "恭喜，已成功复刻或生成了属于角色的声音！")
-    }
+    // 进入故事时不再主动打一遍“恭喜...”的运行时预热请求。
+    // 这条请求会额外触发 generateBindingVoice + streamvoice，
+    // 对进入故事没有直接收益，反而会显著拖慢首开并制造超时噪音。
+    return
   }
 
   suspend fun replayWithSystemTts(
@@ -3250,11 +3250,14 @@ private fun PlayScene(
     val segments = splitSpeakableSegments(speakable)
     if (segments.isEmpty()) return false
     setRuntimeVoiceIndicator(message, "loading")
+    // 自动语音不能像手动重听一样长时间重试。
+    // 否则一次失败就会把进入会话或恢复会话拖成数十秒的假死体验。
+    val maxAttempts = if (manual) 3 else 1
     for (segment in segments) {
       var segmentPlayed = false
       var lastError: Throwable? = null
       val previewKey = runtimeVoicePreviewKey(binding, segment)
-      repeat(3) {
+      repeat(maxAttempts) {
         var shouldRetry = true
         if (segmentPlayed) return@repeat
         if (requestId != playbackRequestId) return false
@@ -3545,6 +3548,13 @@ private fun PlayScene(
   suspend fun autoVoiceHydratedLatest(reason: String) {
     if (!autoVoice) {
       VueTagLogger.info("voice", "skip hydrated auto voice reason=$reason autoVoice=false")
+      return
+    }
+    // 安卓恢复旧会话时不自动补播最后一条历史台词。
+    // 这条链会直接触发运行时 streamvoice，请求一旦偏慢就会把打开故事拖得很重。
+    // 新生成的消息仍然会正常走自动语音，这里只禁用“恢复会话补播”。
+    if (reason == "resume_latest") {
+      VueTagLogger.info("voice", "skip hydrated auto voice reason=$reason disabled_on_android_resume=true")
       return
     }
     val latest = revealedMessages.lastOrNull() ?: allMessages.lastOrNull() ?: return
@@ -3912,24 +3922,15 @@ private fun PlayScene(
     }
     Column(modifier = Modifier.fillMaxSize()) {
       Row(
-        modifier = Modifier.fillMaxWidth(0.9f) // 90% 宽度
-          .then(
-            // 最大宽度限制 720.dp
-            Modifier.width(min(720.dp, androidx.compose.ui.unit.Dp.Infinity))
-          )
-          // 圆角
-          .clip(RoundedCornerShape(20.dp))
-          // 边框
-          .border(1.dp, Color(0xFF3A3F50), RoundedCornerShape(20.dp))
-          // 背景色
-          .background(Color(0xFF1E253A))
-          // 内边距
-          .padding(16.dp),
+        modifier = Modifier
+          .fillMaxWidth()
+          // 头部与 Web 一样不再包裹整块深色底板，只保留轻量的左右边距。
+          .padding(horizontal = 12.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
       ) {
         Row(
-          modifier = Modifier.weight(0.9f),
+          modifier = Modifier.weight(1f),
           horizontalArrangement = Arrangement.spacedBy(10.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -3948,6 +3949,7 @@ private fun PlayScene(
               playTitle,
               color = textSoft,
               fontWeight = FontWeight.Bold,
+              style = MaterialTheme.typography.titleSmall,
               maxLines = 1,
               overflow = TextOverflow.Ellipsis,
             )
@@ -9830,14 +9832,19 @@ private fun MediumEditableAvatar(path: String?, backgroundPath: String?, fallbac
   )
 }
 
+/**
+ * 渲染故事页顶部的圆形幽灵按钮。
+ * 这个按钮专门用于顶部返回和语音开关，视觉参数与 Web 端头部按钮保持一致。
+ */
 @Composable
 private fun CircleGhostBtn(icon: ImageVector, contentDescription: String, onClick: () -> Unit) {
   Box(
     modifier = Modifier
-      .size(38.dp)
+      // Web 顶部按钮更小、更轻，这里同步压缩尺寸避免出现大胶囊头部。
+      .size(30.dp)
       .clip(CircleShape)
-      .background(Color(0xAD071425))
-      .border(1.dp, Color(0xE1F1F7FF), CircleShape)
+      .background(Color(0x660C1523))
+      .border(1.dp, Color(0x61D6E1F0), CircleShape)
       .clickable { onClick() },
     contentAlignment = Alignment.Center,
   ) {
@@ -9845,7 +9852,7 @@ private fun CircleGhostBtn(icon: ImageVector, contentDescription: String, onClic
       imageVector = icon,
       contentDescription = contentDescription,
       tint = Color.White,
-      modifier = Modifier.size(18.dp),
+      modifier = Modifier.size(16.dp),
     )
   }
 }
