@@ -3865,13 +3865,13 @@ private fun PlayScene(
 
   BoxWithConstraints(modifier = Modifier.fillMaxSize().background(Color(0xFF15283F))) {
     if (chapterBackgroundPath != null) {
+      // 章节背景直接铺满舞台，避免再叠加整屏暗色蒙层导致顶部状态栏区域发灰。
       AnimatedAsyncImage(
         model = chapterBackgroundPath,
         contentDescription = null,
         modifier = Modifier.fillMaxSize(),
         contentScale = ContentScale.Crop,
       )
-      Box(modifier = Modifier.fillMaxSize().background(Color(0xAA0F1D31)))
     }
     if (currentLiveFigureFgPath != null) {
       Box(
@@ -5236,116 +5236,127 @@ private fun StorySettingPanel(
 ) {
   var selectedRoleId by remember(worldName) { mutableStateOf<String?>(null) }
   var showModePicker by remember(worldName) { mutableStateOf(false) }
+  var showStatePreview by remember(worldName, chapterTitle) { mutableStateOf(false) }
   val selectedRole = roles.firstOrNull { it.id == selectedRoleId } ?: roles.firstOrNull()
   val panelScroll = rememberScrollState()
+
   Card(
     modifier = Modifier
       .fillMaxWidth()
       .padding(horizontal = 10.dp, vertical = 8.dp)
-      .heightIn(max = 520.dp),
-    colors = CardDefaults.cardColors(containerColor = Color(0xDD0B1A2D)),
-    shape = RoundedCornerShape(14.dp),
+      .heightIn(max = 500.dp),
+    colors = CardDefaults.cardColors(containerColor = Color(0xE60A182B)),
+    shape = RoundedCornerShape(18.dp),
+    border = BorderStroke(1.dp, Color(0x3DA6BCDA)),
   ) {
     Column(
       modifier = Modifier
-        .padding(10.dp)
+        .padding(12.dp)
         .verticalScroll(panelScroll),
-      verticalArrangement = Arrangement.spacedBy(8.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
       Box(modifier = Modifier.fillMaxWidth()) {
-        Text(
-          text = worldName,
-          color = Color.White,
-          fontWeight = FontWeight.Bold,
-          modifier = Modifier.align(Alignment.Center),
-        )
-        Text(
-          text = "关闭",
-          color = Color(0xFFD6E9FF),
-          style = MaterialTheme.typography.bodySmall,
-          modifier = Modifier.align(Alignment.CenterEnd).clickable { onClose() },
-        )
+        Column(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalAlignment = Alignment.CenterHorizontally,
+          verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+          Text(
+            text = worldName,
+            color = Color.White,
+            fontWeight = FontWeight.ExtraBold,
+            style = MaterialTheme.typography.titleMedium,
+          )
+          Text(
+            text = "故事简介：${worldIntro.ifBlank { "暂无简介" }}",
+            color = Color(0xD6D5EBFF),
+            style = MaterialTheme.typography.labelSmall,
+          )
+        }
+        Box(
+          modifier = Modifier
+            .align(Alignment.TopEnd)
+            .clip(RoundedCornerShape(999.dp))
+            .border(BorderStroke(1.dp, Color(0x52BCCCE2)), RoundedCornerShape(999.dp))
+            .background(Color(0x0FFFFFFF))
+            .clickable { onClose() }
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        ) {
+          Text("关闭", color = Color(0xFFEEF5FF), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+        }
       }
-      Text(
-        "简介：$worldIntro",
-        color = Color(0xFFDCEEFF),
-        style = MaterialTheme.typography.bodySmall,
-        modifier = Modifier.fillMaxWidth(),
-      )
-      Text("角色列表", color = Color(0xFFD5EBFF), style = MaterialTheme.typography.bodySmall)
+      Text("角色列表", color = Color(0xD6D5EBFF), style = MaterialTheme.typography.labelSmall)
       if (roles.isNotEmpty()) {
         Row(
           modifier = Modifier.horizontalScroll(rememberScrollState()),
           horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
           roles.forEach { role ->
+            val active = role.id == selectedRole?.id
             Column(
               modifier = Modifier
+                .width(52.dp)
                 .clickable { selectedRoleId = role.id },
               horizontalAlignment = Alignment.CenterHorizontally,
               verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-              SmallAvatar(
-                foregroundPath = role.avatarPath.trim().ifBlank { null },
-                backgroundPath = role.avatarBgPath.trim().ifBlank { null },
-                title = role.name,
-                size = 40.dp,
+              Box(
+                modifier = Modifier
+                  .size(42.dp)
+                  .clip(CircleShape)
+                  .background(if (active) Color(0x24FFFFFF) else Color(0x14FFFFFF))
+                  .border(BorderStroke(1.dp, if (active) Color(0x66FFFFFF) else Color(0x3DFFFFFF)), CircleShape),
               )
+              {
+                SmallAvatar(
+                  foregroundPath = role.avatarPath.trim().ifBlank { null },
+                  backgroundPath = role.avatarBgPath.trim().ifBlank { null },
+                  title = role.name,
+                  size = 40.dp,
+                )
+              }
               Text(
                 role.name.ifBlank { role.roleType },
-                color = Color(0xFFDCEEFF),
+                color = if (active) Color.White else Color(0xEADCEEFF),
                 style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
               )
             }
           }
         }
       }
       if (!allowRoleView) {
-        Text("创作者未开放“他人可查看角色设定”，当前仅展示基础信息。", color = Color(0xFFBFD3F1), style = MaterialTheme.typography.bodySmall)
+        StoryInlineCard {
+          StoryInlineText("创作者未开放“他人可查看角色设定”，当前仅展示基础信息。")
+        }
       } else if (selectedRole != null) {
-        Card(
-          colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
-          shape = RoundedCornerShape(12.dp),
-        ) {
-          Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(selectedRole.name.ifBlank { "未命名角色" }, color = Color.White, fontWeight = FontWeight.Bold)
-            Text("角色类型：${selectedRole.roleType}", color = Color(0xFFD5EBFF), style = MaterialTheme.typography.bodySmall)
-            Text("角色设定：${selectedRole.description.ifBlank { "暂无设定" }}", color = Color(0xFFD5EBFF), style = MaterialTheme.typography.bodySmall)
-            Text("角色音色：${selectedRole.voice.ifBlank { "未配置" }}", color = Color(0xFFD5EBFF), style = MaterialTheme.typography.bodySmall)
-            if (selectedRole.sample.isNotBlank()) {
-              Text("台词示例：${selectedRole.sample}", color = Color(0xFFD5EBFF), style = MaterialTheme.typography.bodySmall)
-            }
-            selectedRole.parameterCardJson?.let { card ->
-              Divider(color = Color(0x22FFFFFF))
-              Text("参数卡", color = Color.White, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-              ParameterCardDetail(card)
-            }
+        StoryInlineCard {
+          Text(selectedRole.name.ifBlank { "未命名角色" }, color = Color.White, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.bodyMedium)
+          StoryInlineText("角色类型：${storyRoleTypeLabel(selectedRole.roleType)}")
+          StoryInlineText("角色设定：${selectedRole.description.ifBlank { "暂无角色设定" }}")
+          StoryInlineText("角色音色：${selectedRole.voice.ifBlank { "未绑定音色" }}")
+          if (selectedRole.sample.isNotBlank()) {
+            StoryInlineText("台词示例：${selectedRole.sample}")
+          }
+          selectedRole.parameterCardJson?.let { card ->
+            HorizontalDividerCompat()
+            Text("参数卡", color = Color.White, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+            ParameterCardDetail(card)
           }
         }
       }
-      Card(
-        modifier = Modifier.fillMaxWidth().clickable { onToggleEnemyStatusDetail() },
-        colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
-        shape = RoundedCornerShape(10.dp),
-      ) {
-        Row(
-          modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Text("敌人状态${if (battleEnemies.isNotEmpty()) "（${battleEnemies.size}）" else ""}", color = Color.White, fontWeight = FontWeight.SemiBold)
-          Text(if (showEnemyStatusDetail) "收起 >" else "> ", color = Color(0xFFD5EBFF), style = MaterialTheme.typography.bodySmall)
-        }
-      }
+      StoryToggleRow(
+        title = "敌人状态${if (battleEnemies.isNotEmpty()) "（${battleEnemies.size}）" else ""}",
+        expanded = showEnemyStatusDetail,
+        onClick = onToggleEnemyStatusDetail,
+      )
       if (showEnemyStatusDetail) {
-        Card(
-          colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
-          shape = RoundedCornerShape(12.dp),
-        ) {
-          Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (battleEnemies.isEmpty()) {
-              Text("当前没有敌人。", color = Color(0xFFBFD3F1), style = MaterialTheme.typography.bodySmall)
-            } else {
+        StoryInlineCard {
+          if (battleEnemies.isEmpty()) {
+            StoryInlineText("当前没有敌人。")
+          } else {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
               battleEnemies.forEach { enemy ->
                 EnemyStatusCard(enemy = enemy)
               }
@@ -5353,78 +5364,55 @@ private fun StorySettingPanel(
           }
         }
       }
+      StoryToggleRow(
+        title = "故事设定",
+        expanded = showStorySettingDetail,
+        onClick = onToggleStorySettingDetail,
+      )
       if (showStorySettingDetail) {
-        Card(
-          colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
-          shape = RoundedCornerShape(12.dp),
-        ) {
-          Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("故事设定", color = Color.White, fontWeight = FontWeight.Bold)
-            Text("故事背景：${globalBackground.ifBlank { "暂无全局背景" }}", color = Color(0xFFDCEEFF), style = MaterialTheme.typography.bodySmall)
-            Text("章节：$chapterTitle", color = Color(0xFFDCEEFF), style = MaterialTheme.typography.bodySmall)
+        StoryInlineCard {
+          StoryInlineText("故事背景：${globalBackground.ifBlank { "暂无世界背景" }}")
+          StoryInlineText("章节：$chapterTitle")
+          StoryInlineText(
+            "开场白：${if (chapterOpeningLine.isNotBlank()) "${chapterOpeningRole.ifBlank { "旁白" }}：$chapterOpeningLine" else "无"}",
+          )
+          StoryInlineText("章节编排：仅供编排师内部使用，游玩时不直接展示。")
+          StoryInlineText("章节完成条件：${chapterCondition.ifBlank { "无" }}")
+          StoryToggleRow(
+            title = "运行状态快照",
+            expanded = showStatePreview,
+            onClick = { showStatePreview = !showStatePreview },
+          )
+          if (showStatePreview) {
             Text(
-              "开场白：${if (chapterOpeningLine.isNotBlank()) "${chapterOpeningRole.ifBlank { "旁白" }}：$chapterOpeningLine" else "无"}",
-              color = Color(0xFFDCEEFF),
-              style = MaterialTheme.typography.bodySmall,
-              maxLines = 3,
-              overflow = TextOverflow.Ellipsis,
+              text = statePreview.ifBlank { "{}" },
+              color = Color(0xFFAFC6E9),
+              style = MaterialTheme.typography.labelSmall,
+              modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(0x1A000000))
+                .padding(10.dp),
             )
-            Text("章节编排：仅供编排师内部使用，游玩时不直接展示。", color = Color(0xFFDCEEFF), style = MaterialTheme.typography.bodySmall)
-            Text("章节完成条件：$chapterCondition", color = Color(0xFFDCEEFF), style = MaterialTheme.typography.bodySmall)
-            Text("Runtime状态：$statePreview", color = Color(0xFFAFC6E9), style = MaterialTheme.typography.bodySmall, maxLines = 6, overflow = TextOverflow.Ellipsis)
           }
         }
       }
-      Card(
-        modifier = Modifier.fillMaxWidth().clickable { onToggleStorySettingDetail() },
-        colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
-        shape = RoundedCornerShape(10.dp),
-      ) {
-        Row(
-          modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Text("故事设定", color = Color.White, fontWeight = FontWeight.SemiBold)
-          Text(if (showStorySettingDetail) "收起 >" else "> ", color = Color(0xFFD5EBFF), style = MaterialTheme.typography.bodySmall)
-        }
-      }
-      Card(
-        modifier = Modifier.fillMaxWidth().clickable { onToggleChapterEventDetail() },
-        colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
-        shape = RoundedCornerShape(10.dp),
-      ) {
-        Row(
-          modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Text("当前章节事件", color = Color.White, fontWeight = FontWeight.SemiBold)
-          Text(if (showChapterEventDetail) "收起 >" else "> ", color = Color(0xFFD5EBFF), style = MaterialTheme.typography.bodySmall)
-        }
-      }
+      StoryToggleRow(
+        title = "当前章节事件",
+        expanded = showChapterEventDetail,
+        onClick = onToggleChapterEventDetail,
+      )
       if (showChapterEventDetail) {
-        Card(
-          colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
-          shape = RoundedCornerShape(12.dp),
-        ) {
-          Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("当前事件进度", color = Color.White, fontWeight = FontWeight.Bold)
-            Text(
-              text = currentEventProgressText.ifBlank { "当前章节事件待生成" },
-              color = Color(0xFFDCEEFF),
-              style = MaterialTheme.typography.bodySmall,
-            )
-            if (debugOrchestratorRuntimeText.isNotBlank()) {
-              Text(
-                text = debugOrchestratorRuntimeText,
-                color = Color(0xFFBFD3F1),
-                style = MaterialTheme.typography.labelSmall,
-              )
-            }
-            if (chapterEventItems.isEmpty()) {
-              Text("暂无章节事件", color = Color(0xFFBFD3F1), style = MaterialTheme.typography.bodySmall)
-            } else {
+        StoryInlineCard {
+          Text("当前事件进度", color = Color.White, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.bodyMedium)
+          StoryInlineText(currentEventProgressText.ifBlank { "当前章节事件尚未生成。" })
+          if (debugOrchestratorRuntimeText.isNotBlank()) {
+            StoryInlineText(debugOrchestratorRuntimeText, color = Color(0xFFBFD3F1))
+          }
+          if (chapterEventItems.isEmpty()) {
+            StoryInlineText("当前章节事件尚未生成。")
+          } else {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
               chapterEventItems.forEach { item ->
                 ChapterEventDigestCard(item = item, eventFlowLabel = chapterEventFlowLabel(item))
               }
@@ -5432,33 +5420,96 @@ private fun StorySettingPanel(
           }
         }
       }
-      Card(
-        modifier = Modifier.fillMaxWidth().clickable { showModePicker = !showModePicker },
-        colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
-        shape = RoundedCornerShape(10.dp),
-      ) {
-        Row(
-          modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 9.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Text("对话模式", color = Color.White, fontWeight = FontWeight.SemiBold)
-          Text("基础模式 >", color = Color(0xFFD5EBFF), style = MaterialTheme.typography.bodySmall)
-        }
-      }
+      StoryToggleRow(
+        title = "对话模式",
+        trailingText = "基础模式 >",
+        expanded = false,
+        onClick = { showModePicker = !showModePicker },
+      )
       if (showModePicker) {
-        Card(
-          colors = CardDefaults.cardColors(containerColor = Color(0x1AFFFFFF)),
-          shape = RoundedCornerShape(10.dp),
-        ) {
-          Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("✓ 基础模式（当前唯一）", color = Color.White, style = MaterialTheme.typography.bodySmall)
-            Text("当前仅支持基础模式，后续可扩展其他对话模式。", color = Color(0xFFBFD3F1), style = MaterialTheme.typography.bodySmall)
-          }
+        StoryInlineCard {
+          Text("✓ 基础模式（当前唯一）", color = Color.White, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+          StoryInlineText("当前仅支持基础模式，后续可扩展其他对话模式。")
         }
       }
     }
   }
+}
+
+/**
+ * 把角色类型转换为更接近 Web 端的中文标签，避免直接暴露原始枚举值。
+ */
+private fun storyRoleTypeLabel(roleType: String): String {
+  return when (roleType.trim().lowercase()) {
+    "player" -> "用户"
+    "narrator" -> "旁白"
+    "npc" -> "角色"
+    else -> roleType.ifBlank { "角色" }
+  }
+}
+
+/**
+ * 统一渲染故事弹层里的折叠条目，让安卓端布局和 Web 端的 link row 更接近。
+ */
+@Composable
+private fun StoryToggleRow(
+  title: String,
+  expanded: Boolean,
+  onClick: () -> Unit,
+  trailingText: String? = null,
+) {
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .clip(RoundedCornerShape(12.dp))
+      .border(BorderStroke(1.dp, Color(0x29BCCCE2)), RoundedCornerShape(12.dp))
+      .background(Color(0x0FFFFFFF))
+      .clickable { onClick() }
+      .padding(horizontal = 12.dp, vertical = 10.dp),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
+    Text(
+      text = trailingText ?: if (expanded) "收起 >" else ">",
+      color = Color(0xEAD5EBFF),
+      style = MaterialTheme.typography.bodySmall,
+    )
+  }
+}
+
+/**
+ * 统一渲染故事弹层中的信息卡，避免多处重复定义半透明卡片样式。
+ */
+@Composable
+private fun StoryInlineCard(content: @Composable ColumnScope.() -> Unit) {
+  Card(
+    colors = CardDefaults.cardColors(containerColor = Color(0x14FFFFFF)),
+    shape = RoundedCornerShape(14.dp),
+    border = BorderStroke(1.dp, Color(0x29BCCCE2)),
+  ) {
+    Column(
+      modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+      verticalArrangement = Arrangement.spacedBy(6.dp),
+      content = content,
+    )
+  }
+}
+
+/**
+ * 统一渲染故事弹层里的正文文案，保持和 Web 端接近的字号与行高。
+ */
+@Composable
+private fun StoryInlineText(text: String, color: Color = Color(0xEADCEEFF)) {
+  Text(text = text, color = color, style = MaterialTheme.typography.bodySmall)
+}
+
+/**
+ * 兼容当前仓库的 Material 版本，优先用新的横向分割线视觉。
+ */
+@Composable
+private fun HorizontalDividerCompat() {
+  Divider(color = Color(0x22FFFFFF))
 }
 
 /**
