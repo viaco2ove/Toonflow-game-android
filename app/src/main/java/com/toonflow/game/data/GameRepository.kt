@@ -401,7 +401,8 @@ class GameRepository(private val settingsStore: SettingsStore) {
   /**
    * 将 /game/orchestration 的最小 data 响应包装成旧业务层继续消费的 plan。
    *
-   * 后端现在只允许 data 返回 role/roleType/motive；安卓上层仍统一从 plan 读取要生成的台词目标。
+   * 后端现在只允许 data 返回 role/roleType/motive/awaitUser；
+   * 安卓上层仍统一从 plan 读取要生成的台词目标和是否交还用户输入。
    */
   private fun normalizeSessionOrchestrationPlan(result: SessionOrchestrationResult): SessionOrchestrationResult {
     if (result.plan != null) return result
@@ -411,6 +412,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
         role = result.role.trim(),
         roleType = result.roleType.trim().ifBlank { "narrator" },
         motive = result.motive.trim(),
+        awaitUser = result.awaitUser,
       ),
     )
   }
@@ -488,6 +490,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
         role = result.role.trim(),
         roleType = result.roleType.trim().ifBlank { "narrator" },
         motive = result.motive.trim(),
+        awaitUser = result.awaitUser,
       ),
     )
   }

@@ -1640,6 +1640,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return runtimeTurnStateRoot()?.get("canPlayerSpeak")?.asBoolean ?: true
   }
 
+  /**
+   * 正式会话恢复后按运行态决定是否继续自动编排。
+   *
+   * 用途：
+   * - 二次进入或回溯后，如果当前仍不是用户回合，就继续 orchestration -> streamlines；
+   * - 不能只在“消息为空”时推进，因为已有旁白但等待下一句生成也是常态。
+   */
+  private fun scheduleSessionNarrativeIfSystemTurn() {
+    if (debugMode || currentSessionId.isBlank() || sessionViewMode == "playback") return
+    if (runtimeProcessingPending || sessionRuntimeStage.isNotBlank()) return
+    val hasStreamingMessage = conversationMessages(messages.toList()).any(::isStreamingRuntimeMessage)
+    if (!playCanPlayerSpeak() && !hasStreamingMessage) {
+      viewModelScope.launch {
+        continueSessionNarrative()
+      }
+    }
+  }
+
   fun playSessionStatus(): String {
     if (debugMode) return "debug"
     return sessionDetail?.status.orEmpty()
@@ -3251,7 +3269,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private fun applyAwaitUserTurnFromPlan(plan: DebugNarrativePlan?) {
     val currentPlan = plan ?: return
-    val shouldYieldToUser = currentPlan.awaitUser || currentPlan.nextRoleType.trim().equals("player", ignoreCase = true)
+    val shouldYieldToUser = currentPlan.awaitUser
     if (!shouldYieldToUser) return
     val detail = sessionDetail ?: return
     val root = detail.state?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() ?: return
@@ -3557,6 +3575,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.revisitMessage(currentSessionId, messageId)
         refreshCurrentSession()
       }.onSuccess {
+        scheduleSessionNarrativeIfSystemTurn()
         notice = "已回溯到这句台词，可继续编排"
       }.onFailure {
         throwIfCancellation(it)
@@ -5246,10 +5265,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sessionOpeningStage = if (playback) "同步回放进度" else "同步游戏进度"
     notice = if (playback) "正在同步回放进度..." else "正在同步游戏进度..."
     refreshCurrentSession()
-    if (!playback && conversationMessages(messages.toList()).isEmpty() && !playCanPlayerSpeak()) {
-      viewModelScope.launch {
-        continueSessionNarrative()
-      }
+    if (!playback) {
+      scheduleSessionNarrativeIfSystemTurn()
     }
     if (firstMessage.isNotBlank()) {
       performSessionPlayerMessage(sessionId, firstMessage)
@@ -5867,7 +5884,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           "continueSession orchestration sessionId=$currentSessionId planRole=${orchestration.plan?.role.orEmpty()} nextRole=${orchestration.plan?.nextRole.orEmpty()} status=${orchestration.status}",
         )
         val plan = orchestration.plan
-        val shouldYieldToUser = plan?.awaitUser == true || plan?.nextRoleType?.trim()?.equals("player", ignoreCase = true) == true
+        val shouldYieldToUser = plan?.awaitUser == true
         val shouldStreamPlan = shouldStreamSessionPlanFromPlan(plan)
         if (shouldStreamPlan) {
           streamSessionPlan(orchestration, history)
@@ -6109,8 +6126,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private fun shouldYieldToUserFromDebugPlan(plan: DebugNarrativePlan?): Boolean {
     if (plan == null) return false
-    val nextRoleType = plan.nextRoleType.trim().lowercase()
-    return plan.awaitUser || nextRoleType == "player"
+    return plan.awaitUser
   }
 
   private fun shouldStreamDebugPlan(plan: DebugNarrativePlan?): Boolean {
