@@ -231,6 +231,9 @@ data class SessionNarrativeResult(
 )
 
 data class SessionOrchestrationResult(
+  @SerializedName("role") val role: String = "",
+  @SerializedName("roleType") val roleType: String = "",
+  @SerializedName("motive") val motive: String = "",
   @SerializedName("sessionId") val sessionId: String = "",
   @SerializedName("status") val status: String = "",
   @SerializedName("chapterId") val chapterId: Long? = null,
@@ -279,6 +282,9 @@ data class DebugNarrativePlan(
 )
 
 data class DebugOrchestrationResult(
+  @SerializedName("role") val role: String = "",
+  @SerializedName("roleType") val roleType: String = "",
+  @SerializedName("motive") val motive: String = "",
   @SerializedName("chapterId") val chapterId: Long? = null,
   @SerializedName("chapterTitle") val chapterTitle: String = "",
   @SerializedName("state") val state: JsonElement? = null,

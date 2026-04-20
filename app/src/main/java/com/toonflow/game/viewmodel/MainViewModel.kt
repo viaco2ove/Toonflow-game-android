@@ -5795,8 +5795,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     val committedContent = finalMessage?.get("content")?.asString ?: accumulated
     val committedCreateTime = finalMessage?.get("createTime")?.asLong ?: System.currentTimeMillis()
+    val committedRole = finalMessage?.get("role")?.asString ?: placeholder.role.ifBlank { "旁白" }
+    val committedRoleType = finalMessage?.get("roleType")?.asString ?: placeholder.roleType.ifBlank { "narrator" }
+    val committedEventType = finalMessage?.get("eventType")?.asString ?: placeholder.eventType.ifBlank { "on_streaming_reply" }
     val committed = repository.commitNarrativeTurn(
       sessionId = sessionId,
+      role = committedRole,
+      roleType = committedRoleType,
+      eventType = committedEventType,
       content = committedContent,
       createTime = committedCreateTime,
     )

@@ -364,11 +364,17 @@ class GameRepository(private val settingsStore: SettingsStore) {
 
   suspend fun commitNarrativeTurn(
     sessionId: String,
+    role: String,
+    roleType: String,
+    eventType: String,
     content: String,
     createTime: Long,
   ): SessionNarrativeResult {
     val payload = JsonObject().apply {
       addProperty("sessionId", sessionId)
+      addProperty("role", role)
+      addProperty("roleType", roleType)
+      addProperty("eventType", eventType)
       addProperty("content", content)
       addProperty("createTime", createTime)
       addProperty("saveSnapshot", true)
@@ -387,7 +393,26 @@ class GameRepository(private val settingsStore: SettingsStore) {
     val payload = JsonObject().apply {
       addProperty("sessionId", sessionId)
     }
-    return unwrapEnvelope("game/orchestration", api().orchestrateSession(payload))
+    return normalizeSessionOrchestrationPlan(
+      unwrapEnvelope("game/orchestration", api().orchestrateSession(payload)),
+    )
+  }
+
+  /**
+   * 将 /game/orchestration 的最小 data 响应包装成旧业务层继续消费的 plan。
+   *
+   * 后端现在只允许 data 返回 role/roleType/motive；安卓上层仍统一从 plan 读取要生成的台词目标。
+   */
+  private fun normalizeSessionOrchestrationPlan(result: SessionOrchestrationResult): SessionOrchestrationResult {
+    if (result.plan != null) return result
+    if (result.role.isBlank() && result.motive.isBlank()) return result
+    return result.copy(
+      plan = DebugNarrativePlan(
+        role = result.role.trim(),
+        roleType = result.roleType.trim().ifBlank { "narrator" },
+        motive = result.motive.trim(),
+      ),
+    )
   }
 
   /**
@@ -447,7 +472,24 @@ class GameRepository(private val settingsStore: SettingsStore) {
       }
       add("messages", gson.toJsonTree(messages))
     }
-    return api().orchestrateDebug(payload).data
+    return normalizeDebugOrchestrationPlan(api().orchestrateDebug(payload).data)
+  }
+
+  /**
+   * 将调试编排的最小 data 响应包装成 DebugNarrativePlan。
+   *
+   * 这样 UI 和流式台词生成链路不需要感知后端接口已经瘦身。
+   */
+  private fun normalizeDebugOrchestrationPlan(result: DebugOrchestrationResult): DebugOrchestrationResult {
+    if (result.plan != null) return result
+    if (result.role.isBlank() && result.motive.isBlank()) return result
+    return result.copy(
+      plan = DebugNarrativePlan(
+        role = result.role.trim(),
+        roleType = result.roleType.trim().ifBlank { "narrator" },
+        motive = result.motive.trim(),
+      ),
+    )
   }
 
   suspend fun debugIntroduction(
