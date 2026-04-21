@@ -33,6 +33,7 @@ import com.toonflow.game.data.PromptItem
 import com.toonflow.game.data.RoleParameterCard
 import com.toonflow.game.data.RuntimeEventDigestItem
 import com.toonflow.game.data.SessionDetail
+import com.toonflow.game.data.SessionChapterCommand
 import com.toonflow.game.data.SessionItem
 import com.toonflow.game.data.SessionNarrativeResult
 import com.toonflow.game.data.SessionOrchestrationResult
@@ -3942,6 +3943,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return plan.role.isNotBlank() && !plan.roleType.trim().equals("player", ignoreCase = true)
   }
 
+  /**
+   * 判断编排结果是否要求客户端先显式初始化下一章节。
+   */
+  private fun isInitChapterCommand(command: SessionChapterCommand?): Boolean {
+    if (command == null) return false
+    return command.type.trim() == "init_chapter" && command.chapterId > 0L
+  }
+
+  /**
+   * 调用显式章节初始化接口，并刷新当前会话的故事运行信息。
+   */
+  private suspend fun initCurrentSessionChapter(command: SessionChapterCommand) {
+    val sessionId = currentSessionId.trim()
+    if (sessionId.isBlank()) return
+    repository.initChapter(sessionId, command.chapterId)
+    refreshSessionStoryInfo()
+  }
+
   private fun clearRuntimeRetryMessage() {
     val nextMessages = conversationMessages()
     if (nextMessages.size == messages.size) return
@@ -5884,10 +5903,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           "continueSession orchestration sessionId=$currentSessionId planRole=${orchestration.plan?.role.orEmpty()} nextRole=${orchestration.plan?.nextRole.orEmpty()} status=${orchestration.status}",
         )
         val plan = orchestration.plan
+        val shouldInitNextChapter = isInitChapterCommand(orchestration.command)
         val shouldYieldToUser = plan?.awaitUser == true
         val shouldStreamPlan = shouldStreamSessionPlanFromPlan(plan)
         if (shouldStreamPlan) {
           streamSessionPlan(orchestration, history)
+        }
+        if (shouldInitNextChapter) {
+          orchestration.command?.let { initCurrentSessionChapter(it) }
+          advanced = true
+          continue
         }
         val afterCount = conversationMessages().size
         val latest = conversationMessages().lastOrNull()

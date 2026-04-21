@@ -13,6 +13,7 @@ import com.toonflow.game.data.DebugOrchestrationResult
 import com.toonflow.game.data.DebugRevisitResult
 import com.toonflow.game.data.DebugStepResult
 import com.toonflow.game.data.GeneratedImageResult
+import com.toonflow.game.data.InitChapterResult
 import com.toonflow.game.data.LocalAvatarMattingStatus
 import com.toonflow.game.data.MessageItem
 import com.toonflow.game.data.ModelConfigItem
@@ -146,6 +147,9 @@ interface GameApi {
 
   @POST("game/orchestration")
   suspend fun orchestrateSession(@Body payload: JsonObject): ApiEnvelope<SessionOrchestrationResult>
+
+  @POST("game/initchapter")
+  suspend fun initChapter(@Body payload: JsonObject): ApiEnvelope<InitChapterResult>
 
   @POST("game/storyInfo")
   suspend fun storyInfo(@Body payload: JsonObject): ApiEnvelope<StoryInfoResult>

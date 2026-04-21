@@ -398,6 +398,16 @@ class GameRepository(private val settingsStore: SettingsStore) {
     )
   }
 
+  suspend fun initChapter(sessionId: String, chapterId: Long? = null): InitChapterResult {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+      if (chapterId != null && chapterId > 0L) {
+        addProperty("chapterId", chapterId)
+      }
+    }
+    return unwrapEnvelope("game/initChapter", api().initChapter(payload))
+  }
+
   /**
    * 将 /game/orchestration 的最小 data 响应包装成旧业务层继续消费的 plan。
    *
