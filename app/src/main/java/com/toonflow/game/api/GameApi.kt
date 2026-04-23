@@ -77,7 +77,10 @@ interface GameApi {
   suspend fun uploadImage(@Body payload: JsonObject): ApiEnvelope<GeneratedImageResult>
 
   @POST("game/convertAvatarVideoToGif")
-  suspend fun convertAvatarVideoToGif(@Body payload: JsonObject): ApiEnvelope<SeparatedRoleImageResult>
+  suspend fun convertAvatarVideoToGif(@Body payload: JsonObject): ApiEnvelope<RoleAvatarTaskResult>
+
+  @POST("game/convertAvatarVideoToGif/status")
+  suspend fun convertAvatarVideoToGifStatus(@Body payload: JsonObject): ApiEnvelope<RoleAvatarTaskResult>
 
   @POST("game/separateRoleAvatar")
   suspend fun separateRoleAvatar(@Body payload: JsonObject): ApiEnvelope<RoleAvatarTaskResult>

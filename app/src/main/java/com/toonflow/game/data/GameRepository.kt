@@ -27,6 +27,8 @@ class GameRepository(private val settingsStore: SettingsStore) {
   private val gson = Gson()
   private val roleAvatarTaskPollIntervalMs = 1000L
   private val roleAvatarTaskTimeoutMs = 180000L
+  private val avatarVideoTaskPollIntervalMs = 2000L
+  private val avatarVideoTaskTimeoutMs = 30L * 60L * 1000L
   private val debugStreamIdleTimeoutMs = 15000L
   private val debugStreamWatchdogPollMs = 500L
 
@@ -52,7 +54,23 @@ class GameRepository(private val settingsStore: SettingsStore) {
       foregroundFilePath = task.foregroundFilePath,
       backgroundPath = task.backgroundPath,
       backgroundFilePath = task.backgroundFilePath,
+      foregroundExt = task.foregroundExt,
     )
+  }
+
+  /**
+   * 把视频头像队列状态转换为可直接显示的进度文案。
+   */
+  private fun avatarVideoProgressText(task: RoleAvatarTaskResult): String {
+    val status = task.status.trim().lowercase()
+    val progressText = task.progress?.takeIf { it > 0 }?.let { " ${it}%" }.orEmpty()
+    return when (status) {
+      "queued" -> if ((task.queuePosition ?: 0) > 0) "排队中，第 ${task.queuePosition} 个$progressText" else "排队中$progressText"
+      "running" -> task.message.ifBlank { "生成中" } + progressText
+      "success" -> "生成完成 100%"
+      "failed" -> task.errorMessage.ifBlank { task.message.ifBlank { "生成失败" } }
+      else -> task.message.ifBlank { "头像任务处理中" }
+    }
   }
 
   suspend fun login(username: String, password: String): JsonObject {
@@ -199,6 +217,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
     base64Data: String,
     fileName: String = "avatar.mp4",
     preferGif: Boolean = false,
+    onProgress: (String) -> Unit = {},
   ): SeparatedRoleImageResult {
     val payload = JsonObject().apply {
       if (projectId != null && projectId > 0L) addProperty("projectId", projectId)
@@ -206,7 +225,24 @@ class GameRepository(private val settingsStore: SettingsStore) {
       if (fileName.isNotBlank()) addProperty("fileName", fileName)
       if (preferGif) addProperty("preferGif", true)
     }
-    return unwrapEnvelope("game/convertAvatarVideoToGif", api().convertAvatarVideoToGif(payload))
+    val task = unwrapEnvelope("game/convertAvatarVideoToGif", api().convertAvatarVideoToGif(payload))
+    val taskId = task.taskId.takeIf { it > 0L } ?: task.jobId
+    if (taskId <= 0L) {
+      error("MP4 转 GIF 任务创建失败")
+    }
+    val startedAt = System.currentTimeMillis()
+    while (System.currentTimeMillis() - startedAt < avatarVideoTaskTimeoutMs) {
+      val status = unwrapEnvelope("game/convertAvatarVideoToGif/status", api().convertAvatarVideoToGifStatus(JsonObject().apply {
+        addProperty("taskId", taskId)
+      }))
+      onProgress(avatarVideoProgressText(status))
+      when (status.status.trim().lowercase()) {
+        "success" -> return resolveRoleAvatarResult(status)
+        "failed" -> error(status.errorMessage.ifBlank { status.message.ifBlank { "MP4 转 GIF 失败" } })
+      }
+      delay(avatarVideoTaskPollIntervalMs)
+    }
+    error("MP4 转 GIF 处理超时，请稍后重试")
   }
 
   suspend fun separateRoleAvatar(

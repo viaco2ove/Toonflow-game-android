@@ -419,18 +419,22 @@ data class SeparatedRoleImageResult(
   @SerializedName("foregroundFilePath") val foregroundFilePath: String = "",
   @SerializedName("backgroundPath") val backgroundPath: String = "",
   @SerializedName("backgroundFilePath") val backgroundFilePath: String = "",
+  @SerializedName("foregroundExt") val foregroundExt: String = "",
 )
 
 data class RoleAvatarTaskResult(
   @SerializedName("taskId") val taskId: Long = 0L,
+  @SerializedName("jobId") val jobId: Long = 0L,
   @SerializedName("status") val status: String = "",
   @SerializedName("progress") val progress: Int? = null,
+  @SerializedName("queuePosition") val queuePosition: Int? = null,
   @SerializedName("message") val message: String = "",
   @SerializedName("errorMessage") val errorMessage: String = "",
   @SerializedName("foregroundPath") val foregroundPath: String = "",
   @SerializedName("foregroundFilePath") val foregroundFilePath: String = "",
   @SerializedName("backgroundPath") val backgroundPath: String = "",
   @SerializedName("backgroundFilePath") val backgroundFilePath: String = "",
+  @SerializedName("foregroundExt") val foregroundExt: String = "",
 )
 
 data class VoiceModelConfig(

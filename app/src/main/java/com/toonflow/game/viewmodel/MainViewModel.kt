@@ -2558,8 +2558,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       projectId = if (projectScoped) selectedProjectId.takeIf { it > 0L } ?: error("请先选择项目后再上传 MP4") else null,
       base64Data = bytesToBase64Payload(source.bytes, source.mime),
       fileName = source.fileName.ifBlank { "avatar.mp4" },
-      // 安卓端要优先拿 GIF，避免部分设备对 animated WebP 的兼容性不稳定。
-      preferGif = true,
+      // 安卓端与 web 端保持一致，默认请求高质量 animated WebP。
+      preferGif = false,
+      onProgress = { notice = it },
     )
     val foregroundPath = resolveMediaPath(result.foregroundFilePath.ifBlank { result.foregroundPath })
     val backgroundPath = resolveMediaPath(result.backgroundFilePath.ifBlank { result.backgroundPath })
