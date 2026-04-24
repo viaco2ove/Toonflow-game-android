@@ -67,6 +67,10 @@ import java.net.URL
 import java.util.Locale
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
+  private companion object {
+    const val RUNTIME_STREAM_PLACEHOLDER_TEXT = "获取台词中"
+  }
+
   private val settingsStore = SettingsStore(application)
   private val repository = GameRepository(settingsStore)
   private val prettyGson = GsonBuilder().setPrettyPrinting().create()
@@ -3443,7 +3447,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       role = plan.role.ifBlank { "旁白" },
       roleType = plan.roleType.ifBlank { "narrator" },
       eventType = plan.eventType.ifBlank { "on_streaming_reply" },
-      content = "",
+      // 编排接口一返回就先插入可见台词框，避免游玩界面在流式首包前完全空白。
+      // 后续真正的 delta/done 到来时会覆盖这段占位文案。
+      content = RUNTIME_STREAM_PLACEHOLDER_TEXT,
       createTime = now,
       meta = JsonObject().apply {
         addProperty("kind", "runtime_stream")
@@ -5785,7 +5791,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           if (text.isBlank()) return@streamSessionLines
           accumulated += text
           updateMessageById(placeholder.id) { current ->
-            current.copy(content = current.content + text)
+            // 直接覆盖累计正文，避免把“获取台词中”占位文案拼进真实台词。
+            current.copy(content = accumulated)
           }
         }
 
@@ -6202,6 +6209,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     messages.addAll(historyMessages)
     messages.add(placeholder)
     var done = false
+    var accumulated = ""
     repository.streamDebugLines(
       worldId = worldId,
       chapterId = debugChapterId,
@@ -6214,8 +6222,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         "delta" -> {
           val text = event.getAsJsonObject("data")?.get("text")?.asString.orEmpty()
           if (text.isBlank()) return@streamDebugLines
+          accumulated += text
           updateMessageById(placeholder.id) { current ->
-            current.copy(content = current.content + text)
+            // 调试链同样直接覆盖累计正文，避免占位文案残留到最终内容前面。
+            current.copy(content = accumulated)
           }
         }
 
