@@ -3276,7 +3276,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private fun applyAwaitUserTurnFromPlan(plan: DebugNarrativePlan?) {
     val currentPlan = plan ?: return
     val shouldYieldToUser = currentPlan.awaitUser
-    if (!shouldYieldToUser) return
+    if (!shouldYieldToUser || shouldStreamSessionPlanFromPlan(currentPlan)) return
     val detail = sessionDetail ?: return
     val root = detail.state?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() ?: return
     val turnState = (root.getAsJsonObject("turnState") ?: JsonObject()).also { root.add("turnState", it) }
@@ -5906,7 +5906,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val orchestration = repository.orchestrateSession(currentSessionId)
         clearRuntimeRetryState()
         applySessionOrchestrationResult(orchestration)
-        refreshSessionStoryInfo()
         logStoryFlow(
           "continueSession orchestration sessionId=$currentSessionId planRole=${orchestration.plan?.role.orEmpty()} nextRole=${orchestration.plan?.nextRole.orEmpty()} status=${orchestration.status}",
         )
@@ -5914,6 +5913,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val shouldInitNextChapter = isInitChapterCommand(orchestration.command)
         val shouldYieldToUser = plan?.awaitUser == true
         val shouldStreamPlan = shouldStreamSessionPlanFromPlan(plan)
+        refreshSessionStoryInfo()
+        if (!shouldStreamPlan) {
+          // storyInfo 可能还没同步到最新 turnState；刷新后再补一次本地 awaitUser，
+          // 避免界面和调试面板仍停在 NPC/旁白回合。
+          applyAwaitUserTurnFromPlan(plan)
+        }
         if (shouldStreamPlan) {
           streamSessionPlan(orchestration, history)
         }
