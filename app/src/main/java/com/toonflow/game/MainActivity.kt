@@ -3444,7 +3444,19 @@ private fun PlayScene(
     }
   }
 
-  fun launchRuntimeAutoVoice(message: MessageItem, segments: List<String>) {
+  /**
+   * 启动一条运行时自动语音队列。
+   *
+   * 用途：
+   * - 新台词揭示后，串行播放每个可朗读片段；
+   * - 队列播放完成后，再把消息状态切回 waiting_player / waiting_next，
+   *   避免自动推进在语音尚未播放时抢先继续下一句。
+   */
+  fun launchRuntimeAutoVoice(
+    message: MessageItem,
+    segments: List<String>,
+    onFinished: (() -> Unit)? = null,
+  ) {
     val speakableSegments = segments
       .map(::normalizePlayableSpeakableText)
       .filter { it.isNotBlank() }
@@ -3465,6 +3477,11 @@ private fun PlayScene(
         }
       } catch (_: CancellationException) {
       } finally {
+        // 只有当前这条自动语音任务仍然是活跃队列时，才允许把运行时状态切回等待态。
+        // 这样可以避免旧任务的 finally 把新消息的状态错误覆盖掉。
+        if (runtimeVoiceAutoJob === this) {
+          onFinished?.invoke()
+        }
         if (runtimeVoiceAutoJob === this) {
           runtimeVoiceAutoJob = null
         }
@@ -3595,8 +3612,9 @@ private fun PlayScene(
       "voice",
       "hydrated auto voice reason=$reason messageId=${latest.id} role=${vm.displayNameForMessage(latest)} segments=${playableSegments.size}",
     )
-    launchRuntimeAutoVoice(latest, playableSegments)
-    vm.setRuntimeMessageStatus(latest.id, if (vm.playCanPlayerSpeak()) "waiting_player" else "waiting_next")
+    launchRuntimeAutoVoice(latest, playableSegments) {
+      vm.setRuntimeMessageStatus(latest.id, if (vm.playCanPlayerSpeak()) "waiting_player" else "waiting_next")
+    }
   }
   LaunchedEffect(mode, displayMessages.size) {
     if (displayMessages.isNotEmpty()) {
@@ -3752,11 +3770,13 @@ private fun PlayScene(
             "voice",
             "auto voice messageId=${currentMessage.id} role=${vm.displayNameForMessage(currentMessage)} segments=${playableSegments.size}",
           )
-          launchRuntimeAutoVoice(currentMessage, playableSegments)
+          launchRuntimeAutoVoice(currentMessage, playableSegments) {
+            vm.setRuntimeMessageStatus(currentMessage.id, if (vm.playCanPlayerSpeak()) "waiting_player" else "waiting_next")
+          }
         } else {
           VueTagLogger.info("voice", "skip auto voice messageId=${currentMessage.id} reason=empty_segments")
+          vm.setRuntimeMessageStatus(currentMessage.id, if (vm.playCanPlayerSpeak()) "waiting_player" else "waiting_next")
         }
-        vm.setRuntimeMessageStatus(currentMessage.id, if (vm.playCanPlayerSpeak()) "waiting_player" else "waiting_next")
         delay(if (playableSegments.isNotEmpty()) 260 else estimateRevealDelayMs(displayContent))
       }
     }
