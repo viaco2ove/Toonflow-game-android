@@ -3583,13 +3583,8 @@ private fun PlayScene(
       VueTagLogger.info("voice", "skip hydrated auto voice reason=$reason autoVoice=false")
       return
     }
-    // 安卓恢复旧会话时不自动补播最后一条历史台词。
-    // 这条链会直接触发运行时 streamvoice，请求一旦偏慢就会把打开故事拖得很重。
-    // 新生成的消息仍然会正常走自动语音，这里只禁用“恢复会话补播”。
-    if (reason == "resume_latest") {
-      VueTagLogger.info("voice", "skip hydrated auto voice reason=$reason disabled_on_android_resume=true")
-      return
-    }
+    // 恢复正式会话时，同样允许把最后一条已落地的 NPC/旁白台词自动朗读出来。
+    // 否则用户明明已经打开了自动语音，却会因为重进会话被强行静默，体验与 Web 不一致。
     val latest = revealedMessages.lastOrNull() ?: allMessages.lastOrNull() ?: return
     if (latest.roleType == "player" || vm.isRuntimeRetryMessage(latest) || vm.isStreamingRuntimeMessage(latest)) {
       VueTagLogger.info(
@@ -3668,6 +3663,10 @@ private fun PlayScene(
     if (mismatched) {
       revealedMessages.clear()
       revealedMessages.addAll(allMessages)
+      // streamSessionPlan 提交完成后会先移除占位消息，再把正式消息整段写回。
+      // 这时 key 可能不变，但 progress/meta 已经整体替换，之前这里只刷新列表不补自动语音，
+      // 会导致真正落地的新 NPC/旁白台词被安卓端直接跳过朗读。
+      autoVoiceHydratedLatest("progress_mismatched")
       return@LaunchedEffect
     }
     revealedKeys.indices.forEach { index ->
@@ -3823,6 +3822,13 @@ private fun PlayScene(
     }
     val messageKey = vm.messageUiKey(latest)
     if (messageKey.isBlank() || debugAutoAdvancing || debugAutoAdvanceJob?.isActive == true) {
+      return@LaunchedEffect
+    }
+    // 和 Web 保持一致：最后一条非用户台词如果还没走过自动语音，就先播语音。
+    // 只有语音播放完毕（成功或失败都算完成）后，状态才会回到 waiting_next，
+    // 这时才允许继续向后获取下一句台词，避免安卓端出现“边播边继续编排”的抢跑。
+    if (autoVoice && latest.roleType != "player" && initialHydratedVoiceKey != messageKey && !sameVoiceTarget) {
+      autoVoiceHydratedLatest("pre_continue_guard")
       return@LaunchedEffect
     }
     debugAutoAdvancing = true
@@ -4002,7 +4008,7 @@ private fun PlayScene(
         ) { onToggleVoice() }
       }
 
-      Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+      BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
         if (displayMessages.isEmpty()) {
           Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
@@ -4151,9 +4157,27 @@ private fun PlayScene(
         if (mode == "setting") {
           // 故事信息面板需要像 Web 一样给底部输入区留出明显安全距离，
           // 同时把可滚动区域限制在当前视口内，避免长面板直接压到下方对话区。
-          val availableStageHeight = this@BoxWithConstraints.maxHeight
-          val storySettingPanelBottomInset = 168.dp
-          val storySettingPanelMaxHeight = (availableStageHeight - 248.dp).coerceIn(260.dp, 460.dp)
+          val availableStageHeight = maxHeight
+          // 这里使用中部内容区的真实约束高度，而不是整屏高度；
+          // 否则面板会按整屏算出过大的目标值，最终又被父布局截断。
+          val storySettingPanelBottomInset = 20.dp
+          val storySettingPanelMaxHeight = (availableStageHeight - storySettingPanelBottomInset - 16.dp)
+            .coerceAtLeast(260.dp)
+          LaunchedEffect(
+            configuration.screenWidthDp,
+            configuration.screenHeightDp,
+            availableStageHeight,
+            storySettingPanelBottomInset,
+            storySettingPanelMaxHeight,
+          ) {
+            VueTagLogger.info(
+              "layout",
+              "story setting viewport screen=${configuration.screenWidthDp}x${configuration.screenHeightDp}dp " +
+                "availableStageHeight=${availableStageHeight.value}dp " +
+                "bottomInset=${storySettingPanelBottomInset.value}dp " +
+                "panelMaxHeight=${storySettingPanelMaxHeight.value}dp",
+            )
+          }
           Box(
             modifier = Modifier
               .fillMaxSize()
@@ -5306,14 +5330,38 @@ private fun StorySettingPanel(
   var showStatePreview by remember(worldName, chapterTitle) { mutableStateOf(false) }
   val selectedRole = roles.firstOrNull { it.id == selectedRoleId } ?: roles.firstOrNull()
   val panelScroll = rememberScrollState()
+  val density = LocalDensity.current
+
+  /**
+   * 记录故事信息面板的理论高度，方便和实际测量值做对照。
+   */
+  LaunchedEffect(panelMaxHeight) {
+    VueTagLogger.info(
+      "layout",
+      "story setting panel targetHeight=${panelMaxHeight.value}dp",
+    )
+  }
 
   Card(
     modifier = Modifier
       .fillMaxWidth()
       .padding(horizontal = 10.dp, vertical = 8.dp)
-      // 安卓端这里改成外部传入的动态限高，和 Web 的“按视口高度扣除上下占位”一致，
-      // 避免不同机型上固定 500dp 把下方消息区和输入区挤掉。
-      .heightIn(max = panelMaxHeight),
+      // 这里直接使用外部计算好的可用高度，让信息面板尽量铺满舞台；
+      // 面板内部再通过滚动承接超长内容，避免仅设置 max 高度时卡片看起来悬空偏矮。
+      .height(panelMaxHeight)
+      .onGloballyPositioned { coordinates ->
+        val measuredHeightPx = coordinates.size.height
+        val measuredWidthPx = coordinates.size.width
+        val measuredHeightDp = with(density) { measuredHeightPx.toDp().value }
+        val measuredWidthDp = with(density) { measuredWidthPx.toDp().value }
+        VueTagLogger.info(
+          "layout",
+          "story setting panel measured width=${"%.1f".format(Locale.US, measuredWidthDp)}dp " +
+            "height=${"%.1f".format(Locale.US, measuredHeightDp)}dp " +
+            "raw=${measuredWidthPx}x${measuredHeightPx}px",
+        )
+      },
+
     colors = CardDefaults.cardColors(containerColor = Color(0xE60A182B)),
     shape = RoundedCornerShape(18.dp),
     border = BorderStroke(1.dp, Color(0x3DA6BCDA)),
