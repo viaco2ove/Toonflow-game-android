@@ -733,6 +733,132 @@ class GameRepository(private val settingsStore: SettingsStore) {
     }
   }
 
+  /**
+   * 开场白专用流接口。
+   *
+   * 用途：
+   * - opening 是章节写死文案，不能再走普通 streamlines 的 speaker 改写链；
+   * - 这里只消费后端 `/game/streamlines/introduction` 返回的 preset 分片事件；
+   * - 安卓正式游玩和 Web 保持一致，先播完 opening，再进入第一章正文编排。
+   */
+  suspend fun streamSessionIntroductionLines(
+    sessionId: String,
+    plan: DebugNarrativePlan,
+    onEvent: suspend (JsonObject) -> Unit,
+  ) {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+      add("plan", gson.toJsonTree(plan))
+    }
+    streamIntroductionPayload(payload, onEvent)
+  }
+
+  /**
+   * 调试 opening 专用流接口。
+   *
+   * 用途：
+   * - 调试首开也要直接播放章节写死的 opening 文案；
+   * - 这里把 debug state 和 messages 一起带给后端，让它同步推进调试运行态；
+   * - 这样 opening 播完后，后续 debug orchestration 才会基于正确状态继续跑。
+   */
+  suspend fun streamDebugIntroductionLines(
+    worldId: Long,
+    chapterId: Long?,
+    state: JsonElement?,
+    messages: List<MessageItem>,
+    plan: DebugNarrativePlan,
+    onEvent: suspend (JsonObject) -> Unit,
+  ) {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+      if (chapterId != null && chapterId > 0L) {
+        addProperty("chapterId", chapterId)
+      }
+      if (state != null && !state.isJsonNull) {
+        add("state", state)
+      }
+      add("messages", gson.toJsonTree(messages))
+      add("plan", gson.toJsonTree(plan))
+    }
+    streamIntroductionPayload(payload, onEvent)
+  }
+
+  /**
+   * 统一执行 opening 专用流请求。
+   *
+   * 用途：
+   * - 正式游玩和调试 opening 共用同一条 `/game/streamlines/introduction`；
+   * - 避免两端各自复制一套 NDJSON 读取、超时和事件分发逻辑。
+   */
+  private suspend fun streamIntroductionPayload(
+    payload: JsonObject,
+    onEvent: suspend (JsonObject) -> Unit,
+  ) {
+    val baseUrl = settingsStore.baseUrl.trim().removeSuffix("/")
+    val request = Request.Builder()
+      .url("$baseUrl/game/streamlines/introduction")
+      .post(gson.toJson(payload).toRequestBody("application/json; charset=utf-8".toMediaType()))
+      .apply {
+        val token = settingsStore.token.trim()
+        if (token.isNotEmpty()) {
+          header("Authorization", token)
+        }
+      }
+      .build()
+    val logger = HttpLoggingInterceptor().apply {
+      level = HttpLoggingInterceptor.Level.BASIC
+    }
+    val client = OkHttpClient.Builder()
+      .addInterceptor(logger)
+      .connectTimeout(20, TimeUnit.SECONDS)
+      .readTimeout(0, TimeUnit.SECONDS)
+      .writeTimeout(30, TimeUnit.SECONDS)
+      .build()
+    coroutineScope {
+      val call = client.newCall(request)
+      val timedOut = AtomicBoolean(false)
+      val lastEventAt = AtomicLong(System.currentTimeMillis())
+      val watchdog = launch(Dispatchers.IO) {
+        while (isActive) {
+          delay(debugStreamWatchdogPollMs)
+          if (System.currentTimeMillis() - lastEventAt.get() < debugStreamIdleTimeoutMs) continue
+          timedOut.set(true)
+          call.cancel()
+          break
+        }
+      }
+      try {
+        withContext(Dispatchers.IO) {
+          call.execute().use { response ->
+            if (!response.isSuccessful) {
+              error("HTTP ${response.code}")
+            }
+            val body = response.body ?: error("未返回开场白流正文")
+            val source = body.source()
+            source.timeout().timeout(debugStreamIdleTimeoutMs, TimeUnit.MILLISECONDS)
+            while (true) {
+              val raw = source.readUtf8Line() ?: break
+              val line = raw.trim()
+              if (line.isBlank()) continue
+              lastEventAt.set(System.currentTimeMillis())
+              val event = gson.fromJson(line, JsonObject::class.java)
+              withContext(Dispatchers.Main.immediate) {
+                onEvent(event)
+              }
+            }
+          }
+        }
+      } catch (err: Throwable) {
+        if (timedOut.get() || err is InterruptedIOException || err is SocketTimeoutException) {
+          error("开场白流空闲超时")
+        }
+        throw err
+      } finally {
+        watchdog.cancel()
+      }
+    }
+  }
+
   suspend fun getVoiceModels(): List<VoiceModelConfig> {
     return runCatching { api().getVoiceModelList().data }.getOrElse { emptyList() }
   }

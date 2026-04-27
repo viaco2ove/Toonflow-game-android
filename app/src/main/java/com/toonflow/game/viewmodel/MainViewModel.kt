@@ -5360,7 +5360,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           refreshSessionStoryInfo()
           if (shouldStreamSessionPlanFromPlan(openingResult.plan)) {
             sessionRuntimeStage = "播放开场白"
-            streamSessionPlan(openingResult, emptyList())
+            streamSessionIntroductionPlan(openingResult, emptyList())
             if (sessionRuntimeStage == "播放开场白") {
               sessionRuntimeStage = ""
             }
@@ -5858,6 +5858,118 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     refreshSessionStoryInfo()
   }
 
+  /**
+   * 估算 opening 至少应停留的展示时长。
+   *
+   * 用途：
+   * - 静音时至少停 2 秒，避免开场白刚出现就被第一章正文顶掉；
+   * - 自动语音开启时，按字数估算一段接近朗读时长的等待窗口，让 opening 先完整播完再进正文。
+   */
+  private fun estimateOpeningPresentationMs(text: String): Long {
+    val normalized = text.trim()
+    if (normalized.isBlank()) return 2000L
+    if (!autoVoiceEnabled()) return 2000L
+    val estimated = normalized.length * 180L + 1200L
+    return estimated.coerceIn(2000L, 12000L)
+  }
+
+  /**
+   * 开场白专用流。
+   *
+   * 用途：
+   * - opening 必须直接播放章节写死文案，不能再复用普通台词流的 speaker 改写链；
+   * - 提交成功后额外等待一个 opening 展示窗口，避免一闪而过。
+   */
+  private suspend fun streamSessionIntroductionPlan(orchestration: SessionOrchestrationResult, historyMessages: List<MessageItem>) {
+    val sessionId = currentSessionId.trim()
+    val plan = orchestration.plan ?: return
+    if (sessionId.isBlank()) return
+    val placeholder = createStreamingMessage(plan, historyMessages.size + 1)
+    messages.clear()
+    messages.addAll(historyMessages)
+    messages.add(placeholder)
+    syncRuntimeChatTraceLog()
+    var done = false
+    var accumulated = ""
+    var finalMessage: JsonObject? = null
+    logStoryFlow("streamSessionIntroductionPlan start sessionId=$sessionId role=${plan.role} roleType=${plan.roleType}")
+    repository.streamSessionIntroductionLines(
+      sessionId = sessionId,
+      plan = plan,
+    ) { event ->
+      when (event.get("type")?.asString.orEmpty()) {
+        "delta" -> {
+          val text = event.getAsJsonObject("data")?.get("text")?.asString.orEmpty()
+          if (text.isBlank()) return@streamSessionIntroductionLines
+          accumulated += text
+          updateMessageById(placeholder.id) { current ->
+            current.copy(content = accumulated)
+          }
+        }
+
+        "sentence" -> {
+          val text = event.getAsJsonObject("data")?.get("text")?.asString.orEmpty().trim()
+          if (text.isBlank()) return@streamSessionIntroductionLines
+          updateMessageById(placeholder.id) { current ->
+            val meta = buildRuntimeStreamMeta(current.meta, status = "streaming", streaming = true)
+            val sentences = meta.getAsJsonArray("sentences") ?: JsonArray().also { meta.add("sentences", it) }
+            val exists = sentences.any { item -> item?.takeIf { !it.isJsonNull }?.asString == text }
+            if (!exists) {
+              sentences.add(text)
+            }
+            current.copy(meta = meta)
+          }
+        }
+
+        "done" -> {
+          done = true
+          val data = event.getAsJsonObject("data")
+          finalMessage = data?.getAsJsonObject("message")
+          val finalContent = finalMessage?.get("content")?.asString ?: data?.get("content")?.asString.orEmpty()
+          updateMessageById(placeholder.id) { current ->
+            current.copy(
+              role = finalMessage?.get("role")?.asString ?: current.role,
+              roleType = finalMessage?.get("roleType")?.asString ?: current.roleType,
+              eventType = finalMessage?.get("eventType")?.asString ?: current.eventType,
+              content = finalContent,
+              meta = buildRuntimeStreamMeta(current.meta, status = "generated", streaming = false),
+            )
+          }
+        }
+
+        "error" -> {
+          val message = event.getAsJsonObject("data")?.get("message")?.asString.orEmpty().ifBlank { "开场白流播放失败" }
+          updateMessageById(placeholder.id) { null }
+          error(message)
+        }
+      }
+    }
+    if (!done) {
+      updateMessageById(placeholder.id) { null }
+      error("开场白流未正常结束")
+    }
+    val committedContent = finalMessage?.get("content")?.asString ?: accumulated
+    val committedCreateTime = finalMessage?.get("createTime")?.asLong ?: System.currentTimeMillis()
+    val committedRole = finalMessage?.get("role")?.asString ?: placeholder.role.ifBlank { "旁白" }
+    val committedRoleType = finalMessage?.get("roleType")?.asString ?: placeholder.roleType.ifBlank { "narrator" }
+    val committedEventType = finalMessage?.get("eventType")?.asString ?: placeholder.eventType.ifBlank { "on_opening" }
+    val committed = repository.commitNarrativeTurn(
+      sessionId = sessionId,
+      role = committedRole,
+      roleType = committedRoleType,
+      eventType = committedEventType,
+      content = committedContent,
+      createTime = committedCreateTime,
+    )
+    logStoryFlow("streamSessionIntroductionPlan committed sessionId=$sessionId content=${VueTagLogger.sanitize(committedContent, 240)}")
+    messages.clear()
+    messages.addAll(historyMessages)
+    syncRuntimeChatTraceLog()
+    applySessionNarrativeResult(committed)
+    refreshSessionStoryInfo()
+    delay(estimateOpeningPresentationMs(committedContent))
+  }
+
   fun retryFailedPlayerMessage(messageId: Long) {
     val target = messages.firstOrNull { it.id == messageId } ?: return
     if (!isLocalPendingPlayerMessage(target) || runtimeMessageStatus(target) != "error") return
@@ -6172,6 +6284,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return plan.role.isNotBlank() && !plan.roleType.trim().equals("player", ignoreCase = true)
   }
 
+  /**
+   * 判断调试计划是否属于固定 opening 文案。
+   *
+   * 用途：
+   * - opening 是作者写死的，不该再走普通 streamlines 的 speaker 改写链；
+   * - 调试首开这里也要切到 `/game/streamlines/introduction`；
+   * - 后续正文台词仍然沿用原来的 debug streamlines。
+   */
+  private fun shouldUseDebugIntroductionStream(plan: DebugNarrativePlan?): Boolean {
+    if (plan == null) return false
+    val eventType = plan.eventType.orEmpty().trim()
+    val presetContent = plan.presetContent.orEmpty().trim()
+    return eventType.equals("on_opening", ignoreCase = true) && presetContent.isNotEmpty()
+  }
+
   // 调试首次进入如果仍未轮到用户，继续自动补到真正可交互的节点，避免 opening 后半路被页面 watcher 抢跑。
   private fun shouldAutoContinueDebugAfterStart(result: DebugOrchestrationResult): Boolean {
     val plan = result.plan ?: return false
@@ -6209,24 +6336,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private suspend fun streamDebugPlan(plan: DebugNarrativePlan, historyMessages: List<MessageItem>, playerContent: String?) {
+    val useIntroductionStream = shouldUseDebugIntroductionStream(plan)
     val placeholder = createStreamingMessage(plan, historyMessages.size + 1)
     messages.clear()
     messages.addAll(historyMessages)
     messages.add(placeholder)
     var done = false
     var accumulated = ""
-    repository.streamDebugLines(
-      worldId = worldId,
-      chapterId = debugChapterId,
-      state = debugRuntimeState,
-      messages = historyMessages,
-      playerContent = playerContent,
-      plan = plan,
-    ) { event ->
+    val streamHandler: suspend ((JsonObject) -> Unit) -> Unit = { onEvent ->
+      if (useIntroductionStream) {
+        repository.streamDebugIntroductionLines(
+          worldId = worldId,
+          chapterId = debugChapterId,
+          state = debugRuntimeState,
+          messages = historyMessages,
+          plan = plan,
+          onEvent = onEvent,
+        )
+      } else {
+        repository.streamDebugLines(
+          worldId = worldId,
+          chapterId = debugChapterId,
+          state = debugRuntimeState,
+          messages = historyMessages,
+          playerContent = playerContent,
+          plan = plan,
+          onEvent = onEvent,
+        )
+      }
+    }
+    streamHandler event@ { event ->
       when (event.get("type")?.asString.orEmpty()) {
         "delta" -> {
           val text = event.getAsJsonObject("data")?.get("text")?.asString.orEmpty()
-          if (text.isBlank()) return@streamDebugLines
+          if (text.isBlank()) return@event
           accumulated += text
           updateMessageById(placeholder.id) { current ->
             // 调试链同样直接覆盖累计正文，避免占位文案残留到最终内容前面。
@@ -6236,7 +6379,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         "sentence" -> {
           val text = event.getAsJsonObject("data")?.get("text")?.asString.orEmpty().trim()
-          if (text.isBlank()) return@streamDebugLines
+          if (text.isBlank()) return@event
           updateMessageById(placeholder.id) { current ->
             val meta = buildRuntimeStreamMeta(current.meta, status = "streaming", streaming = true)
             val sentences = meta.getAsJsonArray("sentences") ?: JsonArray().also { meta.add("sentences", it) }
@@ -6299,6 +6442,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       error("台词流未正常结束")
     }
     refreshDebugStoryInfo(playCurrentChapter())
+    if (useIntroductionStream) {
+      val finalContent = messages.lastOrNull { it.id == placeholder.id }?.content.orEmpty().ifBlank { accumulated }
+      delay(estimateOpeningPresentationMs(finalContent))
+    }
   }
 
   private fun appendDebugPlayer(content: String) {
