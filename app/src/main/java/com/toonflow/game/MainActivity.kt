@@ -386,6 +386,12 @@ private val settingsManufacturers = listOf(
     imageBaseUrl = "",
   ),
   SettingsManufacturerOption(
+    value = "local_modnet",
+    label = "MODNet 本地",
+    website = "https://github.com/ZHKKKe/MODNet",
+    imageBaseUrl = "",
+  ),
+  SettingsManufacturerOption(
     value = "t8star",
     label = "t8star",
     textBaseUrl = "https://ai.t8star.cn/v1",
@@ -465,6 +471,7 @@ private fun settingsManufacturersFor(type: String): List<SettingsManufacturerOpt
         && it.value != "aliyun_imageseg"
         && it.value != "tencent_ci"
         && it.value != "local_birefnet"
+        && it.value != "local_modnet"
     }
   }
   if (type == "voice") {
@@ -480,6 +487,7 @@ private fun settingsManufacturersFor(type: String): List<SettingsManufacturerOpt
       && it.value != "aliyun_imageseg"
       && it.value != "tencent_ci"
       && it.value != "local_birefnet"
+      && it.value != "local_modnet"
       && it.value != "lmstudio"
       && it.value != "autodl_chat"
   }
@@ -490,7 +498,9 @@ private fun settingsManufacturersForSlot(slot: MainViewModel.SettingsModelSlot):
     return settingsManufacturers.filter { it.value == "qwen" }
   }
   if (slot.key == "storyAvatarMattingModel") {
-    return settingsManufacturers.filter { it.value == "bria" || it.value == "aliyun_imageseg" || it.value == "tencent_ci" || it.value == "local_birefnet" }
+    return settingsManufacturers.filter {
+      it.value == "bria" || it.value == "aliyun_imageseg" || it.value == "tencent_ci" || it.value == "local_birefnet" || it.value == "local_modnet"
+    }
   }
   return settingsManufacturersFor(slot.configType)
 }
@@ -500,6 +510,7 @@ private fun isAvatarMattingManufacturer(value: String): Boolean {
     || value.trim().equals("aliyun_imageseg", ignoreCase = true)
     || value.trim().equals("tencent_ci", ignoreCase = true)
     || value.trim().equals("local_birefnet", ignoreCase = true)
+    || value.trim().equals("local_modnet", ignoreCase = true)
 }
 
 private fun defaultSettingsModelType(type: String): String {
@@ -573,6 +584,9 @@ private fun defaultSettingsModelName(manufacturer: String, type: String, modelTy
   if (type == "image" && manufacturer == "local_birefnet") {
     return "birefnet-portrait"
   }
+  if (type == "image" && manufacturer == "local_modnet") {
+    return "modnet-photographic-portrait"
+  }
   if (type == "voice" && manufacturer == "ai_voice_tts") {
     return if (modelType == "tts") "ai_voice_tts" else ""
   }
@@ -600,6 +614,7 @@ private fun settingsApiKeyRequired(manufacturer: String, type: String): Boolean 
   return !(type == "voice" && manufacturer == "ai_voice_tts")
     && !(type == "text" && manufacturer == "lmstudio")
     && !(type == "image" && manufacturer == "local_birefnet")
+    && !(type == "image" && manufacturer == "local_modnet")
 }
 
 private fun settingsRowMatchesSlot(slot: MainViewModel.SettingsModelSlot, row: com.toonflow.game.data.ModelConfigItem): Boolean {
@@ -661,7 +676,7 @@ private fun settingsApiKeyPlaceholder(slot: MainViewModel.SettingsModelSlot, man
   if (slot.configType == "text" && manufacturer == "lmstudio") {
     return "本地 LM Studio 可留空"
   }
-  if (slot.key == "storyAvatarMattingModel" && manufacturer == "local_birefnet") {
+  if (slot.key == "storyAvatarMattingModel" && (manufacturer == "local_birefnet" || manufacturer == "local_modnet")) {
     return "本地模型无需填写"
   }
   if (!settingsApiKeyRequired(manufacturer, slot.configType)) return "本地 ai_voice_tts 可留空"
@@ -684,6 +699,7 @@ private fun settingsApiKeyHint(slot: MainViewModel.SettingsModelSlot, manufactur
     "bria" -> "Bria 这里填写平台生成的 API token。"
     "tencent_ci" -> "腾讯云这里请填写 SecretId|SecretKey；Base URL 请填标准 COS 桶域名，例如 https://bucket-appid.cos.ap-shanghai.myqcloud.com。"
     "local_birefnet" -> "本地 BiRefNet 不需要 Base URL 或 API Key。首次选择会提示安装 Python 依赖和模型文件，安装完成后即可直接使用。"
+    "local_modnet" -> "本地 MODNet 不需要 Base URL 或 API Key。首次选择会提示安装 Python 依赖和模型文件，安装完成后即可直接使用。"
     else -> ""
   }
 }
@@ -1333,7 +1349,7 @@ private fun CreateScene(
       append(role.voiceReferenceAudioName).append(':')
       append(role.voiceReferenceText).append(':')
       append(role.voicePromptText).append(':')
-    append(role.voiceMixVoices.orEmpty().joinToString(";") { "${it.voiceId}:${it.weight}" }).append(':')
+      append(role.voiceMixVoices.orEmpty().joinToString(";") { "${it.voiceId}:${it.weight}" }).append(':')
       append(role.sample).append('|')
     }
   }
@@ -8992,15 +9008,15 @@ private fun SettingsModelManagerDialog(
               } else {
                 scope.launch {
                   runCatching {
-                    if (slot.key == "storyAvatarMattingModel" && selectedRow.manufacturer == "local_birefnet") {
+                    if (slot.key == "storyAvatarMattingModel" && (selectedRow.manufacturer == "local_birefnet" || selectedRow.manufacturer == "local_modnet")) {
                       val status = vm.getLocalAvatarMattingStatus(selectedRow.manufacturer, selectedRow.model)
                       if (!status.installed) {
                         if (!status.canInstall) {
-                          error(status.message.ifBlank { "当前环境无法安装本地 BiRefNet" })
+                          error(status.message.ifBlank { "当前环境无法安装本地头像分离模型" })
                         }
                         val installed = vm.installLocalAvatarMattingModel(selectedRow.manufacturer, selectedRow.model)
                         if (!installed.installed) {
-                          error(installed.message.ifBlank { "本地 BiRefNet 尚未安装完成" })
+                          error(installed.message.ifBlank { "本地头像分离模型尚未安装完成" })
                         }
                       }
                     }
@@ -9209,7 +9225,7 @@ private fun SettingsModelEditorDialog(
   var showLocalInstallConfirm by remember { mutableStateOf(false) }
   val modelTypeOptions = remember(slot.key, slot.configType) { settingsModelTypeOptionsForSlot(slot) }
   val usesLocalAvatarMatting = remember(slot.key, manufacturer) {
-    slot.key == "storyAvatarMattingModel" && manufacturer == "local_birefnet"
+    slot.key == "storyAvatarMattingModel" && (manufacturer == "local_birefnet" || manufacturer == "local_modnet")
   }
   val autodlTextModelOptions = remember(vm.settingsTextModelList, manufacturer) {
     if (slot.configType == "text" && isAutoDlTextManufacturer(manufacturer)) {
@@ -9246,19 +9262,19 @@ private fun SettingsModelEditorDialog(
     val status = refreshLocalAvatarMattingStatus() ?: return false
     if (status.installed) return true
     if (status.status.equals("installing", ignoreCase = true)) {
-      vm.notice = status.message.ifBlank { "本地 BiRefNet 安装中，请稍候" }
+      vm.notice = status.message.ifBlank { "本地头像分离模型安装中，请稍候" }
       return false
     }
     if (!status.canInstall) {
-      error(status.message.ifBlank { "当前环境无法安装本地 BiRefNet" })
+      error(status.message.ifBlank { "当前环境无法安装本地头像分离模型" })
     }
     if (!interactive) return false
     localAvatarMattingInstalling = true
-    vm.notice = "正在安装本地 BiRefNet，请稍候... pip install torch opencv-python pillow onnxruntime onnx"
+    vm.notice = "正在安装本地头像分离模型，请稍候..."
     try {
       val installed = vm.installLocalAvatarMattingModel(manufacturer, model.trim())
       localAvatarMattingStatus = installed
-      vm.notice = installed.message.ifBlank { "本地 BiRefNet 已安装" }
+      vm.notice = installed.message.ifBlank { "本地头像分离模型已安装" }
       return installed.installed
     } finally {
       localAvatarMattingInstalling = false
@@ -9275,7 +9291,7 @@ private fun SettingsModelEditorDialog(
     runCatching {
       refreshLocalAvatarMattingStatus()
     }.onFailure {
-      vm.notice = "读取本地 BiRefNet 状态失败: ${it.message ?: "未知错误"}"
+      vm.notice = "读取本地头像分离模型状态失败: ${it.message ?: "未知错误"}"
     }
   }
 
@@ -9297,7 +9313,7 @@ private fun SettingsModelEditorDialog(
                   previousBaseUrl = baseUrl
                   previousApiKey = apiKey
                   manufacturer = item.value
-                  if (item.value == "local_birefnet") {
+                  if (item.value == "local_birefnet" || item.value == "local_modnet") {
                     model = defaultSettingsModelNameForSlot(slot, item.value, modelType)
                     baseUrl = ""
                     apiKey = ""
@@ -9305,7 +9321,7 @@ private fun SettingsModelEditorDialog(
                     applyManufacturerDefaults(item.value, modelType)
                   }
                   manufacturerExpanded = false
-                  if (slot.key == "storyAvatarMattingModel" && item.value == "local_birefnet") {
+                  if (slot.key == "storyAvatarMattingModel" && (item.value == "local_birefnet" || item.value == "local_modnet")) {
                     scope.launch {
                       runCatching {
                         val status = vm.getLocalAvatarMattingStatus(item.value, model.trim())
@@ -9316,7 +9332,7 @@ private fun SettingsModelEditorDialog(
                       }.onFailure {
                         manufacturer = previousManufacturer
                         applyManufacturerDefaults(manufacturer, modelType)
-                        vm.notice = "读取本地 BiRefNet 状态失败: ${it.message ?: "未知错误"}"
+                        vm.notice = "读取本地头像分离模型状态失败: ${it.message ?: "未知错误"}"
                       }
                     }
                   } else {
@@ -9415,7 +9431,7 @@ private fun SettingsModelEditorDialog(
               .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
           ) {
-            Text("BiRefNet 本地模型", fontWeight = FontWeight.Bold, color = Color(0xFF31562D))
+            Text("BiRefNet / MODNet 本地模型", fontWeight = FontWeight.Bold, color = Color(0xFF31562D))
             Text(
               localAvatarMattingStatus?.message?.ifBlank { "首次使用需要安装 Python 依赖和模型文件。" }
                 ?: "首次使用需要安装 Python 依赖和模型文件。",
@@ -9429,7 +9445,7 @@ private fun SettingsModelEditorDialog(
                   scope.launch {
                     runCatching { ensureLocalAvatarMattingInstalled(true) }
                       .onFailure {
-                        vm.notice = "本地 BiRefNet 安装失败: ${it.message ?: "未知错误"}"
+                        vm.notice = "本地头像分离模型安装失败: ${it.message ?: "未知错误"}"
                       }
                   }
                 },
@@ -9518,7 +9534,7 @@ private fun SettingsModelEditorDialog(
         if (settingsApiKeyRequired(submitManufacturer, slot.configType) && apiKey.trim().isBlank()) return@TextButton
         scope.launch {
           runCatching {
-            if (slot.key == "storyAvatarMattingModel" && submitManufacturer == "local_birefnet") {
+            if (slot.key == "storyAvatarMattingModel" && (submitManufacturer == "local_birefnet" || submitManufacturer == "local_modnet")) {
               val ready = ensureLocalAvatarMattingInstalled(true)
               if (!ready) return@runCatching
             }
@@ -9527,8 +9543,8 @@ private fun SettingsModelEditorDialog(
               submitManufacturer,
               submitModelType,
               model.trim(),
-              if (submitManufacturer == "local_birefnet") "" else baseUrl.trim(),
-              if (submitManufacturer == "local_birefnet") "" else apiKey.trim(),
+              if (submitManufacturer == "local_birefnet" || submitManufacturer == "local_modnet") "" else baseUrl.trim(),
+              if (submitManufacturer == "local_birefnet" || submitManufacturer == "local_modnet") "" else apiKey.trim(),
               if (slot.configType == "text") normalizeTokenPriceValue(inputPricePer1M) else 0.0,
               if (slot.configType == "text") normalizeTokenPriceValue(outputPricePer1M) else 0.0,
               if (slot.configType == "text") normalizeTokenPriceValue(cacheReadPricePer1M) else 0.0,
@@ -9536,7 +9552,7 @@ private fun SettingsModelEditorDialog(
               if (slot.configType == "text") reasoningEffort.trim().ifBlank { "minimal" } else "minimal",
             )
           }.onFailure {
-            vm.notice = "本地 BiRefNet 安装失败: ${it.message ?: "未知错误"}"
+            vm.notice = "本地头像分离模型安装失败: ${it.message ?: "未知错误"}"
           }
         }
       }) {
@@ -9559,7 +9575,7 @@ private fun SettingsModelEditorDialog(
         baseUrl = previousBaseUrl
         apiKey = previousApiKey
       },
-      title = { Text("安装本地 BiRefNet") },
+      title = { Text("安装本地头像分离模型") },
       text = {
         Text(localAvatarMattingStatus?.message?.ifBlank { "首次使用需要安装 Python 依赖和模型文件。" }
           ?: "首次使用需要安装 Python 依赖和模型文件。")
@@ -9571,7 +9587,7 @@ private fun SettingsModelEditorDialog(
             runCatching {
               ensureLocalAvatarMattingInstalled(true)
             }.onFailure {
-              vm.notice = "本地 BiRefNet 安装失败: ${it.message ?: "未知错误"}"
+              vm.notice = "本地头像分离模型安装失败: ${it.message ?: "未知错误"}"
               manufacturer = previousManufacturer
               model = previousModel
               baseUrl = previousBaseUrl

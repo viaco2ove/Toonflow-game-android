@@ -69,6 +69,12 @@ import java.util.Locale
 class MainViewModel(application: Application) : AndroidViewModel(application) {
   private companion object {
     const val RUNTIME_STREAM_PLACEHOLDER_TEXT = "获取台词中"
+    private const val RUNTIME_RETRY_EVENT = "on_runtime_retry_error"
+
+    /**
+     * 为混音配置提供默认占位项，保证编辑器初始状态始终可编辑。
+     */
+    private fun defaultMixVoices(): List<VoiceMixItem> = listOf(VoiceMixItem(weight = 0.7))
   }
 
   private val settingsStore = SettingsStore(application)
@@ -585,18 +591,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       || manufacturer.trim().equals("aliyun_imageseg", ignoreCase = true)
       || manufacturer.trim().equals("tencent_ci", ignoreCase = true)
       || manufacturer.trim().equals("local_birefnet", ignoreCase = true)
+      || manufacturer.trim().equals("local_modnet", ignoreCase = true)
   }
 
   private fun avatarMattingRecommendationScore(item: ModelConfigItem): Double {
     val manufacturer = item.manufacturer.trim().lowercase(Locale.ROOT)
+    val model = item.model.trim().lowercase(Locale.ROOT)
     var score = 0.0
     if (manufacturer == "bria") score += 1000.0
     if (manufacturer == "local_birefnet") score += 960.0
+    if (manufacturer == "local_modnet") score += 940.0
     if (manufacturer == "tencent_ci") score += 850.0
     if (manufacturer == "aliyun_imageseg") score += 700.0
-    if (item.model.trim().equals("SegmentCommonImage", ignoreCase = true)) score += 80.0
-    if (item.model.trim().equals("AIPortraitMatting", ignoreCase = true)) score += 120.0
-    if (item.model.trim().equals("birefnet-portrait", ignoreCase = true)) score += 160.0
+    if (model == "segmentcommonimage") score += 80.0
+    if (model == "aiportraitmatting") score += 120.0
+    if (model == "birefnet-portrait") score += 160.0
+    if (model == "modnet-photographic-portrait") score += 150.0
     score += minOf((item.createTime / 1_000_000_000_000.0), 50.0)
     return score
   }
@@ -628,7 +638,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           .filterNotNull()
           .joinToString(" / ")
       }.orEmpty().ifBlank { "Bria / RMBG-2.0" }
-      val credentialHint = "Bria 的 API Key 直接填 token；阿里云视觉请填 AccessKeyId|AccessKeySecret 或 JSON；腾讯云数据万象请填 SecretId|SecretKey，Base URL 填标准 COS 桶域名；BiRefNet 本地无需 Key，但首次选择会提示安装本地依赖和模型文件。"
+      val credentialHint = "Bria 的 API Key 直接填 token；阿里云视觉请填 AccessKeyId|AccessKeySecret 或 JSON；腾讯云数据万象请填 SecretId|SecretKey，Base URL 填标准 COS 桶域名；本地头像分离支持独立的 BiRefNet / MODNet 配置，无需 Key，但首次选择会提示安装本地依赖和模型文件。"
       return if (binding?.configId == null || binding.configId <= 0L) {
         "用于角色头像的主体/背景分离。建议绑定：$recommendationText。未配置时会回退旧的图像大模型分离链路，效果通常更差。$credentialHint"
       } else {
@@ -1139,11 +1149,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun resetStoryPrompt(code: String) {
     saveStoryPrompt(code, "")
     notice = "提示词已重置为默认值"
-  }
-
-  companion object {
-    private const val RUNTIME_RETRY_EVENT = "on_runtime_retry_error"
-    private fun defaultMixVoices(): List<VoiceMixItem> = listOf(VoiceMixItem(weight = 0.7))
   }
 
   private fun normalizedMixVoices(mixVoices: List<VoiceMixItem>): List<VoiceMixItem> {
