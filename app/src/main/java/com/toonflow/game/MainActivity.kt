@@ -3788,6 +3788,7 @@ private fun PlayScene(
     vm.debugEndDialog,
     canPlayerSpeak,
     latestRevealedMessage?.let { vm.messageUiKey(it) } ?: "",
+    latestRevealedMessage?.let { vm.runtimeMessageStatus(it) } ?: "",
     latestRevealedMessage?.let { vm.isStreamingRuntimeMessage(it) } ?: false,
     runtimeVoiceMessageKey,
     runtimeVoicePhase,
@@ -4429,6 +4430,7 @@ private fun PlayScene(
         canPlayerInput = canPlayerInput,
         sendPending = vm.sendPending,
         runtimeProcessingPending = vm.runtimeProcessingPending,
+        latestRuntimeMessageStatus = vm.playLatestRuntimeMessageStatus(),
         inputMode = inputMode,
         voiceListening = voiceListening,
         voiceTranscribing = voiceTranscribing,
@@ -5826,6 +5828,7 @@ private fun FooterBar(
   canPlayerInput: Boolean,
   sendPending: Boolean,
   runtimeProcessingPending: Boolean,
+  latestRuntimeMessageStatus: String,
   inputMode: String,
   voiceListening: Boolean,
   voiceTranscribing: Boolean,
@@ -5849,6 +5852,9 @@ private fun FooterBar(
 ) {
   val miniGameActive = miniGame != null && mode != "tips" && mode != "setting"
   val playbackModeActive = mode == "history" && isSessionPlaybackMode
+  // 语音栅栏开启后，底部输入区会短暂停在“等待朗读完成再继续编排”的阶段。
+  // 这里单独识别 voicing，避免继续把它误显示成笼统的“处理中...”。
+  val voicePlaybackPending = latestRuntimeMessageStatus == "voicing"
   Column(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
     if (miniGameActive) {
       miniGame?.let { active ->
@@ -6050,7 +6056,11 @@ private fun FooterBar(
           onValueChange = onSendTextChange,
           modifier = Modifier.weight(1f),
           enabled = canPlayerInput && !sendPending && !runtimeProcessingPending,
-          placeholder = { Text(inputPlaceholder) },
+          placeholder = {
+            Text(
+              if (voicePlaybackPending) "朗读中..." else inputPlaceholder,
+            )
+          },
           maxLines = 2,
           colors = OutlinedTextFieldDefaults.colors(
             focusedBorderColor = Color(0xFFBED6FF),
@@ -6082,7 +6092,13 @@ private fun FooterBar(
             disabledContentColor = Color(0xFFE3EEFF),
           ),
         ) {
-          Text(if (sendPending || runtimeProcessingPending) "处理中..." else "发送")
+          Text(
+            when {
+              voicePlaybackPending -> "朗读中..."
+              sendPending || runtimeProcessingPending -> "处理中..."
+              else -> "发送"
+            },
+          )
         }
       }
     } else {
@@ -6141,6 +6157,7 @@ private fun FooterBar(
             Text(
               when {
                 voiceTranscribing -> "识别处理中..."
+                voicePlaybackPending -> "朗读中..."
                 sendPending || runtimeProcessingPending -> "处理中..."
                 voiceListening && holdCancelPending -> "松开取消"
                 voiceListening -> "松开发送，上滑取消"

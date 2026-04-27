@@ -1701,6 +1701,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return if (playCanPlayerSpeak()) "waiting_player" else "waiting_next"
   }
 
+  /**
+   * 返回最后一条消息的原始运行态状态。
+   *
+   * 用途：
+   * - 输入栏需要区分“真正还在请求后端”和“只是正在自动朗读”；
+   * - `playCurrentRuntimeStatus()` 会把 `runtimeProcessingPending` 折叠成 `sending`，
+   *   适合整体流程判断，但不适合给底部交互区做更细的提示文案。
+   */
+  fun playLatestRuntimeMessageStatus(): String {
+    return conversationMessages().lastOrNull()?.let(::runtimeMessageStatus).orEmpty()
+  }
+
   fun playCanPlayerInput(): Boolean {
     if (sessionOpening) return false
     if (sessionOpenError.isNotBlank()) return false
