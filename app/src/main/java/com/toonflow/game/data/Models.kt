@@ -201,6 +201,8 @@ data class SessionDetail(
   @SerializedName("sessionId") val sessionId: String = "",
   @SerializedName("title") val title: String = "",
   @SerializedName("status") val status: String = "",
+  @SerializedName("endDialog") val endDialog: String? = null,
+  @SerializedName("endDialogDetail") val endDialogDetail: String? = null,
   @SerializedName("chapterId") val chapterId: Long? = null,
   @SerializedName("state") val state: JsonElement? = null,
   @SerializedName("latestSnapshot") val latestSnapshot: SessionSnapshot? = null,
@@ -361,6 +363,7 @@ data class StoryInitResult(
  */
 data class StoryInfoResult(
   @SerializedName("worldId") val worldId: Long = 0L,
+  @SerializedName("status") val status: String = "",
   @SerializedName("chapterId") val chapterId: Long? = null,
   @SerializedName("chapterTitle") val chapterTitle: String = "",
   @SerializedName("state") val state: JsonElement? = null,
@@ -369,6 +372,8 @@ data class StoryInfoResult(
   @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
   @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
   @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
+  @SerializedName("endDialog") val endDialog: String? = null,
+  @SerializedName("endDialogDetail") val endDialogDetail: String? = null,
 )
 
 data class AiTokenUsageLogItem(

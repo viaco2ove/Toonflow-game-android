@@ -402,6 +402,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var debugStatePreview by mutableStateOf("{}")
   var debugEndDialog by mutableStateOf<String?>(null)
   var debugEndDialogDetail by mutableStateOf("")
+  var sessionEndDialog by mutableStateOf<String?>(null)
+  var sessionEndDialogDetail by mutableStateOf("")
   var debugLoading by mutableStateOf(false)
   var debugLoadingStage by mutableStateOf("")
   private val debugRevisitSnapshots = mutableStateListOf<DebugRevisitSnapshot>()
@@ -2142,6 +2144,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  /**
+   * 关闭正式游玩的章节失败弹窗。
+   *
+   * 用途：
+   * - 只清理当前前端展示态，不改服务端会话状态；
+   * - 这样再次进入同一会话时，storyInfo 仍会把失败弹窗重新带回来。
+   */
+  fun closeSessionEndDialog() {
+    sessionEndDialog = null
+    sessionEndDialogDetail = ""
+  }
+
   fun leaveDebugMode() {
     clearRuntimeRetryState()
     clearDebugRevisitSnapshots()
@@ -2161,6 +2175,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     debugMessageSeed = 1L
     currentSessionId = ""
     sessionDetail = null
+    sessionEndDialog = null
+    sessionEndDialogDetail = ""
     clearPlayChapterCache()
     messages.clear()
     sendText = ""
@@ -3809,10 +3825,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val mergedWorld = result.world ?: existingDetail?.world
     val mergedChapter = result.chapter ?: existingDetail?.chapter
     val mergedMessages = existingDetail?.messages ?: messages.toList()
+    val nextEndDialog = result.endDialog?.trim()?.ifBlank { null }
+    val nextEndDialogDetail = result.endDialogDetail.orEmpty().trim()
     sessionDetail = SessionDetail(
       sessionId = currentSessionId.ifBlank { existingDetail?.sessionId.orEmpty() },
       title = existingDetail?.title?.ifBlank { mergedWorld?.name.orEmpty() }.orEmpty(),
-      status = existingDetail?.status.orEmpty(),
+      status = result.status.ifBlank { existingDetail?.status.orEmpty() },
+      endDialog = nextEndDialog,
+      endDialogDetail = nextEndDialogDetail,
       chapterId = result.chapterId ?: mergedChapter?.id ?: existingDetail?.chapterId,
       state = mergedState,
       latestSnapshot = SessionSnapshot(state = mergedState?.deepCopy()),
@@ -3823,6 +3843,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       eventDigestWindow = result.eventDigestWindow,
       eventDigestWindowText = result.eventDigestWindowText,
     )
+    sessionEndDialog = nextEndDialog
+    sessionEndDialogDetail = nextEndDialogDetail
     mergedChapter?.let { chapter ->
       val index = playChapters.indexOfFirst { it.id == chapter.id }
       if (index >= 0) {
@@ -5483,6 +5505,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sessionOpening = true
     sessionOpeningStage = if (playback) "读取回放数据" else "读取记忆与角色参数"
     sessionOpenError = ""
+    sessionEndDialog = null
+    sessionEndDialogDetail = ""
     notice = if (playback) "正在读取回放数据..." else "正在读取记忆与角色参数..."
     sessionRuntimeStage = ""
     sessionDetail = null

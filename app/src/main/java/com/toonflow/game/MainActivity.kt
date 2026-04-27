@@ -4129,10 +4129,15 @@ private fun PlayScene(
         }
 
         if (mode == "setting") {
+          // 故事信息面板需要像 Web 一样给底部输入区留出明显安全距离，
+          // 同时把可滚动区域限制在当前视口内，避免长面板直接压到下方对话区。
+          val availableStageHeight = this@BoxWithConstraints.maxHeight
+          val storySettingPanelBottomInset = 168.dp
+          val storySettingPanelMaxHeight = (availableStageHeight - 248.dp).coerceIn(260.dp, 460.dp)
           Box(
             modifier = Modifier
               .fillMaxSize()
-              .padding(bottom = 118.dp),
+              .padding(bottom = storySettingPanelBottomInset),
             contentAlignment = Alignment.BottomCenter,
           ) {
             StorySettingPanel(
@@ -4157,6 +4162,7 @@ private fun PlayScene(
               onToggleEnemyStatusDetail = onToggleEnemyStatusDetail,
               showChapterEventDetail = showChapterEventDetail,
               onToggleChapterEventDetail = onToggleChapterEventDetail,
+              panelMaxHeight = storySettingPanelMaxHeight,
               onClose = onCloseSetting,
             )
           }
@@ -4518,6 +4524,30 @@ private fun PlayScene(
       },
       dismissButton = {
         TextButton(onClick = { vm.closeDebugDialog(false) }) {
+          Text("继续查看")
+        }
+      },
+    )
+  }
+
+  if (!vm.debugMode && vm.sessionEndDialog != null) {
+    AlertDialog(
+      onDismissRequest = { vm.closeSessionEndDialog() },
+      title = { Text("章节失败") },
+      text = {
+        Text(
+          vm.sessionEndDialogDetail.ifBlank {
+            "当前章节结束条件失败。可继续查看当前记录，或返回历史重新开始。"
+          },
+        )
+      },
+      confirmButton = {
+        TextButton(onClick = { onModeChange("history") }) {
+          Text("返回历史")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { vm.closeSessionEndDialog() }) {
           Text("继续查看")
         }
       },
@@ -5248,6 +5278,7 @@ private fun StorySettingPanel(
   onToggleEnemyStatusDetail: () -> Unit,
   showChapterEventDetail: Boolean,
   onToggleChapterEventDetail: () -> Unit,
+  panelMaxHeight: Dp,
   onClose: () -> Unit,
 ) {
   var selectedRoleId by remember(worldName) { mutableStateOf<String?>(null) }
@@ -5260,7 +5291,9 @@ private fun StorySettingPanel(
     modifier = Modifier
       .fillMaxWidth()
       .padding(horizontal = 10.dp, vertical = 8.dp)
-      .heightIn(max = 500.dp),
+      // 安卓端这里改成外部传入的动态限高，和 Web 的“按视口高度扣除上下占位”一致，
+      // 避免不同机型上固定 500dp 把下方消息区和输入区挤掉。
+      .heightIn(max = panelMaxHeight),
     colors = CardDefaults.cardColors(containerColor = Color(0xE60A182B)),
     shape = RoundedCornerShape(18.dp),
     border = BorderStroke(1.dp, Color(0x3DA6BCDA)),
