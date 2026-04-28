@@ -203,18 +203,27 @@ private val warnYellow = Color(0xFFFFE600)
 private val activeOrange = Color(0xFFFF8E2B)
 private const val RUNTIME_VOICE_CACHE_LIMIT = 60
 
+/**
+ * 清洗运行时朗读文本。
+ *
+ * 用途：
+ * - 保留括号内真正可朗读的中文内容，只去掉括号符号本身；
+ * - 删除纯标签类包裹（如【系统】、[提示]）时也优先保留正文；
+ * - 避免“整句都写在括号里”的旁白被误判成空文本，导致自动语音跳过并卡住后续推进。
+ */
 private fun sanitizeSpeakableText(input: String): String {
   return input
-    .replace(Regex("（[^）]*）"), "")
-    .replace(Regex("\\([^)]*\\)"), "")
-    .replace(Regex("【[^】]*】"), "")
-    .replace(Regex("\\[[^\\]]*]"), "")
-    .replace(Regex("《[^》]*》"), "")
-    .replace(Regex("〈[^〉]*〉"), "")
-    .replace(Regex("〔[^〕]*〕"), "")
+    .replace(Regex("（([^）]*)）"), "$1")
+    .replace(Regex("\\(([^)]*)\\)"), "$1")
+    .replace(Regex("【([^】]*)】"), "$1")
+    .replace(Regex("\\[([^\\]]*)]"), "$1")
+    .replace(Regex("《([^》]*)》"), "$1")
+    .replace(Regex("〈([^〉]*)〉"), "$1")
+    .replace(Regex("〔([^〕]*)〕"), "$1")
     .replace(Regex("(^|\\n)[：:，,；;、]+"), "$1")
     .replace(Regex("[ \\t]+\\n"), "\n")
     .replace(Regex("\\n{3,}"), "\n\n")
+    .replace(Regex("[ \\t]{2,}"), " ")
     .trim()
 }
 
@@ -4161,7 +4170,7 @@ private fun PlayScene(
           val availableStageHeight = maxHeight
           // 这里使用中部内容区的真实约束高度，而不是整屏高度；
           // 否则面板会按整屏算出过大的目标值，最终又被父布局截断。
-          val storySettingPanelBottomInset = 10.dp
+          val storySettingPanelBottomInset = 5.dp
           val storySettingPanelMaxHeight = (availableStageHeight - storySettingPanelBottomInset - 16.dp)
             .coerceAtLeast(260.dp)
           LaunchedEffect(
@@ -5330,6 +5339,7 @@ private fun StorySettingPanel(
   var selectedRoleId by remember(worldName) { mutableStateOf<String?>(null) }
   var showModePicker by remember(worldName) { mutableStateOf(false) }
   var showStatePreview by remember(worldName, chapterTitle) { mutableStateOf(false) }
+  var showRoleDetailDialog by remember(worldName) { mutableStateOf(false) }
   val selectedRole = roles.firstOrNull { it.id == selectedRoleId } ?: roles.firstOrNull()
   val panelScroll = rememberScrollState()
   val density = LocalDensity.current
@@ -5395,11 +5405,15 @@ private fun StorySettingPanel(
         Box(
           modifier = Modifier
             .align(Alignment.TopEnd)
+            // 右上角关闭按钮直接对齐 Web 的胶囊按钮风格，
+            // 避免安卓端继续使用偏灰的透明态，看起来和 Web 像两套设计。
+            .size(width = 52.dp, height = 30.dp)
             .clip(RoundedCornerShape(999.dp))
             .border(BorderStroke(1.dp, Color(0x52BCCCE2)), RoundedCornerShape(999.dp))
-            .background(Color(0x0FFFFFFF))
+            .background(Color(0xD98F7A74))
             .clickable { onClose() }
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 10.dp, vertical = 4.dp),
+          contentAlignment = Alignment.Center,
         ) {
           Text("关闭", color = Color(0xFFEEF5FF), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
         }
@@ -5458,11 +5472,13 @@ private fun StorySettingPanel(
           if (selectedRole.sample.isNotBlank()) {
             StoryInlineText("台词示例：${selectedRole.sample}")
           }
-          selectedRole.parameterCardJson?.let { card ->
-            HorizontalDividerCompat()
-            Text("参数卡", color = Color.White, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-            ParameterCardDetail(card)
-          }
+          Text(
+            text = "查看角色详情",
+            color = Color(0xFFAED2FF),
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.clickable { showRoleDetailDialog = true },
+          )
         }
       }
       StoryToggleRow(
@@ -5552,6 +5568,17 @@ private fun StorySettingPanel(
         }
       }
     }
+  }
+
+  /**
+   * 独立角色详情弹层和 Web 保持同一层级：
+   * 故事面板里只展示摘要，详细参数卡、音色信息和原文查看都放到这里。
+   */
+  if (showRoleDetailDialog && selectedRole != null) {
+    StoryRoleDetailDialog(
+      role = selectedRole,
+      onDismiss = { showRoleDetailDialog = false },
+    )
   }
 }
 
@@ -5756,56 +5783,362 @@ private fun parameterCardOtherJson(values: List<String>): String = runCatching {
   JSONArray(values).toString()
 }.getOrElse { "[]" }
 
-@Composable
-private fun ParameterCardDetail(card: com.toonflow.game.data.RoleParameterCard) {
-  Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-    ParameterCardField("角色名", parameterCardTextValue(card.name))
-    ParameterCardField("原始角色设定", parameterCardTextValue(card.rawSetting), scrollable = true, maxHeight = 260.dp)
-    ParameterCardField("性别", parameterCardTextValue(card.gender))
-    ParameterCardField("年龄", card.age?.toString() ?: "未设定")
-    ParameterCardField("等级", card.level.toString())
-    // 经验值与升级门槛需要和 Web 详情面板保持一致，避免参数卡里明明有值却在安卓端被漏掉。
-    ParameterCardField("经验值", card.exp.toString())
-    ParameterCardField("下一级所需经验", card.nextLevelExp.toString())
-    ParameterCardField("等级称号", parameterCardTextValue(card.levelDesc))
-    ParameterCardField("性格", parameterCardTextValue(card.personality))
-    ParameterCardField("外貌", parameterCardTextValue(card.appearance))
-    ParameterCardField("音色特点", parameterCardTextValue(card.voice))
-    ParameterCardField("技能", parameterCardListValue(card.skills))
-    ParameterCardField("物品", parameterCardListValue(card.items))
-    ParameterCardField("装备", parameterCardListValue(card.equipment))
-    ParameterCardField("血量", card.hp.toString())
-    ParameterCardField("蓝量", card.mp.toString())
-    ParameterCardField("金钱", card.money.toString())
-    ParameterCardField("其他", parameterCardOtherJson(card.other))
+private data class ParameterCardEntry(
+  val label: String,
+  val value: String,
+  val wide: Boolean = false,
+)
+
+/**
+ * 把参数卡转成可直接渲染的字段列表，方便安卓端复刻 Web 的双列信息卡布局。
+ */
+private fun parameterCardEntries(card: com.toonflow.game.data.RoleParameterCard): List<ParameterCardEntry> {
+  return listOf(
+    ParameterCardEntry("角色名", parameterCardTextValue(card.name)),
+    ParameterCardEntry("性别", parameterCardTextValue(card.gender)),
+    ParameterCardEntry("年龄", card.age?.toString() ?: "未设定"),
+    ParameterCardEntry("等级", card.level.toString()),
+    ParameterCardEntry("经验值", card.exp.toString()),
+    ParameterCardEntry("下一级所需经验", card.nextLevelExp.toString()),
+    ParameterCardEntry("等级称号", parameterCardTextValue(card.levelDesc)),
+    ParameterCardEntry("性格", parameterCardTextValue(card.personality)),
+    ParameterCardEntry("外貌", parameterCardTextValue(card.appearance)),
+    ParameterCardEntry("音色特点", parameterCardTextValue(card.voice)),
+    ParameterCardEntry("技能", parameterCardListValue(card.skills), wide = true),
+    ParameterCardEntry("物品", parameterCardListValue(card.items), wide = true),
+    ParameterCardEntry("装备", parameterCardListValue(card.equipment), wide = true),
+    ParameterCardEntry("血量", card.hp.toString()),
+    ParameterCardEntry("蓝量", card.mp.toString()),
+    ParameterCardEntry("金钱", card.money.toString()),
+    ParameterCardEntry("其他", parameterCardOtherJson(card.other), wide = true),
+  )
+}
+
+/**
+ * 按 Web 的视觉节奏把参数字段拆成“单行宽字段”和“双列字段行”。
+ * 这样技能/物品/装备/其他不会和短字段混在同一行里挤压布局。
+ */
+private fun parameterCardEntryRows(card: com.toonflow.game.data.RoleParameterCard): List<List<ParameterCardEntry>> {
+  val rows = mutableListOf<List<ParameterCardEntry>>()
+  val compactBuffer = mutableListOf<ParameterCardEntry>()
+  parameterCardEntries(card).forEach { entry ->
+    if (entry.wide) {
+      if (compactBuffer.isNotEmpty()) {
+        rows += compactBuffer.toList()
+        compactBuffer.clear()
+      }
+      rows += listOf(entry)
+    } else {
+      compactBuffer += entry
+      if (compactBuffer.size == 2) {
+        rows += compactBuffer.toList()
+        compactBuffer.clear()
+      }
+    }
+  }
+  if (compactBuffer.isNotEmpty()) {
+    rows += compactBuffer.toList()
+  }
+  return rows
+}
+
+/**
+ * 统一把运行时音色模式翻译成中文标签，保持和 Web 角色详情一致。
+ */
+private fun storyVoiceModeLabel(mode: String): String {
+  return when (mode.trim()) {
+    "", "text" -> "预设音色"
+    "clone" -> "克隆音色"
+    "mix" -> "混合音色"
+    "prompt_voice" -> "提示词音色"
+    else -> mode
   }
 }
 
+/**
+ * 组装角色资料文本，供详情弹层里的“复制角色资料”按钮复用。
+ */
+private fun buildStoryRoleProfile(role: com.toonflow.game.data.StoryRole): String {
+  val lines = mutableListOf<String>()
+  lines += "角色：${role.name.ifBlank { "未命名角色" }}"
+  lines += "类型：${storyRoleTypeLabel(role.roleType)}"
+  lines += "角色设定：${role.description.ifBlank { "暂无角色设定" }}"
+  lines += "台词示例：${role.sample.ifBlank { "暂无台词示例" }}"
+  lines += "音色：${storyVoiceModeLabel(role.voiceMode)}${role.voice.takeIf { it.isNotBlank() }?.let { " / $it" } ?: ""}"
+  role.parameterCardJson?.let { card ->
+    lines += "参数卡：${buildString {
+      append('{')
+      append(parameterCardEntries(card).joinToString("，") { entry -> "${entry.label}:${entry.value}" })
+      append('}')
+    }}"
+  }
+  lines += "参考音频：${role.voiceReferenceAudioName.ifBlank { role.voiceReferenceAudioPath.ifBlank { "无" } }}"
+  lines += "参考文本：${role.voiceReferenceText.ifBlank { "无" }}"
+  lines += "提示词：${role.voicePromptText.ifBlank { "无" }}"
+  lines += "混合音色：${role.voiceMixVoices?.takeIf { it.isNotEmpty() }?.joinToString("、") { "${it.voiceId}(${String.format(Locale.US, "%.1f", it.weight)})" } ?: "无"}"
+  return lines.joinToString("\n")
+}
+
+/**
+ * 独立角色详情弹层，复刻 Web 的信息层级：
+ * 头像摘要卡 -> 角色设定 -> 台词示例 -> 参数卡 -> 音色信息。
+ */
 @Composable
-private fun ParameterCardField(label: String, value: String, scrollable: Boolean = false, maxHeight: Dp = 220.dp) {
-  Column(
-    modifier =
-      Modifier
-        .fillMaxWidth()
-        .clip(RoundedCornerShape(10.dp))
-        .background(Color(0x14243A57))
-        .border(1.dp, Color(0x223B567A), RoundedCornerShape(10.dp))
-        .padding(horizontal = 10.dp, vertical = 8.dp),
-    verticalArrangement = Arrangement.spacedBy(4.dp),
+private fun StoryRoleDetailDialog(
+  role: com.toonflow.game.data.StoryRole,
+  onDismiss: () -> Unit,
+) {
+  val clipboard = LocalClipboardManager.current
+  var roleParameterRawOpen by remember(role.id) { mutableStateOf(false) }
+  Dialog(
+    onDismissRequest = onDismiss,
+    properties = DialogProperties(usePlatformDefaultWidth = false),
   ) {
-    Text(label, color = Color(0xFF8EA6C7), style = MaterialTheme.typography.labelSmall)
-    if (scrollable && value.length > 120) {
-      Box(
-        modifier =
-          Modifier
-            .fillMaxWidth()
-            .heightIn(max = maxHeight)
-            .verticalScroll(rememberScrollState()),
+    Card(
+      shape = RoundedCornerShape(24.dp),
+      colors = CardDefaults.cardColors(containerColor = Color(0xFFF7FAFF)),
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(16.dp),
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .verticalScroll(rememberScrollState())
+          .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
       ) {
-        Text(value, color = Color(0xFFDCEEFF), style = MaterialTheme.typography.bodySmall)
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          TextButton(onClick = onDismiss) {
+            Text("关闭")
+          }
+          Text("角色详情", fontWeight = FontWeight.ExtraBold, color = Color(0xFF213958))
+          Text(storyRoleTypeLabel(role.roleType), color = Color(0xFF7B8DA8), style = MaterialTheme.typography.bodySmall)
+        }
+
+        Card(
+          colors = CardDefaults.cardColors(containerColor = Color.White),
+          shape = RoundedCornerShape(18.dp),
+          border = BorderStroke(1.dp, Color(0xFFD6E4F4)),
+        ) {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+          ) {
+            Box(
+              modifier = Modifier
+                .size(84.dp)
+                .clip(RoundedCornerShape(28.dp))
+                .background(Color(0xFFE8EEF8))
+                .border(BorderStroke(1.dp, Color(0xFFC7D7EB)), RoundedCornerShape(28.dp)),
+              contentAlignment = Alignment.Center,
+            ) {
+              SmallAvatar(
+                foregroundPath = role.avatarPath.trim().ifBlank { null },
+                backgroundPath = role.avatarBgPath.trim().ifBlank { null },
+                title = role.name,
+                size = 72.dp,
+              )
+            }
+            Column(
+              modifier = Modifier.weight(1f),
+              verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+              Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(role.name.ifBlank { "未命名角色" }, fontWeight = FontWeight.ExtraBold, color = Color(0xFF13213A), style = MaterialTheme.typography.titleLarge)
+                Box(
+                  modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .border(BorderStroke(1.dp, Color(0xFFD6E4F4)), RoundedCornerShape(999.dp))
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                ) {
+                  Text(storyRoleTypeLabel(role.roleType), color = Color(0xFF49607E), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                }
+              }
+              Text(role.voice.ifBlank { "未绑定音色" }, color = Color(0xFF49607E), style = MaterialTheme.typography.bodyMedium)
+              Text("绑定模式：${storyVoiceModeLabel(role.voiceMode)}", color = Color(0xFF7B8DA8), style = MaterialTheme.typography.bodySmall)
+            }
+          }
+        }
+
+        RoleDetailSection(title = "角色设定") {
+          Text(role.description.ifBlank { "暂无角色设定" }, color = Color(0xFF13213A), style = MaterialTheme.typography.bodyLarge)
+        }
+
+        RoleDetailSection(title = "台词示例") {
+          Text(role.sample.ifBlank { "暂无台词示例" }, color = Color(0xFF13213A), style = MaterialTheme.typography.bodyLarge)
+        }
+
+        RoleDetailSection(title = "参数卡") {
+          if (role.parameterCardJson != null) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+              Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+              ) {
+                Text("已结构化展开，可切回原文核对", color = Color(0xFF7B8DA8), style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(
+                  onClick = { roleParameterRawOpen = !roleParameterRawOpen },
+                  shape = RoundedCornerShape(999.dp),
+                  contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                ) {
+                  Text(if (roleParameterRawOpen) "收起原文" else "查看原文")
+                }
+              }
+              RoleDetailField(
+                label = "原始角色设定",
+                value = parameterCardTextValue(role.parameterCardJson.rawSetting),
+                wide = true,
+                scrollable = true,
+                maxHeight = 220.dp,
+              )
+              parameterCardEntryRows(role.parameterCardJson).forEach { rowItems ->
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                  ) {
+                    rowItems.forEach { item ->
+                      val itemModifier = if (item.wide) {
+                        Modifier.fillMaxWidth()
+                      } else {
+                        Modifier.weight(1f)
+                      }
+                      RoleDetailField(
+                        label = item.label,
+                        value = item.value,
+                        wide = item.wide,
+                        modifier = itemModifier,
+                        scrollable = item.value.length > 120,
+                      )
+                    }
+                    if (rowItems.size == 1 && !rowItems.first().wide) {
+                      Spacer(modifier = Modifier.weight(1f))
+                    }
+                  }
+                }
+              if (roleParameterRawOpen) {
+                Text(
+                  text = role.parameterCardJson.toString(),
+                  color = Color(0xFF49607E),
+                  style = MaterialTheme.typography.bodySmall,
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xFFF3F7FD))
+                    .padding(12.dp),
+                )
+              }
+            }
+          } else {
+            Text("无参数卡", color = Color(0xFF49607E), style = MaterialTheme.typography.bodyMedium)
+          }
+        }
+
+        RoleDetailSection(title = "音色信息") {
+          Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("预设：${role.voicePresetId.ifBlank { "无" }}", color = Color(0xFF49607E), style = MaterialTheme.typography.bodySmall)
+            Text(
+              "参考音频：${role.voiceReferenceAudioName.ifBlank { role.voiceReferenceAudioPath.ifBlank { "无" } }}",
+              color = Color(0xFF49607E),
+              style = MaterialTheme.typography.bodySmall,
+            )
+            Text("参考文本：${role.voiceReferenceText.ifBlank { "无" }}", color = Color(0xFF49607E), style = MaterialTheme.typography.bodySmall)
+            Text("提示词：${role.voicePromptText.ifBlank { "无" }}", color = Color(0xFF49607E), style = MaterialTheme.typography.bodySmall)
+            Text(
+              "混合音色：${role.voiceMixVoices?.takeIf { it.isNotEmpty() }?.joinToString("、") { "${it.voiceId}(${String.format(Locale.US, "%.1f", it.weight)})" } ?: "无"}",
+              color = Color(0xFF49607E),
+              style = MaterialTheme.typography.bodySmall,
+            )
+          }
+        }
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+        ) {
+          OutlinedButton(
+            onClick = { clipboard.setText(AnnotatedString(buildStoryRoleProfile(role))) },
+            shape = RoundedCornerShape(999.dp),
+          ) {
+            Text("复制角色资料")
+          }
+          Button(
+            onClick = onDismiss,
+            shape = RoundedCornerShape(999.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2F6BFF), contentColor = Color.White),
+          ) {
+            Text("知道了")
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * 统一渲染角色详情里的分区卡片，减少角色设定/台词示例/参数卡/音色信息的重复布局。
+ */
+@Composable
+private fun RoleDetailSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+  Card(
+    colors = CardDefaults.cardColors(containerColor = Color.White),
+    shape = RoundedCornerShape(18.dp),
+    border = BorderStroke(1.dp, Color(0xFFD6E4F4)),
+  ) {
+    Column(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(16.dp),
+      verticalArrangement = Arrangement.spacedBy(10.dp),
+      content = {
+        Text(title, color = Color(0xFF7B8DA8), style = MaterialTheme.typography.bodyMedium)
+        content()
+      },
+    )
+  }
+}
+
+/**
+ * 渲染角色详情里的单个参数字段；短字段走双列，长文本字段走整行并支持内部滚动。
+ */
+@Composable
+private fun RoleDetailField(
+  label: String,
+  value: String,
+  modifier: Modifier = Modifier,
+  wide: Boolean = false,
+  scrollable: Boolean = false,
+  maxHeight: Dp = 180.dp,
+) {
+  Column(
+    modifier = modifier
+      .then(if (wide) Modifier.fillMaxWidth() else Modifier)
+      .clip(RoundedCornerShape(16.dp))
+      .background(Color(0xFFF3F7FD))
+      .border(1.dp, Color(0xFFD6E4F4), RoundedCornerShape(16.dp))
+      .padding(horizontal = 14.dp, vertical = 12.dp),
+    verticalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
+    Text(label, color = Color(0xFF7B8DA8), style = MaterialTheme.typography.bodySmall)
+    if (scrollable) {
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(max = maxHeight)
+          .verticalScroll(rememberScrollState()),
+      ) {
+        Text(value, color = Color(0xFF13213A), style = MaterialTheme.typography.bodyMedium)
       }
     } else {
-      Text(value, color = Color(0xFFDCEEFF), style = MaterialTheme.typography.bodySmall)
+      Text(value, color = Color(0xFF13213A), style = MaterialTheme.typography.bodyMedium)
     }
   }
 }
