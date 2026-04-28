@@ -5798,6 +5798,11 @@ private fun parameterCardOtherJson(values: List<String>): String = runCatching {
   JSONArray(values).toString()
 }.getOrElse { "[]" }
 
+private fun parameterCardJsonValue(value: com.google.gson.JsonElement?): String {
+  if (value == null || value.isJsonNull) return "未设定"
+  return runCatching { value.toString() }.getOrElse { "未设定" }
+}
+
 private data class ParameterCardEntry(
   val label: String,
   val value: String,
@@ -5826,6 +5831,8 @@ private fun parameterCardEntries(card: com.toonflow.game.data.RoleParameterCard)
     ParameterCardEntry("蓝量", card.mp.toString()),
     ParameterCardEntry("金钱", card.money.toString()),
     ParameterCardEntry("其他", parameterCardOtherJson(card.other), wide = true),
+    ParameterCardEntry("修炼进度", parameterCardJsonValue(card.cultivationProgress), wide = true),
+    ParameterCardEntry("最近修炼奖励", parameterCardTextValue(card.lastCultivationReward), wide = true),
   )
 }
 
@@ -6605,6 +6612,10 @@ private fun MiniGamePanel(
   miniGame: MainViewModel.RuntimeMiniGameView,
 ) {
   var expanded by remember { mutableStateOf(false) }
+  LaunchedEffect(miniGame.gameType) {
+    // 修炼小游戏开局先让旁白询问修炼目标和陪练，面板默认折叠，避免遮住关键提问。
+    expanded = miniGame.gameType != "cultivation"
+  }
   Card(
     modifier = Modifier.fillMaxWidth(),
     colors = CardDefaults.cardColors(containerColor = Color(0xCC132844)),

@@ -1961,6 +1961,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         else -> phase.ifBlank { "进行中" }
       }
     }
+    if (gameType == "cultivation") {
+      return when (phase) {
+        "choose_practice" -> "选择修炼"
+        "gather_qi" -> "修炼中"
+        "breakthrough" -> "冲关"
+        "settling" -> "已结束"
+        else -> phase.ifBlank { "进行中" }
+      }
+    }
     return if (gameType == "fishing") {
       when (phase) {
         "prepare" -> "准备中"
@@ -1990,6 +1999,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         RuntimeMiniGameStateItem("当前状态", scalarRuntimeText(publicState.get("current_status")).ifBlank { "准备抛竿" }),
         RuntimeMiniGameStateItem("本轮结果", scalarRuntimeText(publicState.get("last_result")).ifBlank { "暂无" }),
         RuntimeMiniGameStateItem("最近收获", scalarRuntimeText(publicState.get("last_reward")).ifBlank { "暂无" }),
+      )
+    }
+    if (gameType == "cultivation") {
+      return listOf(
+        RuntimeMiniGameStateItem("修炼目标", scalarRuntimeText(publicState.get("current_method")).ifBlank { "未选择" }),
+        RuntimeMiniGameStateItem("陪练", scalarRuntimeText(publicState.get("mentor")).ifBlank { "未选择" }),
+        RuntimeMiniGameStateItem("可修炼", runtimeStringify(publicState.get("available_practices")).ifBlank { "基础功法 / 基础体术 / 基础冥想" }),
+        RuntimeMiniGameStateItem("最近奖励", scalarRuntimeText(publicState.get("last_reward")).ifBlank { "暂无" }),
       )
     }
     return publicState.entrySet()
