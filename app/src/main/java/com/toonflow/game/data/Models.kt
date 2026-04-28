@@ -21,6 +21,8 @@ data class RoleParameterCard(
   @SerializedName("gender") val gender: String = "",
   @SerializedName("age") val age: Int? = null,
   @SerializedName("level") val level: Int = 1,
+  @SerializedName("exp") val exp: Int = 0,
+  @SerializedName("next_level_exp") val nextLevelExp: Int = 100,
   @SerializedName("level_desc") val levelDesc: String = "初入此界",
   @SerializedName("personality") val personality: String = "",
   @SerializedName("appearance") val appearance: String = "",

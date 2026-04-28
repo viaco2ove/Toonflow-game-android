@@ -1545,6 +1545,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       skills = arrayValues("skills"),
       items = arrayValues("items"),
       equipment = arrayValues("equipment"),
+      // 经验值和升级阈值来自正式 storyInfo / getSession 的运行态参数卡。
+      // 这里如果不显式解析，后面的角色详情会退回到数据类默认值 0/100，
+      // 看起来就像“后端没写经验”，实际是安卓运行态转换层把字段吃掉了。
+      exp = runtimeIntValue(obj.get("exp")) ?: 0,
+      nextLevelExp = runtimeIntValue(obj.get("next_level_exp")) ?: runtimeIntValue(obj.get("nextLevelExp")) ?: 100,
       hp = runtimeIntValue(obj.get("hp")) ?: 100,
       mp = runtimeIntValue(obj.get("mp")) ?: 0,
       money = runtimeIntValue(obj.get("money")) ?: 0,
@@ -1562,6 +1567,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       || card.skills.isNotEmpty()
       || card.items.isNotEmpty()
       || card.equipment.isNotEmpty()
+      || card.exp > 0
+      || card.nextLevelExp > 100
+      || card.hp > 100
+      || card.mp > 0
+      || card.money > 0
       || card.other.isNotEmpty()
     return if (hasContent) card else null
   }
@@ -7086,10 +7096,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private fun hasReadyRuntimeEventWindow(items: List<RuntimeChapterEventItem>): Boolean {
-    return items.any { item ->
-      item.eventSummary.isNotBlank()
-        && item.eventSummary != "当前事件摘要待生成"
-    }
+    // 这里和 Web 保持一致：
+    // 1. 运行时窗口条目数已经超过 1，说明后端给出的事件链比当前章节摘要更完整；
+    // 2. 或者任意条目已经带上了真正的摘要/事实，也可以优先信任运行时窗口。
+    return items.size > 1
+      || items.any { item ->
+        item.eventSummary.isNotBlank()
+          && item.eventSummary != "当前事件摘要待生成"
+      }
+      || items.any { item -> item.eventFacts.isNotBlank() }
   }
 
   private fun isIntroductionEventItem(item: RuntimeChapterEventItem?): Boolean {
@@ -7150,7 +7165,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val phaseId = scalarRuntimeText(runtimeStateRoot()?.getAsJsonObject("chapterProgress")?.get("phaseId"))
     val currentEventKind = scalarRuntimeText(progress?.get("eventKind"))
     val currentEventFlowType = playCurrentRuntimeEventDigest()?.eventFlowType.orEmpty()
-    val currentEventStatus = scalarRuntimeText(progress?.get("eventStatus")).ifBlank { "未开始" }
+    // 运行时内部继续保留原始状态枚举，展示层再统一翻译成“未开始/进行中/已完成/等待用户”。
+    // 否则安卓端会把部分条目写成中文、部分条目保留英文，和 Web 的事件卡表现不一致。
+    val currentEventStatus = scalarRuntimeText(progress?.get("eventStatus")).ifBlank { "idle" }
     val currentEventSummary = playCurrentRuntimeEventDigest()?.eventSummary.orEmpty()
     val completedEvents = progress?.getAsJsonArray("completedEvents")
       ?.mapNotNull { normalizeScalarEditorText(scalarRuntimeText(it)).trim().takeIf { value -> value.isNotEmpty() } }
@@ -7163,12 +7180,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     phasePreview.forEachIndexed { _, item ->
       val status = when {
         phaseId.isNotBlank() && item.id == phaseId -> currentEventStatus
-        activeIndex >= 0 && phasePreview.indexOf(item) < activeIndex -> "已完成"
+        activeIndex >= 0 && phasePreview.indexOf(item) < activeIndex -> "completed"
         phaseId.isBlank()
           && currentEventKind.equals(item.kind, ignoreCase = true)
           && currentEventSummary.isNotBlank()
           && currentEventSummary == item.label -> currentEventStatus
-        else -> "未开始"
+        else -> "idle"
       }
       items += RuntimeChapterEventItem(
         eventIndex = items.size + 1,
@@ -7201,9 +7218,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         currentEventFlowType.equals("chapter_ending_check", ignoreCase = true)
           || currentEventKind.equals("fixed", ignoreCase = true)
           || currentEventKind.equals("ending", ignoreCase = true) ->
-          if (currentEventStatus == "waiting_input") "等待输入" else currentEventStatus
-        anyCompleted -> "已完成"
-        else -> "未开始"
+          currentEventStatus
+        anyCompleted -> "completed"
+        else -> "idle"
       }
       items += RuntimeChapterEventItem(
         eventIndex = items.size + 1,
@@ -7223,13 +7240,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun playVisibleChapterEvents(): List<RuntimeChapterEventItem> {
     val runtimeItems = runtimeEventDigestWindowFromState().filterNot { isIntroductionEventItem(it) }
     val outlineItems = runtimeOutlineEventItems()
-    if (outlineItems.isNotEmpty() && outlineItems.size > runtimeItems.size) {
-      return outlineItems
-    }
-    if (hasReadyRuntimeEventWindow(runtimeItems)) {
-      return runtimeItems
-    }
-    return outlineItems
+    if (outlineItems.isEmpty()) return runtimeItems
+    if (outlineItems.size > runtimeItems.size) return outlineItems
+    return if (hasReadyRuntimeEventWindow(runtimeItems)) runtimeItems else outlineItems
   }
 
   fun playEventFlowLabel(item: RuntimeChapterEventItem): String {

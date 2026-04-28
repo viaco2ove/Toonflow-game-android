@@ -1997,7 +1997,7 @@ private fun CreateScene(
 
     Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(12.dp)) {
       Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("全局背景（选填）", fontWeight = FontWeight.Bold, color = Color(0xFF232F43))
+        Text("全局背景（选填）重要的信息请放最前面", fontWeight = FontWeight.Bold, color = Color(0xFF232F43))
         ScrollableOutlinedTextField(
           value = vm.globalBackground,
           onValueChange = { vm.globalBackground = it },
@@ -4161,7 +4161,7 @@ private fun PlayScene(
           val availableStageHeight = maxHeight
           // 这里使用中部内容区的真实约束高度，而不是整屏高度；
           // 否则面板会按整屏算出过大的目标值，最终又被父布局截断。
-          val storySettingPanelBottomInset = 20.dp
+          val storySettingPanelBottomInset = 10.dp
           val storySettingPanelMaxHeight = (availableStageHeight - storySettingPanelBottomInset - 16.dp)
             .coerceAtLeast(260.dp)
           LaunchedEffect(
@@ -5764,6 +5764,9 @@ private fun ParameterCardDetail(card: com.toonflow.game.data.RoleParameterCard) 
     ParameterCardField("性别", parameterCardTextValue(card.gender))
     ParameterCardField("年龄", card.age?.toString() ?: "未设定")
     ParameterCardField("等级", card.level.toString())
+    // 经验值与升级门槛需要和 Web 详情面板保持一致，避免参数卡里明明有值却在安卓端被漏掉。
+    ParameterCardField("经验值", card.exp.toString())
+    ParameterCardField("下一级所需经验", card.nextLevelExp.toString())
     ParameterCardField("等级称号", parameterCardTextValue(card.levelDesc))
     ParameterCardField("性格", parameterCardTextValue(card.personality))
     ParameterCardField("外貌", parameterCardTextValue(card.appearance))
@@ -6203,7 +6206,9 @@ private fun runtimeEventKindLabel(kind: String): String {
 
 private fun runtimeEventStatusLabel(status: String): String {
   return when (status.trim().lowercase()) {
+    "idle" -> "未开始"
     "pending", "todo" -> "未开始"
+    "waiting_input" -> "等待用户"
     "active", "running", "in_progress" -> "进行中"
     "completed", "done", "success" -> "已完成"
     "failed" -> "失败"
