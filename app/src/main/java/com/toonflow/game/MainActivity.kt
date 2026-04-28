@@ -207,23 +207,22 @@ private const val RUNTIME_VOICE_CACHE_LIMIT = 60
  * 清洗运行时朗读文本。
  *
  * 用途：
- * - 保留括号内真正可朗读的中文内容，只去掉括号符号本身；
- * - 删除纯标签类包裹（如【系统】、[提示]）时也优先保留正文；
- * - 避免“整句都写在括号里”的旁白被误判成空文本，导致自动语音跳过并卡住后续推进。
+ * - 与 Web 端保持一致，直接忽略括号/标签中的舞台说明；
+ * - 避免安卓把“（动作描写）”“【提示】”这类非正文内容一起念出来；
+ * - 让两端在自动语音时对同一条台词采用同样的可朗读文本。
  */
 private fun sanitizeSpeakableText(input: String): String {
   return input
-    .replace(Regex("（([^）]*)）"), "$1")
-    .replace(Regex("\\(([^)]*)\\)"), "$1")
-    .replace(Regex("【([^】]*)】"), "$1")
-    .replace(Regex("\\[([^\\]]*)]"), "$1")
-    .replace(Regex("《([^》]*)》"), "$1")
-    .replace(Regex("〈([^〉]*)〉"), "$1")
-    .replace(Regex("〔([^〕]*)〕"), "$1")
+    .replace(Regex("（[^）]*）"), "")
+    .replace(Regex("\\([^)]*\\)"), "")
+    .replace(Regex("【[^】]*】"), "")
+    .replace(Regex("\\[[^\\]]*]"), "")
+    .replace(Regex("《[^》]*》"), "")
+    .replace(Regex("〈[^〉]*〉"), "")
+    .replace(Regex("〔[^〕]*〕"), "")
     .replace(Regex("(^|\\n)[：:，,；;、]+"), "$1")
     .replace(Regex("[ \\t]+\\n"), "\n")
     .replace(Regex("\\n{3,}"), "\n\n")
-    .replace(Regex("[ \\t]{2,}"), " ")
     .trim()
 }
 
@@ -3605,8 +3604,13 @@ private fun PlayScene(
     val messageKey = vm.messageUiKey(latest)
     if (messageKey.isBlank() || initialHydratedVoiceKey == messageKey) return
     val displayContent = vm.displayContentForMessage(latest)
-    val playableSegments = listOf(sanitizeSpeakableText(displayContent)).filter { it.isNotBlank() }
+    val playableSegments = listOf(displayContent).map(::normalizePlayableSpeakableText).filter { it.isNotBlank() }
     if (playableSegments.isEmpty()) {
+      // Web 会把整句都是舞台说明的内容视作“无需朗读”。
+      // 安卓这里同步把它视为本轮语音已完成，并记录 hydrated key，
+      // 避免 pre_continue_guard 一直因为“还没朗读”而反复拦截后续编排。
+      initialHydratedVoiceKey = messageKey
+      vm.setRuntimeMessageStatus(latest.id, if (vm.playCanPlayerSpeak()) "waiting_player" else "waiting_next")
       VueTagLogger.info("voice", "skip hydrated auto voice reason=$reason messageId=${latest.id} empty=true")
       return
     }
@@ -3771,7 +3775,7 @@ private fun PlayScene(
         delay(estimateRevealDelayMs(displayContent))
       } else {
         val voiceSegments = if (queuedVoiceSegments.isNotEmpty()) queuedVoiceSegments.toList() else listOf(displayContent)
-        val playableSegments = voiceSegments.map(::sanitizeSpeakableText).filter { it.isNotBlank() }
+        val playableSegments = voiceSegments.map(::normalizePlayableSpeakableText).filter { it.isNotBlank() }
         if (playableSegments.isNotEmpty()) {
           vm.setRuntimeMessageStatus(currentMessage.id, "voicing")
           VueTagLogger.info(
@@ -3782,6 +3786,7 @@ private fun PlayScene(
             vm.setRuntimeMessageStatus(currentMessage.id, if (vm.playCanPlayerSpeak()) "waiting_player" else "waiting_next")
           }
         } else {
+          // 这类消息经过 Web 同款清洗后已经没有正文，直接切回等待态即可。
           VueTagLogger.info("voice", "skip auto voice messageId=${currentMessage.id} reason=empty_segments")
           vm.setRuntimeMessageStatus(currentMessage.id, if (vm.playCanPlayerSpeak()) "waiting_player" else "waiting_next")
         }
@@ -3803,6 +3808,11 @@ private fun PlayScene(
     runtimeVoicePhase,
   ) {
     if (mode != "live" || vm.debugLoading || vm.runtimeProcessingPending || vm.debugEndDialog != null) {
+      return@LaunchedEffect
+    }
+    // 自动语音队列还在运行时，绝不提前继续向后编排。
+    // 这样可以和 Web 保持同样的时序：当前台词朗读完毕后，再去获取下一句。
+    if (runtimeVoiceAutoJob?.isActive == true) {
       return@LaunchedEffect
     }
     val latest = latestRevealedMessage ?: return@LaunchedEffect

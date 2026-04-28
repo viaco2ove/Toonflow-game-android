@@ -7113,6 +7113,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       || item.eventKind.trim().equals("opening", ignoreCase = true)
   }
 
+  /**
+   * 判断事件是否属于章节结尾那条“结束条件检查/固定条件”。
+   *
+   * 安卓端运行时窗口有时只返回场景事件，不会把 ending/fixed 条目一起带回。
+   * 这里单独识别出来，方便后续把章节大纲中的结束事件补回列表，和 Web 保持一致。
+   */
+  private fun isEndingEventItem(item: RuntimeChapterEventItem?): Boolean {
+    if (item == null) return false
+    val flowType = item.eventFlowType.trim()
+    val kind = item.eventKind.trim()
+    return flowType.equals("chapter_ending_check", ignoreCase = true)
+      || kind.equals("fixed", ignoreCase = true)
+      || kind.equals("ending", ignoreCase = true)
+  }
+
+  /**
+   * 把章节大纲里缺失的结束事件补到运行时事件窗口里。
+   *
+   * 用途：
+   * - 运行时窗口优先保留后端实时状态；
+   * - 但如果后端这轮没把 ending/fixed 事件带回来，安卓仍然要展示 Web 同款的结束事件卡。
+   */
+  private fun mergeMissingEndingEvents(
+    runtimeItems: List<RuntimeChapterEventItem>,
+    outlineItems: List<RuntimeChapterEventItem>,
+  ): List<RuntimeChapterEventItem> {
+    if (runtimeItems.isEmpty()) return outlineItems
+    val runtimeHasEnding = runtimeItems.any(::isEndingEventItem)
+    if (runtimeHasEnding) return runtimeItems
+    val outlineEndingItems = outlineItems.filter(::isEndingEventItem)
+    if (outlineEndingItems.isEmpty()) return runtimeItems
+    return (runtimeItems + outlineEndingItems)
+      .distinctBy { item ->
+        val indexKey = item.eventIndex.takeIf { it > 0 }?.toString().orEmpty()
+        listOf(indexKey, item.eventFlowType.trim(), item.eventKind.trim(), item.eventSummary.trim()).joinToString("|")
+      }
+      .sortedBy { item -> if (item.eventIndex > 0) item.eventIndex else Int.MAX_VALUE }
+  }
+
   private fun splitCompletionConditionText(raw: String): Pair<String, String> {
     val text = raw.trim()
     if (text.isBlank()) return "" to ""
@@ -7241,8 +7280,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val runtimeItems = runtimeEventDigestWindowFromState().filterNot { isIntroductionEventItem(it) }
     val outlineItems = runtimeOutlineEventItems()
     if (outlineItems.isEmpty()) return runtimeItems
-    if (outlineItems.size > runtimeItems.size) return outlineItems
-    return if (hasReadyRuntimeEventWindow(runtimeItems)) runtimeItems else outlineItems
+    val mergedRuntimeItems = mergeMissingEndingEvents(runtimeItems, outlineItems)
+    if (outlineItems.size > mergedRuntimeItems.size) return outlineItems
+    return if (hasReadyRuntimeEventWindow(mergedRuntimeItems)) mergedRuntimeItems else outlineItems
   }
 
   fun playEventFlowLabel(item: RuntimeChapterEventItem): String {
