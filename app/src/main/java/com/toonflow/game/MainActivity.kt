@@ -4213,6 +4213,7 @@ private fun PlayScene(
               chapterOpeningLine = currentChapter?.openingText.orEmpty(),
               chapterContent = currentChapter?.content?.ifBlank { "暂无章节内容" } ?: "暂无章节内容",
               chapterCondition = vm.playChapterConditionText(),
+              currentEventTargetText = vm.playCurrentEventTargetText(),
               currentEventProgressText = chapterEventProgressText,
               debugOrchestratorRuntimeText = debugOrchestratorRuntimeText,
               chapterEventItems = chapterEventItems,
@@ -5330,6 +5331,7 @@ private fun StorySettingPanel(
   chapterOpeningLine: String,
   chapterContent: String,
   chapterCondition: String,
+  currentEventTargetText: String,
   currentEventProgressText: String,
   debugOrchestratorRuntimeText: String,
   chapterEventItems: List<MainViewModel.RuntimeChapterEventItem>,
@@ -5550,6 +5552,9 @@ private fun StorySettingPanel(
       if (showChapterEventDetail) {
         StoryInlineCard {
           Text("当前事件进度", color = Color.White, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.bodyMedium)
+          if (currentEventTargetText.isNotBlank()) {
+            StoryInlineText("当前事件目标：$currentEventTargetText")
+          }
           StoryInlineText(currentEventProgressText.ifBlank { "当前章节事件尚未生成。" })
           if (debugOrchestratorRuntimeText.isNotBlank()) {
             StoryInlineText(debugOrchestratorRuntimeText, color = Color(0xFFBFD3F1))

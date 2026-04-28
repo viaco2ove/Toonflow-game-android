@@ -2068,24 +2068,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return normalizeConditionEditorText(playCurrentChapter()?.completionCondition).ifBlank { "无" }
   }
 
+  /**
+   * 底部“当前目标”只展示章节结束条件。
+   *
+   * 这样可以避免把当前事件摘要和章节目标混成一条，和 Web 的最新展示口径保持一致。
+   */
   fun playVisibleChapterObjective(): String {
+    val chapter = playCurrentChapter() ?: return ""
+    if (chapter.showCompletionCondition == false) return ""
+    return normalizeConditionEditorText(chapter.completionCondition)
+  }
+
+  /**
+   * 返回编排信息面板顶部要展示的“当前事件目标”。
+   *
+   * 规则：
+   * - 优先显示当前事件摘要；
+   * - 当前事件还没摘要时，回退到事件窗口里下一条可用摘要；
+   * - 再没有时，最后回退到章节结束条件。
+   */
+  fun playCurrentEventTargetText(): String {
     val eventSummary = playCurrentRuntimeEventDigest()?.eventSummary.orEmpty()
       .takeIf { it.isNotBlank() && it != "当前事件摘要待生成" }
       .orEmpty()
     if (eventSummary.isNotBlank()) {
       return eventSummary
     }
-    val progress = playChapterProgressDebug()
-    val progressObjective = progress?.pendingGoal
-      ?.takeIf { it.isNotBlank() }
-      ?: progress?.userNodeLabel?.takeIf { it.isNotBlank() }
-      ?: progress?.phaseLabel?.takeIf { it.isNotBlank() }
-    if (!progressObjective.isNullOrBlank()) {
-      return progressObjective
+    val nextSummary = playVisibleChapterEvents()
+      .map { it.eventSummary.trim() }
+      .firstOrNull { it.isNotBlank() && it != "当前事件摘要待生成" }
+      .orEmpty()
+    if (nextSummary.isNotBlank()) {
+      return nextSummary
     }
-    val chapter = playCurrentChapter() ?: return ""
-    if (chapter.showCompletionCondition == false) return ""
-    return normalizeConditionEditorText(chapter.completionCondition)
+    return playVisibleChapterObjective()
   }
 
   fun playGlobalBackground(): String {
