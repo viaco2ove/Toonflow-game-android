@@ -2082,7 +2082,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun playChapterConditionText(): String {
-    return normalizeConditionEditorText(playCurrentChapter()?.completionCondition).ifBlank { "无" }
+    return resolveVisibleChapterGoalText().ifBlank { "自由剧情" }
+  }
+
+  /**
+   * 获取当前章节可展示目标。
+   *
+   * 章节列表接口有时不会返回 completionCondition，因此这里用运行时 chapterProgress 兜底，
+   * 保证底部“当前目标”和 Web 端在恢复会话、listSession 场景下保持一致。
+   */
+  private fun resolveVisibleChapterGoalText(): String {
+    val configuredGoal = normalizeConditionEditorText(playCurrentChapter()?.completionCondition)
+    if (configuredGoal.isNotBlank()) return configuredGoal
+    val progress = runtimeStateRoot()?.getAsJsonObject("chapterProgress")
+    return scalarRuntimeText(progress?.get("pendingGoal"))
+      .ifBlank { scalarRuntimeText(progress?.get("eventSummary")) }
   }
 
   /**
@@ -2093,7 +2107,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun playVisibleChapterObjective(): String {
     val chapter = playCurrentChapter() ?: return ""
     if (chapter.showCompletionCondition == false) return ""
-    return normalizeConditionEditorText(chapter.completionCondition)
+    // 结束条件为空时仍展示稳定目标，避免底部“当前目标”在自由剧情章节消失。
+    return resolveVisibleChapterGoalText().ifBlank { "自由剧情" }
   }
 
   /**
