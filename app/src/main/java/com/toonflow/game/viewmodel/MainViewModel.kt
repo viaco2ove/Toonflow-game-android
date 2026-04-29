@@ -380,6 +380,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var sessionOpeningStage by mutableStateOf("")
   var sessionOpenError by mutableStateOf("")
   var sessionRuntimeStage by mutableStateOf("")
+  private var sessionAwaitUserPending by mutableStateOf(false)
+  private var sessionAwaitUserSessionId by mutableStateOf("")
   private val playChapters = mutableStateListOf<ChapterItem>()
   private var playChapterWorldId by mutableStateOf(0L)
   val messages = mutableStateListOf<MessageItem>()
@@ -1430,10 +1432,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val activeChapterId = playRuntimeChapterId()
     val sessionChapter = sessionDetail?.chapter
     if (activeChapterId == null) return sessionChapter
-    if (sessionChapter?.id == activeChapterId) return sessionChapter
-    return playChapters.firstOrNull { it.id == activeChapterId }
+    val cachedChapter = playChapters.firstOrNull { it.id == activeChapterId }
       ?: chapters.firstOrNull { it.id == activeChapterId }
-      ?: sessionChapter
+    // 正式会话的 getSession 可能只带最小章节对象，优先使用 getChapter/storyInfo 缓存的完整章节配置。
+    return cachedChapter ?: sessionChapter
   }
 
   fun playChapterTitle(): String {
@@ -2081,6 +2083,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
   }
 
+  /**
+   * 判断传入运行状态是否仍由小游戏接管。
+   *
+   * 用途：
+   * - 正式会话的小游戏也会产生旁白/NPC 台词；
+   * - 这些台词不能触发主线 `/game/orchestration` 自动续写；
+   * - 否则陪练说完后会被主线回合覆盖，表现为小游戏无故退出或输入框不可用。
+   */
+  private fun hasActiveMiniGameInRuntimeState(runtimeState: JsonElement?): Boolean {
+    val stateRoot = runtimeState?.takeIf { it.isJsonObject }?.asJsonObject ?: return false
+    val root = stateRoot.getAsJsonObject("miniGame") ?: return false
+    val session = root.getAsJsonObject("session") ?: return false
+    val status = scalarRuntimeText(session.get("status"))
+    return setOf("preparing", "active", "settling", "suspended").contains(status)
+  }
+
+  /**
+   * 判断当前会话是否仍在小游戏内。
+   */
+  private fun hasActiveMiniGameInCurrentSession(): Boolean {
+    return hasActiveMiniGameInRuntimeState(sessionDetail?.state)
+  }
+
   fun playChapterConditionText(): String {
     return resolveVisibleChapterGoalText().ifBlank { "自由剧情" }
   }
@@ -2105,8 +2130,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
    * 这样可以避免把当前事件摘要和章节目标混成一条，和 Web 的最新展示口径保持一致。
    */
   fun playVisibleChapterObjective(): String {
-    val chapter = playCurrentChapter() ?: return ""
-    if (chapter.showCompletionCondition == false) return ""
     // 结束条件为空时仍展示稳定目标，避免底部“当前目标”在自由剧情章节消失。
     return resolveVisibleChapterGoalText().ifBlank { "自由剧情" }
   }
@@ -3364,10 +3387,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return conversationMessages().lastOrNull()?.id == message.id
   }
 
+  /**
+   * 把运行态强制修正为用户回合。
+   *
+   * 用途：
+   * - orchestration 已返回 awaitUser=true 时，后续 storyInfo 可能仍是旧 turnState；
+   * - 这里保留服务端状态主体，只覆盖 turnState 的用户可输入字段。
+   */
+  private fun forceAwaitUserTurnState(stateRoot: JsonElement?): JsonElement? {
+    val root = stateRoot?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() ?: return stateRoot
+    val turnState = (root.getAsJsonObject("turnState") ?: JsonObject()).also { root.add("turnState", it) }
+    val displayName = playerName.ifBlank { scalarRuntimeText(root.getAsJsonObject("player")?.get("name")).ifBlank { "用户" } }
+    turnState.addProperty("canPlayerSpeak", true)
+    turnState.addProperty("expectedRoleType", "player")
+    turnState.addProperty("expectedRole", displayName)
+    return root
+  }
+
   private fun applyAwaitUserTurnFromPlan(plan: DebugNarrativePlan?) {
     val currentPlan = plan ?: return
     val shouldYieldToUser = currentPlan.awaitUser
     if (!shouldYieldToUser || shouldStreamSessionPlanFromPlan(currentPlan)) return
+    sessionAwaitUserPending = true
+    sessionAwaitUserSessionId = currentSessionId.trim()
     val detail = sessionDetail ?: return
     val root = detail.state?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() ?: return
     val turnState = (root.getAsJsonObject("turnState") ?: JsonObject()).also { root.add("turnState", it) }
@@ -3891,7 +3933,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
    */
   private fun applySessionStoryInfoResult(result: StoryInfoResult) {
     val existingDetail = sessionDetail
-    val mergedState = result.state?.deepCopy() ?: existingDetail?.state?.deepCopy()
+    var mergedState = result.state?.deepCopy() ?: existingDetail?.state?.deepCopy()
+    if (sessionAwaitUserPending && sessionAwaitUserSessionId == currentSessionId.trim()) {
+      // orchestration 的 awaitUser 是用户回合强信号；storyInfo 可能落后一拍，不能用旧 turnState 重新锁住输入框。
+      mergedState = forceAwaitUserTurnState(mergedState)
+    }
     val mergedWorld = result.world ?: existingDetail?.world
     val mergedChapter = result.chapter ?: existingDetail?.chapter
     val mergedMessages = existingDetail?.messages ?: messages.toList()
@@ -3955,6 +4001,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       chapter = existingDetail?.chapter,
       messages = existingDetail?.messages ?: messages.toList(),
     )
+    val shouldYieldToUser = result.plan?.awaitUser == true && !shouldStreamSessionPlanFromPlan(result.plan)
+    sessionAwaitUserPending = shouldYieldToUser
+    sessionAwaitUserSessionId = if (shouldYieldToUser) result.sessionId.ifBlank { currentSessionId }.trim() else ""
     applyAwaitUserTurnFromPlan(result.plan)
     syncRuntimeChatTraceLog()
     sessionRuntimeStage = ""
@@ -5852,6 +5901,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       sendText = ""
       clearRuntimeRetryState()
       applySessionNarrativeResult(result)
+      if (hasActiveMiniGameInRuntimeState(result.state)) {
+        viewModelScope.launch {
+          runCatching { loadSessions() }.onFailure {
+            throwIfCancellation(it)
+            sessionListError = it.message ?: "会话列表刷新失败"
+          }
+        }
+        return
+      }
       refreshSessionStoryInfo()
       continueSessionNarrative()
       viewModelScope.launch {
@@ -5955,6 +6013,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     syncRuntimeChatTraceLog()
     applySessionNarrativeResult(committed)
     refreshSessionStoryInfo()
+    if (hasActiveMiniGameInCurrentSession()) {
+      return
+    }
   }
 
   /**
@@ -6108,10 +6169,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private suspend fun performContinueSessionNarrative() {
     if (currentSessionId.isBlank()) return
+    if (hasActiveMiniGameInCurrentSession()) return
     sessionRuntimeStage = "继续编排下一轮剧情"
     try {
       var advanced = false
       for (attempt in 0 until 3) {
+        if (hasActiveMiniGameInCurrentSession()) {
+          advanced = true
+          break
+        }
         val beforeCount = conversationMessages().size
         val history = conversationMessages()
         val orchestration = repository.orchestrateSession(currentSessionId)
@@ -6125,6 +6191,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val shouldYieldToUser = plan?.awaitUser == true
         val shouldStreamPlan = shouldStreamSessionPlanFromPlan(plan)
         refreshSessionStoryInfo()
+        if (hasActiveMiniGameInCurrentSession()) {
+          advanced = true
+          break
+        }
         if (!shouldStreamPlan) {
           // storyInfo 可能还没同步到最新 turnState；刷新后再补一次本地 awaitUser，
           // 避免界面和调试面板仍停在 NPC/旁白回合。
@@ -6165,6 +6235,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   suspend fun continueSessionNarrative(): Boolean {
     if (currentSessionId.isBlank()) return false
+    if (hasActiveMiniGameInCurrentSession()) return true
     clearRuntimeRetryState()
     runtimeProcessingPending = true
     return runCatching {
