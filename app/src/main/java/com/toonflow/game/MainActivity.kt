@@ -1303,6 +1303,7 @@ private fun CreateScene(
       )
     }
   }
+  var deletingChapter by remember { mutableStateOf<ChapterTabView?>(null) }
   val hasUserAvatarPreview = vm.userAvatarPath.isNotBlank() || vm.userAvatarBgPath.isNotBlank()
   val hasNpcAvatarPreview = npcAvatarPath.isNotBlank() || npcAvatarBgPath.isNotBlank()
   var autoPersistReady by remember { mutableStateOf(false) }
@@ -2415,24 +2416,59 @@ private fun CreateScene(
       ) {
         chapterTabs.forEach { chapter ->
           val active = if (chapter.draft) vm.selectedChapterId == null else chapter.id == vm.selectedChapterId
-          Box(
+          Row(
             modifier = Modifier
               .clip(RoundedCornerShape(999.dp))
               .background(if (active) Color(0xFF314F7E) else Color(0xFFF2F7FF))
               .border(1.dp, if (active) Color(0xFF2A426A) else Color(0xFFD7E2F2), RoundedCornerShape(999.dp))
-              .clickable(enabled = chapter.id != null) {
-                vm.saveCurrentChapterAndSelect(chapter.id)
-              }
-              .padding(horizontal = 10.dp, vertical = 5.dp),
+              .padding(start = 10.dp, end = if (chapter.id == null) 10.dp else 6.dp, top = 5.dp, bottom = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
           ) {
             Text(
               chapter.label,
               color = if (active) Color.White else Color(0xFF2E466A),
               style = MaterialTheme.typography.labelSmall,
+              modifier = Modifier.clickable(enabled = chapter.id != null) {
+                vm.saveCurrentChapterAndSelect(chapter.id)
+              },
             )
+            if (chapter.id != null) {
+              Icon(
+                Icons.Outlined.Delete,
+                contentDescription = "删除章节",
+                tint = if (active) Color.White else Color(0xFF7A8BA8),
+                modifier = Modifier
+                  .size(14.dp)
+                  .clickable { deletingChapter = chapter },
+              )
+            }
           }
         }
       }
+    }
+
+    deletingChapter?.let { chapter ->
+      AlertDialog(
+        onDismissRequest = { deletingChapter = null },
+        title = { Text("删除章节") },
+        text = { Text("确认删除《${chapter.label}》？此操作会删除对应调试会话，删除后无法恢复。") },
+        confirmButton = {
+          TextButton(
+            onClick = {
+              chapter.id?.let(vm::deleteChapter)
+              deletingChapter = null
+            },
+          ) {
+            Text("删除", color = Color(0xFFB91C1C))
+          }
+        },
+        dismissButton = {
+          TextButton(onClick = { deletingChapter = null }) {
+            Text("取消")
+          }
+        },
+      )
     }
 
     Card(

@@ -288,6 +288,17 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return unwrapEnvelope("game/saveChapter", api().saveChapter(payload))
   }
 
+  /**
+   * 删除一个已保存章节。
+   * 后端会校验故事归属，并清理该章节关联的会话、任务和触发器。
+   */
+  suspend fun deleteChapter(chapterId: Long) {
+    val payload = JsonObject().apply {
+      addProperty("chapterId", chapterId)
+    }
+    unwrapEnvelope<JsonElement>("game/deleteChapter", api().deleteChapter(payload))
+  }
+
   suspend fun previewRuntimeOutline(payload: JsonObject): JsonObject {
     return unwrapEnvelope("game/previewRuntimeOutline", api().previewRuntimeOutline(payload))
   }

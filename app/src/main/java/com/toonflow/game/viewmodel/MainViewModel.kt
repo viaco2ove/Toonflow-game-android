@@ -2113,15 +2113,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   /**
    * 获取当前章节可展示目标。
    *
-   * 章节列表接口有时不会返回 completionCondition，因此这里用运行时 chapterProgress 兜底，
-   * 保证底部“当前目标”和 Web 端在恢复会话、listSession 场景下保持一致。
+   * 底部“当前目标”只展示章节结束条件。
+   * 当前事件摘要统一放到编排信息面板里，避免自由章节把事件内容误显示成章节目标。
    */
   private fun resolveVisibleChapterGoalText(): String {
     val configuredGoal = normalizeConditionEditorText(playCurrentChapter()?.completionCondition)
     if (configuredGoal.isNotBlank()) return configuredGoal
-    val progress = runtimeStateRoot()?.getAsJsonObject("chapterProgress")
-    return scalarRuntimeText(progress?.get("pendingGoal"))
-      .ifBlank { scalarRuntimeText(progress?.get("eventSummary")) }
+    return ""
   }
 
   /**
@@ -5116,6 +5114,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         notice = "已删除故事"
       }.onFailure {
         notice = "删除故事失败: ${it.message ?: "未知错误"}"
+      }
+    }
+  }
+
+  /**
+   * 删除当前故事中的一个章节，并自动切换到相邻章节或空草稿。
+   * 删除后重新保存世界设置，防止 chapterExtras 继续引用已删除章节。
+   */
+  fun deleteChapter(chapterId: Long) {
+    val targetId = chapterId.takeIf { it > 0L } ?: run {
+      notice = "chapterId 无效"
+      return
+    }
+    val beforeDelete = chapters.sortedWith(compareBy<ChapterItem> { it.sort }.thenBy { it.id })
+    val deletedIndex = beforeDelete.indexOfFirst { it.id == targetId }
+    if (deletedIndex < 0) {
+      notice = "未找到章节"
+      return
+    }
+
+    viewModelScope.launch {
+      runCatching {
+        repository.deleteChapter(targetId)
+        val remaining = beforeDelete
+          .filter { it.id != targetId }
+          .mapIndexed { index, item ->
+            // 与后端删除后的排序保持一致，避免移动端标签和下一章 fallback 使用旧序号。
+            item.copy(sort = index + 1)
+          }
+        chapters.clear()
+        chapters.addAll(remaining)
+        chapterExtras.removeAll { it.chapterId == targetId }
+
+        val nextChapter = remaining.getOrNull(deletedIndex.coerceAtMost(remaining.lastIndex))
+        if (nextChapter != null) {
+          selectChapter(nextChapter.id)
+        } else {
+          beginNewChapterDraft()
+        }
+
+        if (worldId > 0L) {
+          saveWorldInternal(SaveWorldStatusMode.PRESERVE)
+          refreshStoryData()
+        }
+        primeStoryEditorPersistState()
+        notice = "章节已删除"
+      }.onFailure {
+        notice = "删除章节失败: ${it.message ?: "未知错误"}"
       }
     }
   }

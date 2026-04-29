@@ -94,6 +94,9 @@ interface GameApi {
   @POST("game/saveChapter")
   suspend fun saveChapter(@Body payload: JsonObject): ApiEnvelope<ChapterItem>
 
+  @POST("game/deleteChapter")
+  suspend fun deleteChapter(@Body payload: JsonObject): ApiEnvelope<JsonElement>
+
   @POST("game/previewRuntimeOutline")
   suspend fun previewRuntimeOutline(@Body payload: JsonObject): ApiEnvelope<JsonObject>
 
