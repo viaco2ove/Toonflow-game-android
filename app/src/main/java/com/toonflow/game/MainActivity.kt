@@ -5866,6 +5866,7 @@ private fun parameterCardEntries(card: com.toonflow.game.data.RoleParameterCard)
     ParameterCardEntry("血量", card.hp.toString()),
     ParameterCardEntry("蓝量", card.mp.toString()),
     ParameterCardEntry("金钱", card.money.toString()),
+    ParameterCardEntry("正在执行的任务", parameterCardJsonValue(card.executingTask), wide = true),
     ParameterCardEntry("其他", parameterCardOtherJson(card.other), wide = true),
     ParameterCardEntry("修炼进度", parameterCardJsonValue(card.cultivationProgress), wide = true),
     ParameterCardEntry("最近修炼奖励", parameterCardTextValue(card.lastCultivationReward), wide = true),

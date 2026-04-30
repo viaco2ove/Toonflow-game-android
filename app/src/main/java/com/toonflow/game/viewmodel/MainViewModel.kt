@@ -1556,6 +1556,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       mp = runtimeIntValue(obj.get("mp")) ?: 0,
       money = runtimeIntValue(obj.get("money")) ?: 0,
       other = arrayValues("other"),
+      executingTask = obj.get("executing_task") ?: obj.get("executingTask"),
     )
     val hasContent = card.name.isNotBlank()
       || card.rawSetting.isNotBlank()
@@ -1575,6 +1576,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       || card.mp > 0
       || card.money > 0
       || card.other.isNotEmpty()
+      || (card.executingTask != null && !card.executingTask.isJsonNull)
     return if (hasContent) card else null
   }
 

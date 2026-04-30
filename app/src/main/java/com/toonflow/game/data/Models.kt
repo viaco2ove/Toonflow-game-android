@@ -34,6 +34,7 @@ data class RoleParameterCard(
   @SerializedName("mp") val mp: Int = 0,
   @SerializedName("money") val money: Int = 0,
   @SerializedName("other") val other: List<String> = emptyList(),
+  @SerializedName("executing_task") val executingTask: JsonElement? = null,
   @SerializedName("cultivation_progress") val cultivationProgress: JsonElement? = null,
   @SerializedName("last_cultivation_reward") val lastCultivationReward: String = "",
 )
