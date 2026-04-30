@@ -6650,8 +6650,9 @@ private fun MiniGamePanel(
 ) {
   var expanded by remember { mutableStateOf(false) }
   LaunchedEffect(miniGame.gameType) {
-    // 修炼小游戏开局先让旁白询问修炼目标和陪练，面板默认折叠，避免遮住关键提问。
-    expanded = miniGame.gameType != "cultivation"
+    // 修炼和任务都先靠文字引导用户输入或确认目标，默认收起能避免面板抢占对话焦点。
+    // 其它强状态小游戏仍保持默认展开，方便用户第一时间看到关键状态。
+    expanded = miniGame.gameType != "cultivation" && miniGame.gameType != "task"
   }
   Card(
     modifier = Modifier.fillMaxWidth(),
