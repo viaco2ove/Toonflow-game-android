@@ -6019,7 +6019,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           done = true
           val data = event.getAsJsonObject("data")
           finalMessage = data?.getAsJsonObject("message")
-          val finalContent = finalMessage?.get("content")?.asString ?: data?.get("content")?.asString.orEmpty()
+          val finalContent = resolveStreamDoneContent(data, finalMessage, accumulated)
           updateMessageById(placeholder.id) { current ->
             current.copy(
               role = finalMessage?.get("role")?.asString ?: current.role,
@@ -6042,7 +6042,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       updateMessageById(placeholder.id) { null }
       error("台词流未正常结束")
     }
-    val committedContent = finalMessage?.get("content")?.asString ?: accumulated
+    val committedContent = resolveStreamDoneContent(null, finalMessage, accumulated)
     val committedCreateTime = finalMessage?.get("createTime")?.asLong ?: System.currentTimeMillis()
     val committedRole = finalMessage?.get("role")?.asString ?: placeholder.role.ifBlank { "旁白" }
     val committedRoleType = finalMessage?.get("roleType")?.asString ?: placeholder.roleType.ifBlank { "narrator" }
@@ -6079,6 +6079,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (!autoVoiceEnabled()) return 2000L
     val estimated = normalized.length * 180L + 1200L
     return estimated.coerceIn(2000L, 12000L)
+  }
+
+  /**
+   * 解析流式 `done` 事件里的最终正文。
+   *
+   * 用途：
+   * - `data.content` 是后端返回的完整正文，应优先用于显示和提交；
+   * - `accumulated` 是客户端根据 delta 拼接出的完整正文，作为第二优先级兜底；
+   * - `message.content` 仅作兼容旧链路使用，避免调试消息里的摘要文本被误写入正式会话。
+   */
+  private fun resolveStreamDoneContent(
+    eventData: JsonObject?,
+    finalMessage: JsonObject?,
+    accumulated: String,
+  ): String {
+    val directContent = eventData?.get("content")?.asString.orEmpty().trim()
+    if (directContent.isNotBlank()) {
+      return directContent
+    }
+    val accumulatedContent = accumulated.trim()
+    if (accumulatedContent.isNotBlank()) {
+      return accumulatedContent
+    }
+    return finalMessage?.get("content")?.asString.orEmpty()
   }
 
   /**
@@ -6133,7 +6157,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           done = true
           val data = event.getAsJsonObject("data")
           finalMessage = data?.getAsJsonObject("message")
-          val finalContent = finalMessage?.get("content")?.asString ?: data?.get("content")?.asString.orEmpty()
+          val finalContent = resolveStreamDoneContent(data, finalMessage, accumulated)
           updateMessageById(placeholder.id) { current ->
             current.copy(
               role = finalMessage?.get("role")?.asString ?: current.role,
@@ -6156,7 +6180,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       updateMessageById(placeholder.id) { null }
       error("开场白流未正常结束")
     }
-    val committedContent = finalMessage?.get("content")?.asString ?: accumulated
+    val committedContent = resolveStreamDoneContent(null, finalMessage, accumulated)
     val committedCreateTime = finalMessage?.get("createTime")?.asLong ?: System.currentTimeMillis()
     val committedRole = finalMessage?.get("role")?.asString ?: placeholder.role.ifBlank { "旁白" }
     val committedRoleType = finalMessage?.get("roleType")?.asString ?: placeholder.roleType.ifBlank { "narrator" }
@@ -6613,7 +6637,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           done = true
           val data = event.getAsJsonObject("data")
           val message = data?.getAsJsonObject("message")
-          val finalContent = message?.get("content")?.asString ?: data?.get("content")?.asString.orEmpty()
+          val finalContent = resolveStreamDoneContent(data, message, accumulated)
           applyDebugStreamState(data, playCurrentChapter())
           recordDebugRevisitSnapshot(
             MessageItem(
