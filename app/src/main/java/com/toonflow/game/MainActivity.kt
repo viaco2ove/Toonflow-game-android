@@ -126,6 +126,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.content.ContextCompat
 import androidx.compose.ui.window.Dialog
@@ -6250,7 +6251,14 @@ private fun FooterBar(
   // 语音栅栏开启后，底部输入区会短暂停在“等待朗读完成再继续编排”的阶段。
   // 这里单独识别 voicing，避免继续把它误显示成笼统的“处理中...”。
   val voicePlaybackPending = latestRuntimeMessageStatus == "voicing"
-  Column(modifier = Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+  Column(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(10.dp)
+      // 底部栏与任务面板需要稳定压在立绘之上，避免某些机型的绘制优化导致前景图层反压住交互区。
+      .zIndex(2f),
+    verticalArrangement = Arrangement.spacedBy(8.dp),
+  ) {
     if (miniGameActive) {
       miniGame?.let { active ->
         MiniGamePanel(miniGame = active)
@@ -6655,7 +6663,10 @@ private fun MiniGamePanel(
     expanded = miniGame.gameType != "cultivation" && miniGame.gameType != "task"
   }
   Card(
-    modifier = Modifier.fillMaxWidth(),
+    modifier = Modifier
+      .fillMaxWidth()
+      // 任务/小游戏面板本身也单独抬层，确保展开后不会被角色立绘或底部浮层遮挡。
+      .zIndex(3f),
     colors = CardDefaults.cardColors(containerColor = Color(0xCC132844)),
     shape = RoundedCornerShape(14.dp),
   ) {

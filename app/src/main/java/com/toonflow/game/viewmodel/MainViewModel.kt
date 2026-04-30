@@ -2086,23 +2086,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   /**
-   * 判断传入运行状态是否仍由小游戏接管。
+   * 判断指定小游戏类型是否会真正接管输入并阻塞主线编排。
+   *
+   * `task` 只复用小游戏面板展示任务信息，不应该阻断用户后续的正常任务发言与角色编排。
+   */
+  private fun isBlockingMiniGameType(gameType: String): Boolean {
+    return gameType != "task"
+  }
+
+  /**
+   * 判断传入运行状态是否仍由“阻塞型小游戏”接管。
    *
    * 用途：
    * - 正式会话的小游戏也会产生旁白/NPC 台词；
    * - 这些台词不能触发主线 `/game/orchestration` 自动续写；
-   * - 否则陪练说完后会被主线回合覆盖，表现为小游戏无故退出或输入框不可用。
+   * - `task` 面板虽然也会显示运行态，但它必须允许继续触发主线任务编排。
    */
   private fun hasActiveMiniGameInRuntimeState(runtimeState: JsonElement?): Boolean {
     val stateRoot = runtimeState?.takeIf { it.isJsonObject }?.asJsonObject ?: return false
     val root = stateRoot.getAsJsonObject("miniGame") ?: return false
     val session = root.getAsJsonObject("session") ?: return false
     val status = scalarRuntimeText(session.get("status"))
+    val rulebook = root.getAsJsonObject("rulebook")
+    val gameType = scalarRuntimeText(session.get("game_type")).ifBlank {
+      scalarRuntimeText(rulebook?.get("gameType"))
+    }
+    if (!isBlockingMiniGameType(gameType)) {
+      return false
+    }
     return setOf("preparing", "active", "settling", "suspended").contains(status)
   }
 
   /**
-   * 判断当前会话是否仍在小游戏内。
+   * 判断当前会话是否仍在“阻塞型小游戏”内。
    */
   private fun hasActiveMiniGameInCurrentSession(): Boolean {
     return hasActiveMiniGameInRuntimeState(sessionDetail?.state)
