@@ -1261,6 +1261,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val loginResult = repository.login(loginUsername.trim(), loginPassword)
         val fetchedToken = loginResult.get("token")?.asString?.trim().orEmpty()
         if (fetchedToken.isBlank()) error("登录成功但未返回 token")
+        clearAccountBoundViewState()
         token = fetchedToken
         settingsStore.token = fetchedToken
         notice = "登录成功"
@@ -1284,6 +1285,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val result = repository.register(username.trim(), password)
         val fetchedToken = result.get("token")?.asString?.trim().orEmpty()
         if (fetchedToken.isBlank()) error("注册成功但未返回 token")
+        clearAccountBoundViewState()
         token = fetchedToken
         settingsStore.token = fetchedToken
         loginUsername = username.trim()
@@ -1424,6 +1426,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun clearToken() {
     token = ""
     settingsStore.token = ""
+    clearAccountBoundViewState()
     settingsPanelLoaded = false
     settingsTextConfigs.clear()
     settingsImageConfigs.clear()
@@ -5966,6 +5969,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       accountAvatarBgPath = ""
       userAvatarPath = ""
       userAvatarBgPath = ""
+    }
+  }
+
+  /**
+   * 加载当前账号可见的项目列表，并修正当前选中的项目。
+   *
+   * 用途：
+   * - 登录后、主菜单切页时统一复用；
+   * - 当旧项目不属于当前账号时，自动切到首个可用项目或清空选择。
+   */
+  private suspend fun loadProjects() {
+    val rows = repository.getProjects()
+    projects.clear()
+    projects.addAll(rows)
+    selectedProjectId = when {
+      projects.isEmpty() -> 0L
+      projects.any { it.id == selectedProjectId } -> selectedProjectId
+      else -> projects.first().id
     }
   }
 
