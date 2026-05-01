@@ -1805,25 +1805,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
    * 为小游戏输入框生成占位提示。
    *
    * 用途：
-   * - 优先复用后端返回的 `inputHint`，让任务/修炼等玩法能统一走配置化提示；
-   * - 后端未提供时，再按常见玩法类型补一个兜底文案，避免输入区完全空白。
+   * - 小游戏模式下，长提示统一放到底部提示区，不再塞进输入框；
+   * - 否则安卓输入框会因为占位文案过长而拉高高度，影响布局和输入体验；
+   * - 因此文本模式返回空串，语音模式只保留“按住说话”。
    */
   private fun miniGameInputPlaceholder(game: RuntimeMiniGameView, textMode: Boolean): String {
     if (!textMode) {
       return "按住说话"
-    }
-    val serverHint = game.inputHint.trim()
-    if (serverHint.isNotBlank()) {
-      return serverHint
-    }
-    if (game.gameType == "task") {
-      return "直接输入你的任务行动，输入 #退出 放弃当前任务"
-    }
-    if (game.gameType == "cultivation") {
-      return "直接输入修炼动作或目标，输入 #退出 结束本轮修炼"
-    }
-    if (game.acceptsTextInput) {
-      return "直接输入${game.displayName}行动"
     }
     return ""
   }
