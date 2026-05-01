@@ -489,27 +489,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     settingsStore.autoVoiceEnabled = enabled
   }
 
+  /**
+   * 清理账号绑定的展示缓存，避免换号后短时间继续显示旧账号的数据。
+   */
+  private fun clearAccountBoundViewState() {
+    projects.clear()
+    worlds.clear()
+    sessions.clear()
+    selectedProjectId = 0L
+    homeRecommendWorldId = 0L
+    accountAvatarPath = ""
+    accountAvatarBgPath = ""
+  }
+
+  /**
+   * 按主菜单页签刷新对应的数据。
+   *
+   * 用途：
+   * - 主菜单点击时主动刷新页面数据，而不是只切换 activeTab；
+   * - “聊过/我的”额外刷新会话列表，主页刷新推荐故事。
+   */
+  private fun refreshMainTabData(tab: String) {
+    if (token.isBlank()) return
+    viewModelScope.launch {
+      runCatching {
+        loadProjects()
+        loadUser()
+        loadWorlds()
+        if (tab == "主页") {
+          refreshRecommendation()
+        }
+        if (tab == "聊过" || tab == "我的") {
+          loadSessions()
+        }
+      }.onFailure {
+        throwIfCancellation(it)
+        notice = "刷新页面数据失败: ${it.message ?: "未知错误"}"
+      }
+    }
+  }
+
   fun setTab(tab: String) {
     if (tab != "设置") {
       settingsPageMode = "settings"
     }
     activeTab = tab
-    if (tab == "主页") {
-      refreshRecommendation()
-    }
-    if (tab == "聊过" && token.isNotBlank()) {
-      viewModelScope.launch {
-        runCatching {
-          loadSessions()
-        }.onFailure {
-          sessionListError = it.message ?: "未知错误"
-          notice = "加载会话列表失败: ${sessionListError}"
-        }
-      }
-    }
     if (tab == "设置" && token.isNotBlank()) {
       settingsPageMode = "settings"
       ensureSettingsPanelData()
+      return
+    }
+    if (tab in setOf("主页", "创建故事", "聊过", "我的") && token.isNotBlank()) {
+      refreshMainTabData(tab)
     }
   }
 
@@ -1910,13 +1941,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val conversationId = debugRevisitConversationId()
     if (conversationId.isBlank()) return
     if (debugRevisitSnapshots.isEmpty()) {
-      settingsStore.clearDebugRevisitSnapshots(conversationId)
+      runCatching {
+        settingsStore.clearDebugRevisitSnapshots(conversationId)
+      }.onFailure {
+        VueTagLogger.error(
+          "runtime_chat",
+          "clearDebugRevisitSnapshots failed conversationId=${VueTagLogger.sanitize(conversationId, 120)} message=${VueTagLogger.throwableMessage(it)}",
+          it,
+        )
+      }
       return
     }
-    settingsStore.setDebugRevisitSnapshotsJson(
-      conversationId,
-      prettyGson.toJson(debugRevisitSnapshots.takeLast(5)),
-    )
+    runCatching {
+      settingsStore.setDebugRevisitSnapshotsJson(
+        conversationId,
+        prettyGson.toJson(debugRevisitSnapshots.takeLast(5)),
+      )
+    }.onFailure {
+      VueTagLogger.error(
+        "runtime_chat",
+        "persistDebugRevisitSnapshots failed conversationId=${VueTagLogger.sanitize(conversationId, 120)} message=${VueTagLogger.throwableMessage(it)}",
+        it,
+      )
+    }
   }
 
   private fun clearDebugRevisitSnapshots() {
@@ -1979,12 +2026,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val nextJson = nextRows.toString()
     if (nextJson == previousJson) return
     if (nextRows.size() == 0) {
-      settingsStore.clearRuntimeChatTrace()
-      VueTagLogger.info("runtime_chat", "toonflow.chat=[]")
+      runCatching {
+        settingsStore.clearRuntimeChatTrace()
+      }.onSuccess {
+        VueTagLogger.info("runtime_chat", "toonflow.chat=[]")
+      }.onFailure {
+        VueTagLogger.error(
+          "runtime_chat",
+          "clearRuntimeChatTrace failed message=${VueTagLogger.throwableMessage(it)}",
+          it,
+        )
+      }
       return
     }
-    settingsStore.setRuntimeChatTraceJson(nextJson)
-    VueTagLogger.info("runtime_chat", "toonflow.chat=${VueTagLogger.sanitize(nextJson, 4000)}")
+    runCatching {
+      settingsStore.setRuntimeChatTraceJson(nextJson)
+    }.onSuccess {
+      VueTagLogger.info("runtime_chat", "toonflow.chat=${VueTagLogger.sanitize(nextJson, 4000)}")
+    }.onFailure {
+      VueTagLogger.error(
+        "runtime_chat",
+        "setRuntimeChatTraceJson failed message=${VueTagLogger.throwableMessage(it)}",
+        it,
+      )
+    }
   }
 
   private fun runtimeMiniGamePhaseLabel(gameType: String, phase: String, uiPhaseLabel: String): String {
@@ -4034,6 +4099,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }.onSuccess { result ->
       applySessionStoryInfoResult(result)
     }.getOrNull()
+  }
+
+  /**
+   * 后台刷新正式会话的 storyInfo，不阻塞当前输入权回交。
+   *
+   * 用途：
+   * - orchestration 已明确返回 awaitUser=true 时，优先让 UI 立即恢复可输入；
+   * - storyInfo 的补齐刷新改为后台执行，避免界面长时间停在“生成中”。
+   */
+  private fun refreshSessionStoryInfoInBackground(reason: String) {
+    val sessionId = currentSessionId.trim()
+    if (sessionId.isBlank()) return
+    viewModelScope.launch {
+      runCatching {
+        refreshSessionStoryInfo()
+      }.onFailure {
+        throwIfCancellation(it)
+        VueTagLogger.error(
+          "story_flow",
+          "refreshSessionStoryInfoInBackground failed reason=${VueTagLogger.sanitize(reason, 80)} sessionId=${VueTagLogger.sanitize(sessionId, 120)} message=${VueTagLogger.throwableMessage(it)}",
+          it,
+        )
+      }
+    }
   }
 
   private fun applySessionOrchestrationResult(result: SessionOrchestrationResult) {
@@ -6302,7 +6391,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val history = conversationMessages()
         val orchestration = repository.orchestrateSession(currentSessionId)
         clearRuntimeRetryState()
-        applySessionOrchestrationResult(orchestration)
+        runCatching {
+          applySessionOrchestrationResult(orchestration)
+        }.getOrElse {
+          VueTagLogger.error(
+            "story_flow",
+            "applySessionOrchestrationResult failed sessionId=${VueTagLogger.sanitize(currentSessionId, 120)} message=${VueTagLogger.throwableMessage(it)}",
+            it,
+          )
+          throw it
+        }
         logStoryFlow(
           "continueSession orchestration sessionId=$currentSessionId planRole=${orchestration.plan?.role.orEmpty()} nextRole=${orchestration.plan?.nextRole.orEmpty()} status=${orchestration.status}",
         )
@@ -6310,6 +6408,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val shouldInitNextChapter = isInitChapterCommand(orchestration.command)
         val shouldYieldToUser = plan?.awaitUser == true
         val shouldStreamPlan = shouldStreamSessionPlanFromPlan(plan)
+        if (shouldYieldToUser && !shouldStreamPlan && !shouldInitNextChapter) {
+          // 编排师已经确认轮到用户发言时，先立即恢复输入框，
+          // 再把 storyInfo 刷新放到后台，避免因为接口补齐较慢导致界面卡在“生成中”。
+          applyAwaitUserTurnFromPlan(plan)
+          refreshSessionStoryInfoInBackground("orchestration_await_user")
+          advanced = true
+          break
+        }
         refreshSessionStoryInfo()
         if (hasActiveMiniGameInCurrentSession()) {
           advanced = true
