@@ -3168,12 +3168,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       }
       loading = true
       runCatching {
-        val projectRows = repository.getProjects()
-        projects.clear()
-        projects.addAll(projectRows)
-        if (projects.isNotEmpty() && selectedProjectId <= 0) {
-          selectedProjectId = projects.first().id
-        }
+        loadProjects()
         loadUser()
         loadWorlds()
         if (selectedProjectId > 0) {
