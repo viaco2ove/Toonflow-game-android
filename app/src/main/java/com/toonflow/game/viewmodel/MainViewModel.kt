@@ -1743,9 +1743,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun playInputPlaceholder(textMode: Boolean): String {
     if (sessionOpening) return sessionOpeningStage.ifBlank { "正在进入故事..." }
     if (sessionOpenError.isNotBlank()) return "打开会话失败，请重试"
-    playRuntimeMiniGame()?.let {
-      // 小游戏统一改成聊天流后，输入框不再重复显示动作提示，避免和状态面板文字叠加。
-      return ""
+    playRuntimeMiniGame()?.let { game ->
+      return miniGameInputPlaceholder(game, textMode)
     }
     val runtimeStatus = playCurrentRuntimeStatus()
     val status = playSessionStatus().trim().lowercase()
@@ -1768,8 +1767,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun playTurnHint(): String {
     if (sessionOpening) return sessionOpeningStage.ifBlank { "正在进入故事..." }
     if (sessionOpenError.isNotBlank()) return "打开会话失败：$sessionOpenError"
-    if (playRuntimeMiniGame() != null) {
-      return ""
+    playRuntimeMiniGame()?.let { game ->
+      return miniGameTurnHint(game)
     }
     val runtimeStatus = playCurrentRuntimeStatus()
     val status = playSessionStatus().trim().lowercase()
@@ -1800,6 +1799,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       return "正在生成下一句内容..."
     }
     return "当前还没轮到用户发言，等待${playExpectedSpeaker()}继续。"
+  }
+
+  /**
+   * 为小游戏输入框生成占位提示。
+   *
+   * 用途：
+   * - 优先复用后端返回的 `inputHint`，让任务/修炼等玩法能统一走配置化提示；
+   * - 后端未提供时，再按常见玩法类型补一个兜底文案，避免输入区完全空白。
+   */
+  private fun miniGameInputPlaceholder(game: RuntimeMiniGameView, textMode: Boolean): String {
+    if (!textMode) {
+      return "按住说话"
+    }
+    val serverHint = game.inputHint.trim()
+    if (serverHint.isNotBlank()) {
+      return serverHint
+    }
+    if (game.gameType == "task") {
+      return "直接输入你的任务行动，输入 #退出 放弃当前任务"
+    }
+    if (game.gameType == "cultivation") {
+      return "直接输入修炼动作或目标，输入 #退出 结束本轮修炼"
+    }
+    if (game.acceptsTextInput) {
+      return "直接输入${game.displayName}行动"
+    }
+    return ""
+  }
+
+  /**
+   * 为小游戏模式生成底部状态提示。
+   *
+   * 用途：
+   * - 任务和修炼需要明确告诉用户当前仍在特殊玩法中；
+   * - 其它小游戏则直接复用后端的输入提示，减少两端文案分叉。
+   */
+  private fun miniGameTurnHint(game: RuntimeMiniGameView): String {
+    val serverHint = game.inputHint.trim()
+    if (game.gameType == "task") {
+      return if (serverHint.isNotBlank()) serverHint else "当前处于任务执行状态，直接输入行动推进任务；输入 #退出 视为放弃当前任务。"
+    }
+    if (game.gameType == "cultivation") {
+      return if (serverHint.isNotBlank()) serverHint else "当前处于修炼状态，直接输入修炼动作或目标；输入 #退出 结束本轮修炼。"
+    }
+    return serverHint
   }
 
   fun playLatestRuntimeChatDebug(): RuntimeChatDebugItem? {

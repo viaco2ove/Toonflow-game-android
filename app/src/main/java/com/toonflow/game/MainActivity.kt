@@ -6452,7 +6452,15 @@ private fun FooterBar(
         color = Color(0xFFD7E7FF),
         style = MaterialTheme.typography.bodySmall,
       )
-    } else if (inputMode == "text" || miniGameActive) {
+    /**
+     * 小游戏模式下也应允许切到语音输入。
+     *
+     * 用途：
+     * - 之前这里把 `miniGameActive` 强行并进文本分支，导致用户即使切到语音模式，
+     *   底部栏仍然只会渲染文本框，无法出现“按住说话”的交互；
+     * - 任务、修炼等小游戏本身并不禁止语音输入，所以这里只按当前输入模式决定渲染哪一套输入 UI。
+     */
+    } else if (inputMode == "text") {
       Row(verticalAlignment = Alignment.CenterVertically) {
         OutlinedTextField(
           value = sendText,
