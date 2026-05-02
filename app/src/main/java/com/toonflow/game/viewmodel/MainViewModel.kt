@@ -1349,6 +1349,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     configId: Long?,
     text: String,
     mode: String = "text",
+    roleId: String = "",
     presetId: String = "",
     referenceAudioPath: String = "",
     referenceText: String = "",
@@ -1361,6 +1362,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       configId = configId,
       text = text,
       mode = mode,
+      roleId = roleId,
       voiceId = presetId,
       referenceAudioPath = referenceAudioPath,
       referenceText = referenceText,
@@ -1377,6 +1379,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   suspend fun generateVoiceBinding(
     configId: Long?,
     mode: String,
+    roleId: String = "",
     presetId: String = "",
     referenceAudioPath: String = "",
     referenceText: String = "",
@@ -1386,6 +1389,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return repository.generateVoiceBinding(
       configId = configId,
       mode = mode,
+      roleId = roleId,
       voiceId = presetId,
       referenceAudioPath = referenceAudioPath,
       referenceText = referenceText,
@@ -1697,7 +1701,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun playCanPlayerSpeak(): Boolean {
+    if (hasPendingSessionAwaitUser()) return true
     return runtimeTurnStateRoot()?.get("canPlayerSpeak")?.asBoolean ?: true
+  }
+
+  /**
+   * 判断当前正式会话是否正处于“编排已明确交还用户输入”的本地兜底态。
+   *
+   * 用途：
+   * - orchestration 返回 awaitUser=true 后，storyInfo 可能仍落后一拍；
+   * - 这段窗口期里优先认本地强信号，避免输入框短暂显示成“等待旁白/NPC继续”。
+   */
+  private fun hasPendingSessionAwaitUser(sessionId: String = currentSessionId.trim()): Boolean {
+    val normalizedSessionId = sessionId.trim()
+    if (normalizedSessionId.isBlank()) return false
+    return sessionAwaitUserPending && sessionAwaitUserSessionId == normalizedSessionId
+  }
+
+  /**
+   * 清除当前正式会话“等待用户输入”的本地兜底标记。
+   *
+   * 用途：
+   * - 用户一旦再次发言，或系统已经真正开始输出新句子，就不能继续保留 awaitUser 强信号；
+   * - 否则后续系统回合会被错误渲染成仍由用户发言。
+   */
+  private fun clearPendingSessionAwaitUser(sessionId: String = currentSessionId.trim()) {
+    val normalizedSessionId = sessionId.trim()
+    if (normalizedSessionId.isBlank() || !hasPendingSessionAwaitUser(normalizedSessionId)) return
+    sessionAwaitUserPending = false
+    sessionAwaitUserSessionId = ""
   }
 
   /**
@@ -4066,6 +4098,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val normalizedIncoming = incomingMessages.mapIndexed { index, message ->
       normalizeSessionRuntimeMessage(message, lineStart + index + 1, turnState)
     }
+    if (normalizedIncoming.any { it.roleType != "player" }) {
+      clearPendingSessionAwaitUser(result.sessionId.ifBlank { existingDetail?.sessionId.orEmpty().ifBlank { currentSessionId } })
+    }
     val mergedMessages = mergeConversationMessages(baseMessages, normalizedIncoming)
     sessionDetail = SessionDetail(
       sessionId = result.sessionId.ifBlank { existingDetail?.sessionId.orEmpty() },
@@ -4396,6 +4431,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private fun createPlayableVoiceBinding(
     label: String,
     configId: Long?,
+    roleId: String,
     presetId: String,
     mode: String,
     referenceAudioPath: String,
@@ -4408,6 +4444,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val normalized = VoiceBindingDraft(
       label = label.trim(),
       configId = configId,
+      roleId = roleId.trim(),
       presetId = presetId.trim(),
       mode = normalizedMode,
       referenceAudioPath = referenceAudioPath.trim(),
@@ -4437,6 +4474,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       return createPlayableVoiceBinding(
         label = settings?.narratorVoice ?: narratorRole?.voice ?: narratorVoice.ifBlank { narratorName.ifBlank { "旁白" } },
         configId = configId,
+        roleId = "narrator",
         presetId = if (presetId.isBlank() && (mode.ifBlank { "text" } == "text")) "story_narrator" else presetId,
         mode = mode,
         referenceAudioPath = settings?.narratorVoiceReferenceAudioPath ?: narratorRole?.voiceReferenceAudioPath.orEmpty().ifBlank { narratorVoiceReferenceAudioPath },
@@ -4462,6 +4500,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return createPlayableVoiceBinding(
       label = matchedRole?.voice ?: matchedRole?.name.orEmpty(),
       configId = configId,
+      roleId = matchedRole?.id.orEmpty(),
       presetId = presetId,
       mode = mode,
       referenceAudioPath = matchedRole?.voiceReferenceAudioPath.orEmpty(),
@@ -6150,6 +6189,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private suspend fun performSessionPlayerMessage(sessionId: String, text: String, optimisticMessageId: Long? = null) {
+    clearPendingSessionAwaitUser(sessionId)
     sessionRuntimeStage = "提交用户发言"
     try {
       val result = repository.addPlayerMessage(sessionId, playerName.ifBlank { "用户" }, text)

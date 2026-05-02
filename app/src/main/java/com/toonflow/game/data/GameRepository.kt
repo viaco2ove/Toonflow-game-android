@@ -1114,7 +1114,18 @@ class GameRepository(private val settingsStore: SettingsStore) {
           })
         }
         "prompt_voice" -> if (promptText.isNotBlank()) {
+          if (voiceId.isNotBlank()) addProperty("voiceId", voiceId)
           addProperty("promptText", promptText)
+          add("mixVoices", JsonArray().apply {
+            mixVoices
+              .filter { it.voiceId.isNotBlank() }
+              .forEach { item ->
+                add(JsonObject().apply {
+                  addProperty("voiceId", item.voiceId)
+                  addProperty("weight", item.weight)
+                })
+              }
+          })
         }
       }
     }
@@ -1128,6 +1139,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
   suspend fun generateVoiceBinding(
     configId: Long?,
     mode: String,
+    roleId: String = "",
     voiceId: String = "",
     referenceAudioPath: String = "",
     referenceText: String = "",
@@ -1136,6 +1148,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
   ): GeneratedVoiceBindingResult {
     val payload = JsonObject().apply {
       if (configId != null && configId > 0L) addProperty("configId", configId)
+      if (roleId.isNotBlank()) addProperty("roleId", roleId)
       addProperty("mode", mode)
       when (mode) {
         "text" -> if (voiceId.isNotBlank()) {
@@ -1158,7 +1171,18 @@ class GameRepository(private val settingsStore: SettingsStore) {
           })
         }
         "prompt_voice" -> if (promptText.isNotBlank()) {
+          if (voiceId.isNotBlank()) addProperty("voiceId", voiceId)
           addProperty("promptText", promptText)
+          add("mixVoices", JsonArray().apply {
+            mixVoices
+              .filter { it.voiceId.isNotBlank() }
+              .forEach { item ->
+                add(JsonObject().apply {
+                  addProperty("voiceId", item.voiceId)
+                  addProperty("weight", item.weight)
+                })
+              }
+          })
         }
       }
     }
@@ -1169,6 +1193,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
     configId: Long?,
     text: String,
     mode: String = "text",
+    roleId: String = "",
     voiceId: String = "",
     referenceAudioPath: String = "",
     referenceText: String = "",
@@ -1179,6 +1204,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
   ): String {
     val payload = JsonObject().apply {
       if (configId != null && configId > 0L) addProperty("configId", configId)
+      if (roleId.isNotBlank()) addProperty("roleId", roleId)
       addProperty("text", text)
       addProperty("mode", mode)
       if (format.isNotBlank()) addProperty("format", format)
@@ -1204,7 +1230,18 @@ class GameRepository(private val settingsStore: SettingsStore) {
           })
         }
         "prompt_voice" -> if (promptText.isNotBlank()) {
+          if (voiceId.isNotBlank()) addProperty("voiceId", voiceId)
           addProperty("promptText", promptText)
+          add("mixVoices", JsonArray().apply {
+            mixVoices
+              .filter { it.voiceId.isNotBlank() }
+              .forEach { item ->
+                add(JsonObject().apply {
+                  addProperty("voiceId", item.voiceId)
+                  addProperty("weight", item.weight)
+                })
+              }
+          })
         }
       }
     }

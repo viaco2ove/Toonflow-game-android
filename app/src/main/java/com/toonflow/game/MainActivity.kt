@@ -3004,6 +3004,7 @@ private fun PlayScene(
     val runtimeContextKey = binding.configId ?: vm.sessionDetail?.world?.id ?: vm.currentSessionId.takeIf { it.isNotBlank() } ?: "runtime"
     return buildString {
       append(runtimeContextKey).append('|')
+      append(binding.roleId).append('|')
       append(binding.mode).append('|')
       append(binding.presetId).append('|')
       append(binding.referenceAudioPath).append('|')
@@ -3037,6 +3038,7 @@ private fun PlayScene(
       val generated = vm.generateVoiceBinding(
         configId = binding.configId,
         mode = binding.mode,
+        roleId = binding.roleId,
         presetId = binding.presetId,
         referenceAudioPath = binding.referenceAudioPath,
         referenceText = binding.referenceText,
@@ -3095,6 +3097,7 @@ private fun PlayScene(
       return VoiceBindingDraft(
         label = originalBinding?.label?.ifBlank { "旁白" } ?: "旁白",
         configId = originalBinding?.configId,
+        roleId = originalBinding?.roleId?.ifBlank { "narrator" } ?: "narrator",
         presetId = "story_narrator",
         mode = "text",
         referenceAudioPath = "",
@@ -3109,6 +3112,7 @@ private fun PlayScene(
     return VoiceBindingDraft(
       label = originalBinding?.label?.ifBlank { role?.voice ?: roleName } ?: (role?.voice ?: roleName),
       configId = originalBinding?.configId ?: role?.voiceConfigId,
+      roleId = originalBinding?.roleId?.ifBlank { role?.id.orEmpty() } ?: role?.id.orEmpty(),
       presetId = inferRuntimeFallbackPreset(
         roleType = role?.roleType ?: message.roleType,
         name = roleName,
@@ -3141,6 +3145,7 @@ private fun PlayScene(
           configId = playableBinding.configId,
           text = text,
           mode = playableBinding.mode,
+          roleId = playableBinding.roleId,
           presetId = playableBinding.presetId,
           referenceAudioPath = playableBinding.referenceAudioPath,
           referenceText = playableBinding.referenceText,
@@ -7748,6 +7753,7 @@ private fun VoicePickerDialog(
   }
   var previewText by remember(title) { mutableStateOf("恭喜，已成功复刻或生成了属于角色的声音！") }
   var previewLoading by remember { mutableStateOf(false) }
+  var generateLoading by remember { mutableStateOf(false) }
   var promptPolishing by remember { mutableStateOf(false) }
   var audioUploading by remember { mutableStateOf(false) }
   var previewStatus by remember { mutableStateOf("") }
@@ -7947,6 +7953,58 @@ private fun VoicePickerDialog(
       return "当前 CosyVoice 试听文本不能只包含编号、标点或空白"
     }
     return null
+  }
+
+  /**
+   * 生成音色文件不依赖试听文本，但需要当前绑定模式本身有效。
+   *
+   * 用途：
+   * - 与 web 端保持一致，允许先落稳定参考音频，再用 clone 通道重新试听；
+   * - 避免把“试听文本为空”误当成生成链路的阻塞条件。
+   */
+  fun validateGenerate(): String? {
+    if (selectedMode == "prompt_voice" && !hasVoiceDesignModel) return "请先在设置里配置语音设计模型"
+    if (effectiveConfigId == null) return "请先在设置里配置语音生成模型"
+    unsupportedModeReason(selectedMode)?.let { return it }
+    return when (selectedMode) {
+      "text" -> if (selectedPresetId.isBlank()) "请先选择音色预设" else null
+      "clone" -> if (referenceAudioPath.isBlank()) "克隆模式需要上传参考音频" else null
+      "mix" -> if (selectedMixVoices.none { it.voiceId.isNotBlank() }) "混合模式至少选择一个音色" else null
+      "prompt_voice" -> if (promptText.trim().isBlank()) "提示词模式需要填写提示词" else null
+      else -> null
+    }
+  }
+
+  /**
+   * 把试听地址装进播放器并立即播放。
+   *
+   * 用途：
+   * - 让“直接试听”和“生成后重试听”复用同一套播放器逻辑；
+   * - 保持 Android 与 web 的播放状态提示一致。
+   */
+  fun playPreviewAudio(url: String) {
+    if (url.isBlank()) error("未返回试听音频")
+    previewAudioUrl = url
+    mediaPlayer?.release()
+    mediaPlayer = MediaPlayer().apply {
+      setDataSource(url)
+      setOnPreparedListener {
+        previewLoading = false
+        previewStatus = "正在播放试听"
+        start()
+      }
+      setOnCompletionListener {
+        previewStatus = "试听完成"
+      }
+      setOnErrorListener { mp, _, _ ->
+        mp.release()
+        mediaPlayer = null
+        previewLoading = false
+        previewStatus = "试听播放失败"
+        true
+      }
+      prepareAsync()
+    }
   }
 
   fun enqueuePreviewDownload() {
@@ -8216,28 +8274,7 @@ private fun VoicePickerDialog(
                     promptText = promptText.trim(),
                     mixVoices = selectedMixVoices.toList(),
                   )
-                  if (url.isBlank()) error("未返回试听音频")
-                  previewAudioUrl = url
-                  mediaPlayer?.release()
-                  mediaPlayer = MediaPlayer().apply {
-                    setDataSource(url)
-                    setOnPreparedListener {
-                      previewLoading = false
-                      previewStatus = "正在播放试听"
-                      start()
-                    }
-                    setOnCompletionListener {
-                      previewStatus = "试听完成"
-                    }
-                    setOnErrorListener { mp, _, _ ->
-                      mp.release()
-                      mediaPlayer = null
-                      previewLoading = false
-                      previewStatus = "试听播放失败"
-                      true
-                    }
-                    prepareAsync()
-                  }
+                  playPreviewAudio(url)
                 }.onFailure {
                   previewLoading = false
                   previewStatus = "试听失败: ${it.message ?: "未知错误"}"
@@ -8255,15 +8292,70 @@ private fun VoicePickerDialog(
               mediaPlayer?.pause()
               previewStatus = "已停止试听"
             },
-            enabled = mediaPlayer != null || previewAudioUrl.isNotBlank(),
+            enabled = previewAudioUrl.isNotBlank(),
           ) {
             Text("停止")
           }
           TextButton(
-            onClick = { enqueuePreviewDownload() },
-            enabled = previewAudioUrl.isNotBlank(),
+            onClick = {
+              val validateMsg = validateGenerate()
+              if (validateMsg != null) {
+                previewStatus = validateMsg
+                return@TextButton
+              }
+              generateLoading = true
+              previewStatus = ""
+              scope.launch {
+                runCatching {
+                  val generated = vm.generateVoiceBinding(
+                    configId = effectiveConfigId,
+                    mode = selectedMode,
+                    roleId = roleId,
+                    presetId = selectedPresetId,
+                    referenceAudioPath = referenceAudioPath,
+                    referenceText = referenceText.trim(),
+                    promptText = promptText.trim(),
+                    mixVoices = selectedMixVoices.toList(),
+                  )
+                  val generatedAudioPath = generated.audioPath.trim()
+                  if (generatedAudioPath.isBlank()) error("未返回生成音色文件")
+                  referenceAudioPath = generatedAudioPath
+                  referenceAudioName = generated.audioName.ifBlank { referenceAudioName.ifBlank { "generated_voice.wav" } }
+                  if (generated.referenceText.isNotBlank()) {
+                    referenceText = generated.referenceText.trim()
+                  }
+                  previewLoading = true
+                  val previewUrl = vm.previewVoice(
+                    configId = effectiveConfigId,
+                    text = previewText.trim(),
+                    mode = "clone",
+                    roleId = roleId,
+                    presetId = generated.customVoiceId.trim(),
+                    referenceAudioPath = generatedAudioPath,
+                    referenceText = generated.referenceText.trim().ifBlank { referenceText.trim() },
+                    promptText = "",
+                    mixVoices = emptyList(),
+                  )
+                  playPreviewAudio(previewUrl)
+                  previewStatus = "音色文件已生成，并已按当前试听文本重新试听"
+                }.onFailure {
+                  previewLoading = false
+                  previewStatus = "生成音色失败: ${it.message ?: "未知错误"}"
+                }
+                generateLoading = false
+              }
+            },
+            enabled = !generateLoading,
           ) {
-            Text("下载")
+            Text(if (generateLoading) "生成中..." else "生成音色")
+          }
+          if (previewAudioUrl.isNotBlank()) {
+            TextButton(
+              onClick = { enqueuePreviewDownload() },
+              enabled = true,
+            ) {
+              Text("下载音色")
+            }
           }
         }
         if (previewStatus.isNotBlank()) {
@@ -8282,6 +8374,7 @@ private fun VoicePickerDialog(
           onConfirm(
             VoiceBindingDraft(
               label = buildSelectedLabel(),
+              roleId = roleId,
               presetId = selectedPresetId,
               mode = selectedMode,
               referenceAudioPath = referenceAudioPath,
@@ -8292,7 +8385,7 @@ private fun VoicePickerDialog(
             ),
           )
         },
-        enabled = !previewLoading && !audioUploading,
+        enabled = !previewLoading && !audioUploading && !generateLoading,
       ) {
         Text("确定")
       }
