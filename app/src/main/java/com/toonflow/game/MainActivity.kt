@@ -7798,6 +7798,23 @@ private fun VoicePickerDialog(
     )
   }
 
+  /**
+   * 判断当前试听文本是否满足 CosyVoice 的最小可播放要求。
+   *
+   * 用途：
+   * - 阿里云直连 CosyVoice 会拒绝“纯编号 / 纯标点 / 纯空白”文本；
+   * - 安卓端提前校验，避免请求已经发出后才收到 500/400 报错。
+   */
+  fun isPlayableCosyVoicePreviewText(input: String): Boolean {
+    val normalizedText = input.replace("\\s+".toRegex(), " ").trim()
+    if (normalizedText.isBlank()) return false
+    // 这里和后端使用同一套过滤规则，确保端到端行为一致。
+    val meaningfulText = normalizedText
+      .replace("\\s+".toRegex(), "")
+      .replace("[0-9０-９.,!?;:，。！？；：、…·\"'“”‘’`~!@#\\$%^&*()\\-_=+\\[\\]{}<>\\\\/|]+".toRegex(), "")
+    return meaningfulText.isNotBlank()
+  }
+
   fun modelSupportedModeKeys(): Set<String> {
     val declaredModes = selectedModel
       ?.modes
@@ -7912,6 +7929,24 @@ private fun VoicePickerDialog(
       "prompt_voice" -> if (promptText.trim().isBlank()) "提示词模式需要填写提示词" else null
       else -> null
     }
+  }
+
+  /**
+   * 校验当前试听文本是否满足所选模型的输入要求。
+   *
+   * 用途：
+   * - 普通模型保持“非空即可”；
+   * - CosyVoice 额外要求文本里至少包含一个有效可读字符。
+   */
+  fun validatePreviewText(rawText: String): String? {
+    val trimmedText = rawText.trim()
+    if (trimmedText.isBlank()) return "请输入试听文本"
+    val isDirectCosyVoice = selectedModel?.manufacturer?.trim() == "aliyun_direct"
+      && isAliyunDirectCosyVoiceModel(selectedModel.model)
+    if (isDirectCosyVoice && !isPlayableCosyVoicePreviewText(trimmedText)) {
+      return "当前 CosyVoice 试听文本不能只包含编号、标点或空白"
+    }
+    return null
   }
 
   fun enqueuePreviewDownload() {
@@ -8161,8 +8196,9 @@ private fun VoicePickerDialog(
                 previewStatus = validateMsg
                 return@Button
               }
-              if (previewText.trim().isBlank()) {
-                previewStatus = "请输入试听文本"
+              val previewTextError = validatePreviewText(previewText)
+              if (previewTextError != null) {
+                previewStatus = previewTextError
                 return@Button
               }
               previewLoading = true

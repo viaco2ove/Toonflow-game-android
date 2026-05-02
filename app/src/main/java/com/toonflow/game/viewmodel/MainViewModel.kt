@@ -2154,6 +2154,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
   }
 
+  /**
+   * 判断某份运行态里的小游戏面板当前是否仍应显示。
+   *
+   * 用途：
+   * - 安卓会在 `addMessage / storyInfo / getSession` 之间频繁覆盖 `sessionDetail.state`；
+   * - 某些中间响应会短暂漏掉 `miniGame`，如果直接全量覆盖，面板会瞬间消失；
+   * - 这里统一复用播放页同口径的“可见小游戏”判断，为状态合并提供依据。
+   */
+  private fun hasVisibleMiniGameState(runtimeState: JsonElement?): Boolean {
+    val stateRoot = runtimeState?.takeIf { it.isJsonObject }?.asJsonObject ?: return false
+    val root = stateRoot.getAsJsonObject("miniGame") ?: return false
+    val session = root.getAsJsonObject("session") ?: return false
+    val status = scalarRuntimeText(session.get("status"))
+    val phase = scalarRuntimeText(session.get("phase"))
+    val gameType = scalarRuntimeText(session.get("game_type")).ifBlank {
+      scalarRuntimeText(session.get("gameType"))
+    }
+    if (gameType.isBlank()) return false
+    val pendingExit = session.get("pending_exit")?.asBoolean ?: false
+    val settledButVisible = phase == "settling" && (status == "finished" || status == "aborted")
+    return setOf("preparing", "active", "settling", "suspended").contains(status) || pendingExit || settledButVisible
+  }
+
+  /**
+   * 在服务端中间响应短暂缺失 `miniGame` 时，保留上一拍仍可见的小游戏状态。
+   *
+   * 用途：
+   * - 只在“新状态没有 miniGame，但旧状态里仍有可见小游戏”时兜底；
+   * - 避免安卓端用户刚输入动作后，面板被一次中间态响应瞬间清空。
+   */
+  private fun mergeVisibleMiniGameState(preferredState: JsonElement?, fallbackState: JsonElement?): JsonElement? {
+    val preferredRoot = preferredState?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy()
+    val fallbackRoot = fallbackState?.takeIf { it.isJsonObject }?.asJsonObject ?: return preferredState
+    if (!hasVisibleMiniGameState(fallbackRoot)) {
+      return preferredState
+    }
+    val fallbackMiniGame = fallbackRoot.get("miniGame")?.takeIf { !it.isJsonNull }?.deepCopy() ?: return preferredState
+    if (preferredRoot == null) {
+      return JsonObject().apply {
+        add("miniGame", fallbackMiniGame)
+      }
+    }
+    val preferredMiniGame = preferredRoot.getAsJsonObject("miniGame")
+    val preferredSession = preferredMiniGame?.getAsJsonObject("session")
+    val preferredGameType = scalarRuntimeText(preferredSession?.get("game_type")).ifBlank {
+      scalarRuntimeText(preferredSession?.get("gameType"))
+    }
+    if (preferredGameType.isNotBlank()) {
+      return preferredRoot
+    }
+    preferredRoot.add("miniGame", fallbackMiniGame)
+    return preferredRoot
+  }
+
   fun playRuntimeMiniGame(): RuntimeMiniGameView? {
     val root = runtimeStateRoot()?.getAsJsonObject("miniGame") ?: return null
     val session = root.getAsJsonObject("session") ?: JsonObject()
@@ -2161,11 +2215,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val status = scalarRuntimeText(session.get("status"))
     val gameType = scalarRuntimeText(session.get("game_type")).ifBlank { scalarRuntimeText(session.get("gameType")) }
     if (gameType.isBlank()) return null
+    val phase = scalarRuntimeText(session.get("phase"))
     val pendingExit = session.get("pending_exit")?.asBoolean ?: false
-    val acceptsTextInput = (ui.get("accepts_text_input")?.asBoolean == true) || setOf("research_skill", "alchemy", "upgrade_equipment", "battle").contains(gameType)
+    val settledButVisible = phase == "settling" && (status == "finished" || status == "aborted")
+    val acceptsTextInput = (ui.get("accepts_text_input")?.asBoolean == true)
+      || ((status != "finished" && status != "aborted") && setOf("research_skill", "alchemy", "upgrade_equipment", "battle").contains(gameType))
     val inputHint = scalarRuntimeText(ui.get("input_hint"))
     val visibleStatuses = setOf("preparing", "active", "settling", "suspended")
-    if (!visibleStatuses.contains(status) && !pendingExit) return null
+    if (!visibleStatuses.contains(status) && !pendingExit && !settledButVisible) return null
     val publicState = session.getAsJsonObject("public_state") ?: JsonObject()
     val stateItems = runtimeMiniGameStateItems(gameType, ui, publicState)
     val battleEnemies = runtimeMiniGameEnemies(gameType, publicState)
@@ -2173,7 +2230,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       gameType = gameType,
       displayName = scalarRuntimeText(root.getAsJsonObject("rulebook")?.get("displayName")).ifBlank { gameType },
       status = status.ifBlank { "active" },
-      phase = runtimeMiniGamePhaseLabel(gameType, scalarRuntimeText(session.get("phase")), scalarRuntimeText(ui.get("phase_label"))),
+      phase = runtimeMiniGamePhaseLabel(gameType, phase, scalarRuntimeText(ui.get("phase_label"))),
       round = runCatching { session.get("round")?.asInt ?: 0 }.getOrDefault(0),
       ruleSummary = scalarRuntimeText(ui.get("rule_summary")),
       narration = scalarRuntimeText(ui.get("narration")),
@@ -3998,7 +4055,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private fun applySessionNarrativeResult(result: SessionNarrativeResult) {
     val existingDetail = sessionDetail
-    val nextState = result.state ?: existingDetail?.state
+    val nextState = mergeVisibleMiniGameState(result.state, existingDetail?.state)
     val turnState = nextState?.takeIf { it.isJsonObject }?.asJsonObject?.getAsJsonObject("turnState")
     val baseMessages = conversationMessages(messages.toList())
     val incomingMessages = buildList {
@@ -4044,7 +4101,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
    */
   private fun applySessionStoryInfoResult(result: StoryInfoResult) {
     val existingDetail = sessionDetail
-    var mergedState = result.state?.deepCopy() ?: existingDetail?.state?.deepCopy()
+    var mergedState = mergeVisibleMiniGameState(result.state, existingDetail?.state)
     if (sessionAwaitUserPending && sessionAwaitUserSessionId == currentSessionId.trim()) {
       // orchestration 的 awaitUser 是用户回合强信号；storyInfo 可能落后一拍，不能用旧 turnState 重新锁住输入框。
       mergedState = forceAwaitUserTurnState(mergedState)
