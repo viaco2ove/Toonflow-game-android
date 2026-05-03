@@ -55,6 +55,7 @@ import com.toonflow.game.data.VoiceModelConfig
 import com.toonflow.game.data.VoiceMixItem
 import com.toonflow.game.data.VoicePresetItem
 import com.toonflow.game.data.WorldItem
+import com.toonflow.game.util.AndroidDebugLogUtil
 import com.toonflow.game.util.VueTagLogger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -473,6 +474,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   init {
+    AndroidDebugLogUtil.sync(settingsStore)
     if (token.isBlank()) {
       resetRuntimeData()
       notice = "请先登录账号"
@@ -1765,10 +1767,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private fun playCurrentRuntimeStatus(): String {
     if (sessionOpening) return "session_opening"
     if (sessionOpenError.isNotBlank()) return "session_error"
-    if (sendPending || runtimeProcessingPending) return "sending"
-    if (playRuntimeMiniGame() != null) return "waiting_player"
     val latest = conversationMessages().lastOrNull()
     val status = latest?.let { runtimeMessageStatus(it) }.orEmpty()
+    if (status == "waiting_player" && playCanPlayerSpeak()) return "waiting_player"
+    if (status == "waiting_next" && !playCanPlayerSpeak()) return "waiting_next"
+    if (sendPending || runtimeProcessingPending) return "sending"
+    if (playRuntimeMiniGame() != null) return "waiting_player"
     if (status == "sending") return "sending"
     if (status == "orchestrated") return if (playCanPlayerSpeak()) "waiting_player" else "waiting_next"
     if (
@@ -1797,9 +1801,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   fun playCanPlayerInput(): Boolean {
     if (sessionOpening) return false
     if (sessionOpenError.isNotBlank()) return false
+    if (playRuntimeMiniGame() != null) return true
+    if (playCanPlayerSpeak() && playCurrentRuntimeStatus() == "waiting_player") return true
     if (sendPending || runtimeProcessingPending) return false
     if (sessionRuntimeStage.isNotBlank()) return false
-    if (playRuntimeMiniGame() != null) return true
     return playCanPlayerSpeak() && playCurrentRuntimeStatus() == "waiting_player"
   }
 
@@ -1815,13 +1820,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     val runtimeStatus = playCurrentRuntimeStatus()
     val status = playSessionStatus().trim().lowercase()
+    if (runtimeStatus == "waiting_player" && playCanPlayerSpeak()) {
+      return if (textMode) "输入一句话继续故事" else "按住说话"
+    }
     if (runtimeStatus == "sending") {
       return "处理中..."
     }
     if (sessionRuntimeStage.isNotBlank()) return sessionRuntimeStage
-    if (runtimeStatus == "waiting_player" && playCanPlayerSpeak()) {
-      return if (textMode) "输入一句话继续故事" else "按住说话"
-    }
     if (status in setOf("chapter_completed", "completed", "success", "finished")) {
       return "当前章节已完成"
     }
@@ -1841,6 +1846,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     val runtimeStatus = playCurrentRuntimeStatus()
     val status = playSessionStatus().trim().lowercase()
+    if (runtimeStatus == "waiting_player" && playCanPlayerSpeak()) {
+      return ""
+    }
     if (runtimeStatus == "sending") {
       return "正在处理中..."
     }
@@ -1857,9 +1865,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val latest = conversationMessages().lastOrNull()
     if (latest != null && isLocalPendingPlayerMessage(latest) && runtimeMessageStatus(latest) == "error") {
       return "发送失败，可重试或重新输入。"
-    }
-    if (runtimeStatus == "waiting_player" && playCanPlayerSpeak()) {
-      return ""
     }
     if (runtimeStatus == "voicing") {
       return "正在朗读当前台词，稍后继续。"
@@ -2056,6 +2061,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
         addProperty("updateTime", System.currentTimeMillis())
       }
+      logAndroidDebug(
+        "aiGame][runtimeStatus",
+        "status=${playSessionStatus().ifBlank { "active" }} runtimeStatus=$currentStatus nextRole=${scalarRuntimeText(row.get("nextRole")).ifBlank { "-" }} nextRoleType=${scalarRuntimeText(row.get("nextRoleType")).ifBlank { "-" }}",
+      )
       nextRows.add(row)
       while (nextRows.size() > runtimeChatStorageLimit) {
         nextRows.remove(0)
@@ -2239,6 +2248,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (preferredGameType.isNotBlank()) {
       return preferredRoot
     }
+    logAndroidDebug(
+      "aiGame][miniGame",
+      "mergeVisibleMiniGameState retain fallback miniGame gameType=${scalarRuntimeText(fallbackMiniGame.asJsonObject.getAsJsonObject("session")?.get("game_type")).ifBlank { scalarRuntimeText(fallbackMiniGame.asJsonObject.getAsJsonObject("rulebook")?.get("gameType")) }}",
+    )
     preferredRoot.add("miniGame", fallbackMiniGame)
     return preferredRoot
   }
@@ -2299,6 +2312,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val root = stateRoot.getAsJsonObject("miniGame") ?: return false
     val session = root.getAsJsonObject("session") ?: return false
     val status = scalarRuntimeText(session.get("status"))
+    val phase = scalarRuntimeText(session.get("phase"))
     val rulebook = root.getAsJsonObject("rulebook")
     val gameType = scalarRuntimeText(session.get("game_type")).ifBlank {
       scalarRuntimeText(rulebook?.get("gameType"))
@@ -2306,7 +2320,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (!isBlockingMiniGameType(gameType)) {
       return false
     }
-    return setOf("preparing", "active", "settling", "suspended").contains(status)
+    val pendingExit = session.get("pending_exit")?.asBoolean ?: false
+    val settledButVisible = phase == "settling" && (status == "finished" || status == "aborted")
+    val active = setOf("preparing", "active", "settling", "suspended").contains(status) || pendingExit || settledButVisible
+    if (active) {
+      logAndroidDebug(
+        "aiGame][miniGame",
+        "blocking miniGame active gameType=$gameType status=$status phase=$phase pendingExit=$pendingExit settledButVisible=$settledButVisible",
+      )
+    }
+    return active
   }
 
   /**
@@ -4056,6 +4079,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val turnState = runtimeTurnStateRoot()
     val canPlayerSpeakNow = (turnState?.get("canPlayerSpeak")?.asBoolean ?: true) || isRuntimeReplyPromptMessage(latest)
     val nextStatus = if (canPlayerSpeakNow) "waiting_player" else "waiting_next"
+    if (canPlayerSpeakNow) {
+      val detail = sessionDetail
+      val stateRoot = detail?.state?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy()
+      if (detail != null && stateRoot != null) {
+        val nextTurnState = (stateRoot.getAsJsonObject("turnState") ?: JsonObject()).also { stateRoot.add("turnState", it) }
+        nextTurnState.addProperty("canPlayerSpeak", true)
+        nextTurnState.addProperty("expectedRoleType", "player")
+        nextTurnState.addProperty("expectedRole", playerName.ifBlank { "用户" })
+        sessionDetail = detail.copy(
+          state = stateRoot,
+          latestSnapshot = detail.latestSnapshot?.copy(state = stateRoot),
+        )
+      }
+    }
     if (runtimeMessageStatus(latest) == nextStatus) return
     updateMessageById(latest.id) { current ->
       current.copy(
@@ -5131,6 +5168,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     VueTagLogger.info("story_flow", message)
   }
 
+  /**
+   * 输出安卓端故事游玩 / 调试专用调试日志。
+   *
+   * 说明：
+   * - 只在显式开启 `debug=true` 时输出；
+   * - 与 web 侧 `WebDebugLogUtil` 保持相同的 tag 语义，方便对照排查。
+   */
+  private fun logAndroidDebug(tag: String, message: String) {
+    AndroidDebugLogUtil.log(tag, message)
+  }
+
   private suspend fun saveWorldInternal(statusMode: SaveWorldStatusMode = SaveWorldStatusMode.PRESERVE): WorldItem {
     val safeWorldName = prepareWorldNameForSave(statusMode == SaveWorldStatusMode.PUBLISHED)
     val worldKey = if (worldId > 0L) "world_$worldId" else "project_${selectedProjectId}"
@@ -5830,6 +5878,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         val firstChapterResult = repository.orchestrateSession(currentSessionId)
+        logAndroidDebug(
+          "orchestrateSession",
+          "result sessionId=${VueTagLogger.sanitize(currentSessionId, 120)} role=${firstChapterResult.plan?.role.orEmpty()} motive=${VueTagLogger.sanitize(firstChapterResult.plan?.motive.orEmpty(), 200)}",
+        )
         if (firstChapterResult.plan != null) {
           val history = conversationMessages(messages.toList())
           applySessionOrchestrationResult(
@@ -6165,6 +6217,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private suspend fun refreshCurrentSession() {
     if (currentSessionId.isBlank()) return
+    logAndroidDebug("aiGame][useToonflowStore", "refreshCurrentSession sessionId=${VueTagLogger.sanitize(currentSessionId, 120)}")
     sessionRuntimeStage = "加载session..."
     try {
       val detail = normalizeLoadedSessionDetail(repository.getSession(currentSessionId))
@@ -6243,7 +6296,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       sendText = ""
       clearRuntimeRetryState()
       applySessionNarrativeResult(result)
-      if (hasActiveMiniGameInRuntimeState(result.state)) {
+      // 这里必须读“已经合并到当前会话详情”的小游戏状态。
+      // 某些中间响应会短暂缺失 miniGame，如果继续只看 result.state，
+      // 安卓会误判小游戏已经退出，随后继续主线 storyInfo / orchestration。
+      if (hasActiveMiniGameInCurrentSession()) {
         viewModelScope.launch {
           runCatching { loadSessions() }.onFailure {
             throwIfCancellation(it)
@@ -6547,6 +6603,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val beforeCount = conversationMessages().size
         val history = conversationMessages()
         val orchestration = repository.orchestrateSession(currentSessionId)
+        logAndroidDebug(
+          "orchestrateSession",
+          "result sessionId=${VueTagLogger.sanitize(currentSessionId, 120)} role=${orchestration.plan?.role.orEmpty()} motive=${VueTagLogger.sanitize(orchestration.plan?.motive.orEmpty(), 200)}",
+        )
         clearRuntimeRetryState()
         runCatching {
           applySessionOrchestrationResult(orchestration)
@@ -6669,6 +6729,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       messages = history,
       playerContent = text,
     )
+    logAndroidDebug(
+      "orchestrateDebug",
+      "result role=${result.plan?.role.orEmpty()} motive=${VueTagLogger.sanitize(result.plan?.motive.orEmpty(), 200)}",
+    )
     clearRuntimeRetryState()
     applyDebugOrchestrationResult(result, playCurrentChapter())
     refreshDebugStoryInfo(playCurrentChapter())
@@ -6719,6 +6783,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         state = debugRuntimeState,
         messages = history,
         playerContent = null,
+      )
+      logAndroidDebug(
+        "orchestrateDebug",
+        "result role=${result.plan?.role.orEmpty()} motive=${VueTagLogger.sanitize(result.plan?.motive.orEmpty(), 200)}",
       )
       clearRuntimeRetryState()
       applyDebugOrchestrationResult(result, playCurrentChapter())

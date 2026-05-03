@@ -5,6 +5,22 @@ import android.content.Context
 class SettingsStore(context: Context) {
   private val prefs = context.getSharedPreferences("toonflow_game_settings", Context.MODE_PRIVATE)
 
+  /**
+   * 判断当前是否开启安卓端的调试日志输出。
+   *
+   * 兼容形式：
+   * - `debug=true`
+   * - `toonflow.debug=true`
+   * - SharedPreferences 中直接写入布尔值 `true`
+   */
+  fun isDebugLoggingEnabled(): Boolean {
+    val debugString = prefs.getString("debug", "")?.trim()?.lowercase().orEmpty()
+    val toonflowDebugString = prefs.getString("toonflow.debug", "")?.trim()?.lowercase().orEmpty()
+    val debugBoolean = prefs.getBoolean("debug", false)
+    val toonflowDebugBoolean = prefs.getBoolean("toonflow.debug", false)
+    return debugString == "true" || toonflowDebugString == "true" || debugBoolean || toonflowDebugBoolean
+  }
+
   var baseUrl: String
     get() = prefs.getString("base_url", "http://10.0.2.2:60002") ?: "http://10.0.2.2:60002"
     set(value) {
