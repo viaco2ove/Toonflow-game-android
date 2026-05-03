@@ -33,7 +33,6 @@ import com.toonflow.game.data.PromptItem
 import com.toonflow.game.data.RoleParameterCard
 import com.toonflow.game.data.RuntimeEventDigestItem
 import com.toonflow.game.data.SessionDetail
-import com.toonflow.game.data.SessionChapterCommand
 import com.toonflow.game.data.SessionItem
 import com.toonflow.game.data.SessionNarrativeResult
 import com.toonflow.game.data.SessionOrchestrationResult
@@ -4228,10 +4227,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       chapter = existingDetail?.chapter,
       messages = existingDetail?.messages ?: messages.toList(),
     )
-    val shouldYieldToUser = result.plan?.awaitUser == true && !shouldStreamSessionPlanFromPlan(result.plan)
-    sessionAwaitUserPending = shouldYieldToUser
-    sessionAwaitUserSessionId = if (shouldYieldToUser) result.sessionId.ifBlank { currentSessionId }.trim() else ""
-    applyAwaitUserTurnFromPlan(result.plan)
+    // 正式会话的用户回合与切章都改由服务端 storyInfo/state 驱动，
+    // orchestration 响应只保留最小 role/roleType/motive，这里不再本地改 turnState。
+    clearPendingSessionAwaitUser(result.sessionId.ifBlank { currentSessionId }.trim())
     syncRuntimeChatTraceLog()
     sessionRuntimeStage = ""
   }
@@ -4321,24 +4319,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private fun shouldStreamSessionPlanFromPlan(plan: DebugNarrativePlan?): Boolean {
     if (plan == null) return false
     return plan.role.isNotBlank() && !plan.roleType.trim().equals("player", ignoreCase = true)
-  }
-
-  /**
-   * 判断编排结果是否要求客户端先显式初始化下一章节。
-   */
-  private fun isInitChapterCommand(command: SessionChapterCommand?): Boolean {
-    if (command == null) return false
-    return command.type.trim() == "init_chapter" && command.chapterId > 0L
-  }
-
-  /**
-   * 调用显式章节初始化接口，并刷新当前会话的故事运行信息。
-   */
-  private suspend fun initCurrentSessionChapter(command: SessionChapterCommand) {
-    val sessionId = currentSessionId.trim()
-    if (sessionId.isBlank()) return
-    repository.initChapter(sessionId, command.chapterId)
-    refreshSessionStoryInfo()
   }
 
   private fun clearRuntimeRetryMessage() {
@@ -6518,40 +6498,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           "continueSession orchestration sessionId=$currentSessionId planRole=${orchestration.plan?.role.orEmpty()} nextRole=${orchestration.plan?.nextRole.orEmpty()} status=${orchestration.status}",
         )
         val plan = orchestration.plan
-        val shouldInitNextChapter = isInitChapterCommand(orchestration.command)
-        val shouldYieldToUser = plan?.awaitUser == true
         val shouldStreamPlan = shouldStreamSessionPlanFromPlan(plan)
-        if (shouldYieldToUser && !shouldStreamPlan && !shouldInitNextChapter) {
-          // 编排师已经确认轮到用户发言时，先立即恢复输入框，
-          // 再把 storyInfo 刷新放到后台，避免因为接口补齐较慢导致界面卡在“生成中”。
-          applyAwaitUserTurnFromPlan(plan)
-          refreshSessionStoryInfoInBackground("orchestration_await_user")
-          advanced = true
-          break
-        }
         refreshSessionStoryInfo()
         if (hasActiveMiniGameInCurrentSession()) {
           advanced = true
           break
         }
-        if (!shouldStreamPlan) {
-          // storyInfo 可能还没同步到最新 turnState；刷新后再补一次本地 awaitUser，
-          // 避免界面和调试面板仍停在 NPC/旁白回合。
-          applyAwaitUserTurnFromPlan(plan)
-        }
         if (shouldStreamPlan) {
           streamSessionPlan(orchestration, history)
-        }
-        if (shouldInitNextChapter) {
-          orchestration.command?.let { initCurrentSessionChapter(it) }
-          advanced = true
-          continue
         }
         val afterCount = conversationMessages().size
         val latest = conversationMessages().lastOrNull()
         val latestStatus = latest?.let(::runtimeMessageStatus).orEmpty()
         val canPlayerSpeakNow = playCanPlayerSpeak()
-        if (afterCount > beforeCount || canPlayerSpeakNow || latestStatus == "waiting_player" || plan == null || shouldYieldToUser) {
+        if (afterCount > beforeCount || canPlayerSpeakNow || latestStatus == "waiting_player" || plan == null) {
           advanced = true
           break
         }

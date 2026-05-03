@@ -241,8 +241,6 @@ data class SessionOrchestrationResult(
   @SerializedName("role") val role: String = "",
   @SerializedName("roleType") val roleType: String = "",
   @SerializedName("motive") val motive: String = "",
-  @SerializedName("awaitUser") val awaitUser: Boolean = false,
-  @SerializedName("command") val command: SessionChapterCommand? = null,
   @SerializedName("sessionId") val sessionId: String = "",
   @SerializedName("status") val status: String = "",
   @SerializedName("chapterId") val chapterId: Long? = null,
@@ -252,13 +250,6 @@ data class SessionOrchestrationResult(
   @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
   @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
   @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
-)
-
-data class SessionChapterCommand(
-  @SerializedName("type") val type: String = "",
-  @SerializedName("chapterId") val chapterId: Long = 0L,
-  @SerializedName("chapterTitle") val chapterTitle: String = "",
-  @SerializedName("trigger") val trigger: String = "",
 )
 
 data class InitChapterResult(
