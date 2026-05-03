@@ -1701,6 +1701,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun playCanPlayerSpeak(): Boolean {
     if (hasPendingSessionAwaitUser()) return true
+    val latestMessage = conversationMessages(messages.toList()).lastOrNull { !isRuntimeRetryMessage(it) }
+    if (isRuntimeReplyPromptMessage(latestMessage)) return true
     return runtimeTurnStateRoot()?.get("canPlayerSpeak")?.asBoolean ?: true
   }
 
@@ -1826,7 +1828,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (status in setOf("failed", "dead", "lose", "loss")) {
       return "当前故事已失败"
     }
-    return "当前轮到${playExpectedSpeaker()}发言"
+    // 正式会话不再依赖“下一位是谁”的预编排字段。
+    // expectedRole 在很多情况下只是当前发言角色或旧缓存，用它直接提示会误导用户。
+    return "当前还没轮到用户发言"
   }
 
   fun playTurnHint(): String {
@@ -1863,7 +1867,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (runtimeStatus in setOf("streaming", "generated", "revealing", "auto_advancing", "orchestrated")) {
       return "正在生成下一句内容..."
     }
-    return "当前还没轮到用户发言，等待${playExpectedSpeaker()}继续。"
+    return "当前还没轮到用户发言，等待剧情继续。"
   }
 
   /**
@@ -3510,6 +3514,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return meta.get("status")?.asString?.trim().orEmpty()
   }
 
+  /**
+   * 判断最后一条正式台词是否已经明确在等待用户回应。
+   *
+   * 用途：
+   * - 某些会话里服务端 turnState 会短暂滞后，仍停在 waiting_next；
+   * - 如果最新一条非用户台词本身已经是明确问句，前端继续锁住输入框只会制造假状态；
+   * - 这里只识别已落地、非流式、非用户的问句台词，尽量保持保守。
+   */
+  private fun isRuntimeReplyPromptMessage(message: MessageItem?): Boolean {
+    if (message == null || isRuntimeRetryMessage(message) || isStreamingRuntimeMessage(message)) return false
+    if (message.roleType.trim().lowercase(Locale.ROOT) == "player") return false
+    val content = message.content.trim()
+    if (content.isBlank()) return false
+    if (Regex("[?？]\\s*$").containsMatchIn(content)) return true
+    return Regex("(有何事|什么事|怎么了|你是谁|你怎么来了|寻我有何事|说吧|是否|要不要|还是选择|你打算|有什么事)").containsMatchIn(content)
+  }
+
   fun streamingSentenceTexts(message: MessageItem): List<String> {
     val meta = message.meta?.takeIf { it.isJsonObject }?.asJsonObject ?: return emptyList()
     val sentences = meta.getAsJsonArray("sentences") ?: return emptyList()
@@ -4006,8 +4027,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun setRuntimeMessageStatus(messageId: Long, status: String) {
     val turnState = runtimeTurnStateRoot()
-    val canPlayerSpeakNow = turnState?.get("canPlayerSpeak")?.asBoolean ?: true
     updateMessageById(messageId) { current ->
+      val canPlayerSpeakNow = (turnState?.get("canPlayerSpeak")?.asBoolean ?: true) || isRuntimeReplyPromptMessage(current)
       current.copy(
         meta = buildRuntimeStreamMeta(
           current.meta,
@@ -4018,6 +4039,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       )
     }
     syncRuntimeChatTraceLog()
+  }
+
+  /**
+   * 按正式会话当前的权威 turnState，修正最后一条已落地台词的等待状态。
+   *
+   * 用途：
+   * - `storyInfo` 与 `commitNarrativeTurn` 合并完成后，最后一条系统台词可能仍保留旧的 `generated`；
+   * - 如果不立刻纠正，输入区会误显示成“正在生成下一句内容...”；
+   * - 这里只处理最后一条非用户、非流式台词，不动仍在 streaming 的占位消息。
+   */
+  private fun syncLatestRuntimeTurnStatusWithState() {
+    val latest = conversationMessages(messages.toList()).lastOrNull { !isRuntimeRetryMessage(it) } ?: return
+    if (latest.roleType == "player") return
+    if (isStreamingRuntimeMessage(latest)) return
+    val turnState = runtimeTurnStateRoot()
+    val canPlayerSpeakNow = (turnState?.get("canPlayerSpeak")?.asBoolean ?: true) || isRuntimeReplyPromptMessage(latest)
+    val nextStatus = if (canPlayerSpeakNow) "waiting_player" else "waiting_next"
+    if (runtimeMessageStatus(latest) == nextStatus) return
+    updateMessageById(latest.id) { current ->
+      current.copy(
+        meta = buildRuntimeStreamMeta(
+          current = current.meta,
+          status = nextStatus,
+          streaming = false,
+          nextRole = if (canPlayerSpeakNow) "用户" else "",
+          nextRoleType = if (canPlayerSpeakNow) "player" else "",
+        ),
+      )
+    }
   }
 
   private fun messageIdentity(message: MessageItem): String {
@@ -4114,6 +4164,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
     messages.clear()
     messages.addAll(mergedMessages)
+    // addMessage / commitNarrativeTurn 一旦返回，就按最新 turnState 立刻纠正最后一条消息状态，
+    // 避免 UI 在下一次 storyInfo 刷新前继续停留在 generated。
+    syncLatestRuntimeTurnStatusWithState()
     syncRuntimeChatTraceLog()
     result.chapter?.let { chapter ->
       val index = playChapters.indexOfFirst { it.id == chapter.id }
@@ -4171,6 +4224,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playChapters.add(chapter)
       }
     }
+    // storyInfo 是正式会话权威运行态；合并完成后立刻同步最后一条消息状态，
+    // 避免已经进入等待用户回合时仍显示“正在生成下一句内容...”。
+    syncLatestRuntimeTurnStatusWithState()
+    syncRuntimeChatTraceLog()
   }
 
   /**
@@ -6108,40 +6165,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private suspend fun refreshCurrentSession() {
     if (currentSessionId.isBlank()) return
-    val detail = normalizeLoadedSessionDetail(repository.getSession(currentSessionId))
-    clearRuntimeRetryState()
-    sessionDetail = detail
-    refreshPlayChapterCache(detail)
-    messages.clear()
-    if (detail.messages.isNotEmpty()) {
-      messages.addAll(detail.messages)
-    } else {
-      val turnState = detail.state?.takeIf { it.isJsonObject }?.asJsonObject?.getAsJsonObject("turnState")
-      val loadedMessages = repository.getMessages(currentSessionId).mapIndexed { index, message ->
-        normalizeSessionRuntimeMessage(message, index + 1, turnState)
-      }.toMutableList()
-      val latestIndex = loadedMessages.indexOfLast { !isRuntimeRetryMessage(it) }
-      if (latestIndex >= 0 && turnState != null) {
-        val latest = loadedMessages[latestIndex]
-        val canPlayerSpeakNow = turnState.get("canPlayerSpeak")?.asBoolean ?: true
-        loadedMessages[latestIndex] =
-          latest.copy(
-            meta =
-              buildRuntimeStreamMeta(
-                current = latest.meta,
-                status = if (canPlayerSpeakNow) "waiting_player" else "waiting_next",
-                streaming = false,
-                lineIndex = latestIndex + 1,
-                nextRole = if (canPlayerSpeakNow) "用户" else scalarRuntimeText(turnState.get("expectedRole")).ifBlank { "当前角色" },
-                nextRoleType = if (canPlayerSpeakNow) "player" else scalarRuntimeText(turnState.get("expectedRoleType")).ifBlank { "npc" },
-              ),
-          )
+    sessionRuntimeStage = "加载session..."
+    try {
+      val detail = normalizeLoadedSessionDetail(repository.getSession(currentSessionId))
+      clearRuntimeRetryState()
+      sessionDetail = detail
+      refreshPlayChapterCache(detail)
+      messages.clear()
+      if (detail.messages.isNotEmpty()) {
+        messages.addAll(detail.messages)
+      } else {
+        val turnState = detail.state?.takeIf { it.isJsonObject }?.asJsonObject?.getAsJsonObject("turnState")
+        val loadedMessages = repository.getMessages(currentSessionId).mapIndexed { index, message ->
+          normalizeSessionRuntimeMessage(message, index + 1, turnState)
+        }.toMutableList()
+        val latestIndex = loadedMessages.indexOfLast { !isRuntimeRetryMessage(it) }
+        if (latestIndex >= 0 && turnState != null) {
+          val latest = loadedMessages[latestIndex]
+          val canPlayerSpeakNow = turnState.get("canPlayerSpeak")?.asBoolean ?: true
+          loadedMessages[latestIndex] =
+            latest.copy(
+              meta =
+                buildRuntimeStreamMeta(
+                  current = latest.meta,
+                  status = if (canPlayerSpeakNow) "waiting_player" else "waiting_next",
+                  streaming = false,
+                  lineIndex = latestIndex + 1,
+                  nextRole = if (canPlayerSpeakNow) "用户" else scalarRuntimeText(turnState.get("expectedRole")).ifBlank { "当前角色" },
+                  nextRoleType = if (canPlayerSpeakNow) "player" else scalarRuntimeText(turnState.get("expectedRoleType")).ifBlank { "npc" },
+                ),
+            )
+        }
+        sessionDetail = detail.copy(messages = loadedMessages)
+        messages.addAll(loadedMessages)
       }
-      sessionDetail = detail.copy(messages = loadedMessages)
-      messages.addAll(loadedMessages)
+      refreshSessionStoryInfo()
+      syncRuntimeChatTraceLog()
+    } finally {
+      if (sessionRuntimeStage == "加载session...") {
+        sessionRuntimeStage = ""
+      }
     }
-    refreshSessionStoryInfo()
-    syncRuntimeChatTraceLog()
   }
 
   fun playSessionRefreshFingerprint(): String {
