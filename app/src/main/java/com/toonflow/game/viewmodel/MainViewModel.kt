@@ -2211,14 +2211,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val root = stateRoot.getAsJsonObject("miniGame") ?: return false
     val session = root.getAsJsonObject("session") ?: return false
     val status = scalarRuntimeText(session.get("status"))
-    val phase = scalarRuntimeText(session.get("phase"))
     val gameType = scalarRuntimeText(session.get("game_type")).ifBlank {
       scalarRuntimeText(session.get("gameType"))
     }
     if (gameType.isBlank()) return false
     val pendingExit = session.get("pending_exit")?.asBoolean ?: false
-    val settledButVisible = phase == "settling" && (status == "finished" || status == "aborted")
-    return setOf("preparing", "active", "settling", "suspended").contains(status) || pendingExit || settledButVisible
+    return setOf("preparing", "active", "settling", "suspended").contains(status) || pendingExit
+  }
+
+  /**
+   * 判断用户这次输入是否为“强制关闭小游戏面板”的退出命令。
+   *
+   * 用途：
+   * - 用户输入 `#退出` 时，不论后端当前是否仍保留小游戏态，前端都应立即移除旧面板；
+   * - 这样可以避免服务端中间响应慢一拍时，旧小游戏面板继续残留在播放页。
+   */
+  private fun isMiniGamePanelCloseCommand(text: String?): Boolean {
+    return text?.trim() == "#退出"
+  }
+
+  /**
+   * 判断服务端返回消息里是否已经明确表示“当前没有进行中的小游戏”。
+   *
+   * 用途：
+   * - 一旦服务端已经给出这个结论，前端继续保留旧 `miniGame` 状态就只会误导用户；
+   * - 这里统一抽成方法，供 storyInfo 与 addMessage 两条链复用。
+   */
+  private fun shouldForceClearMiniGameStateFromMessages(messages: List<MessageItem>?): Boolean {
+    if (messages.isNullOrEmpty()) return false
+    return messages.any { it.content.contains("当前没有进行中的小游戏") }
+  }
+
+  /**
+   * 从运行态里移除小游戏面板状态。
+   *
+   * 用途：
+   * - `#退出` 或服务端明确提示没有小游戏时，需要彻底删掉旧 `miniGame`；
+   * - 返回复制后的新对象，避免直接污染现有运行态引用。
+   */
+  private fun clearVisibleMiniGameState(runtimeState: JsonElement?): JsonElement? {
+    val root = runtimeState?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() ?: return runtimeState
+    if (!root.has("miniGame")) {
+      return root
+    }
+    root.remove("miniGame")
+    logAndroidDebug("aiGame][miniGame", "clearVisibleMiniGameState remove stale miniGame")
+    return root
   }
 
   /**
@@ -2265,12 +2303,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (gameType.isBlank()) return null
     val phase = scalarRuntimeText(session.get("phase"))
     val pendingExit = session.get("pending_exit")?.asBoolean ?: false
-    val settledButVisible = phase == "settling" && (status == "finished" || status == "aborted")
     val acceptsTextInput = (ui.get("accepts_text_input")?.asBoolean == true)
       || ((status != "finished" && status != "aborted") && setOf("research_skill", "alchemy", "upgrade_equipment", "battle").contains(gameType))
     val inputHint = scalarRuntimeText(ui.get("input_hint"))
     val visibleStatuses = setOf("preparing", "active", "settling", "suspended")
-    if (!visibleStatuses.contains(status) && !pendingExit && !settledButVisible) return null
+    if (!visibleStatuses.contains(status) && !pendingExit) return null
     val publicState = session.getAsJsonObject("public_state") ?: JsonObject()
     val stateItems = runtimeMiniGameStateItems(gameType, ui, publicState)
     val battleEnemies = runtimeMiniGameEnemies(gameType, publicState)
@@ -2321,12 +2358,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       return false
     }
     val pendingExit = session.get("pending_exit")?.asBoolean ?: false
-    val settledButVisible = phase == "settling" && (status == "finished" || status == "aborted")
-    val active = setOf("preparing", "active", "settling", "suspended").contains(status) || pendingExit || settledButVisible
+    val active = setOf("preparing", "active", "settling", "suspended").contains(status) || pendingExit
     if (active) {
       logAndroidDebug(
         "aiGame][miniGame",
-        "blocking miniGame active gameType=$gameType status=$status phase=$phase pendingExit=$pendingExit settledButVisible=$settledButVisible",
+        "blocking miniGame active gameType=$gameType status=$status phase=$phase pendingExit=$pendingExit",
       )
     }
     return active
@@ -3680,6 +3716,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     syncRuntimeChatTraceLog()
   }
 
+  /**
+   * 当最新正式台词本身已经是明确问句时，立即把回合交还给用户。
+   *
+   * 用途：
+   * - 服务端 turnState 在正式链里偶发会慢一拍；
+   * - 如果这里不先本地切成用户回合，播放页会把问句误判成 waiting_next，
+   *   继而继续自动编排下一句；
+   * - 这里只处理“已落地、非用户、明确问句”的正式台词，避免错误打断正常系统续写。
+   */
+  private fun applyAwaitUserTurnFromNarrativeMessage(message: MessageItem?): Boolean {
+    if (!isRuntimeReplyPromptMessage(message)) {
+      return false
+    }
+    sessionAwaitUserPending = true
+    sessionAwaitUserSessionId = currentSessionId.trim()
+    val detail = sessionDetail
+    val root = detail?.state?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() ?: JsonObject()
+    val turnState = (root.getAsJsonObject("turnState") ?: JsonObject()).also { root.add("turnState", it) }
+    val displayName = playerName.ifBlank { scalarRuntimeText(root.getAsJsonObject("player")?.get("name")).ifBlank { "用户" } }
+    turnState.addProperty("canPlayerSpeak", true)
+    turnState.addProperty("expectedRoleType", "player")
+    turnState.addProperty("expectedRole", displayName)
+    turnState.addProperty("lastSpeakerRoleType", message?.roleType.orEmpty())
+    turnState.addProperty("lastSpeaker", message?.role.orEmpty())
+    sessionDetail = detail?.copy(state = root, latestSnapshot = detail.latestSnapshot?.copy(state = root))
+      ?: SessionDetail(state = root)
+    message?.let { latest ->
+      updateMessageById(latest.id) { current ->
+        current.copy(
+          meta = buildRuntimeStreamMeta(
+            current = current.meta,
+            status = "waiting_player",
+            streaming = false,
+            nextRole = displayName,
+            nextRoleType = "player",
+          ),
+        )
+      }
+    }
+    syncLatestRuntimeTurnStatusWithState()
+    syncRuntimeChatTraceLog()
+    return true
+  }
+
   private fun restoreDebugPlayerTurnAfterDeletion() {
     val root = debugRuntimeState?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy() ?: JsonObject()
     val turnState = (root.getAsJsonObject("turnState") ?: JsonObject()).also { root.add("turnState", it) }
@@ -4171,14 +4251,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return detail.copy(messages = normalized)
   }
 
-  private fun applySessionNarrativeResult(result: SessionNarrativeResult) {
+  private fun applySessionNarrativeResult(
+    result: SessionNarrativeResult,
+    forceClearMiniGame: Boolean = false,
+  ) {
     val existingDetail = sessionDetail
-    val nextState = mergeVisibleMiniGameState(result.state, existingDetail?.state)
+    var nextState = mergeVisibleMiniGameState(result.state, existingDetail?.state)
     val turnState = nextState?.takeIf { it.isJsonObject }?.asJsonObject?.getAsJsonObject("turnState")
     val baseMessages = conversationMessages(messages.toList())
     val incomingMessages = buildList {
       result.message?.let(::add)
       addAll(result.generatedMessages)
+    }
+    if (forceClearMiniGame || shouldForceClearMiniGameStateFromMessages(incomingMessages)) {
+      nextState = clearVisibleMiniGameState(nextState)
     }
     val lineStart = baseMessages.size
     val normalizedIncoming = incomingMessages.mapIndexed { index, message ->
@@ -4201,6 +4287,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
     messages.clear()
     messages.addAll(mergedMessages)
+    // 问句一旦已经正式落地，就地把回合切给用户。
+    // 这样可以在 storyInfo 慢一拍时，先阻止自动续编排继续往后跑。
+    applyAwaitUserTurnFromNarrativeMessage(normalizedIncoming.lastOrNull())
     // addMessage / commitNarrativeTurn 一旦返回，就按最新 turnState 立刻纠正最后一条消息状态，
     // 避免 UI 在下一次 storyInfo 刷新前继续停留在 generated。
     syncLatestRuntimeTurnStatusWithState()
@@ -4226,6 +4315,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private fun applySessionStoryInfoResult(result: StoryInfoResult) {
     val existingDetail = sessionDetail
     var mergedState = mergeVisibleMiniGameState(result.state, existingDetail?.state)
+    if (shouldForceClearMiniGameStateFromMessages(messages.toList())) {
+      mergedState = clearVisibleMiniGameState(mergedState)
+    }
     if (sessionAwaitUserPending && sessionAwaitUserSessionId == currentSessionId.trim()) {
       // orchestration 的 awaitUser 是用户回合强信号；storyInfo 可能落后一拍，不能用旧 turnState 重新锁住输入框。
       mergedState = forceAwaitUserTurnState(mergedState)
@@ -6289,13 +6381,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     clearPendingSessionAwaitUser(sessionId)
     sessionRuntimeStage = "提交用户发言"
     try {
+      val shouldCloseMiniGamePanel = isMiniGamePanelCloseCommand(text)
+      if (shouldCloseMiniGamePanel && sessionDetail != null) {
+        val clearedState = clearVisibleMiniGameState(sessionDetail?.state)
+        sessionDetail =
+          sessionDetail?.copy(
+            state = clearedState,
+            latestSnapshot = SessionSnapshot(state = clearedState?.deepCopy()),
+          )
+        syncRuntimeChatTraceLog()
+      }
       val result = repository.addPlayerMessage(sessionId, playerName.ifBlank { "用户" }, text)
       if (optimisticMessageId != null) {
         removeLocalPendingPlayerMessage(optimisticMessageId)
       }
       sendText = ""
       clearRuntimeRetryState()
-      applySessionNarrativeResult(result)
+      applySessionNarrativeResult(result, forceClearMiniGame = shouldCloseMiniGamePanel)
       // 这里必须读“已经合并到当前会话详情”的小游戏状态。
       // 某些中间响应会短暂缺失 miniGame，如果继续只看 result.state，
       // 安卓会误判小游戏已经退出，随后继续主线 storyInfo / orchestration。
