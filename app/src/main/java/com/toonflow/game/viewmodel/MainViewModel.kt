@@ -6484,12 +6484,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             logAndroidDebug("aiGame][miniGame", "陪练角色回合-编排 eventType=$eventType") // tag 4
           }
         }
-        // 有编排计划：直接走编排通道，触发旁白播报
+        // 有小游戏编排计划：走 continueSessionNarrative 串行编排+台词流程，不再直接调用 streamSessionPlan
         if (eventType.startsWith("on_mini_game") && eventType != "on_mini_game_finish") {
-          val history = messages.toList()
-          viewModelScope.launch {
-            streamSessionPlan(SessionOrchestrationResult(plan = miniGamePlan), history)
+          if (hasActiveMiniGameInCurrentSession()) {
+            logAndroidDebug("aiGame][miniGame", "编排通道进行中，走 minigame 编排接口 eventType=$eventType")
           }
+          refreshSessionStoryInfo()
+          viewModelScope.launch {
+            runCatching { loadSessions() }.onFailure {
+              throwIfCancellation(it)
+              sessionListError = it.message ?: "会话列表刷新失败"
+            }
+          }
+          continueSessionNarrative()
           return
         }
       } else {
@@ -6621,14 +6628,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     messages.addAll(historyMessages)
     syncRuntimeChatTraceLog()
     applySessionNarrativeResult(committed)
-    // 检查是否有链式 plan: 从 committed.state 中读取 pendingNarrativePlan
+    // 小游戏模式：不再链式调用 streamSessionPlan，直接返回
+    // 语音播放完成后会通过自动推进触发下一轮 continueSessionNarrative
+    if (hasActiveMiniGameInCurrentSession()) {
+      refreshSessionStoryInfo()
+      return
+    }
+    // 非小游戏模式：检查 committed.state 中是否有 pendingNarrativePlan
     val committedState = committed.state as? JsonObject
     val committedPendingPlan = committedState?.getAsJsonObject("pendingNarrativePlan")
     if (committedPendingPlan != null) {
       val nextEventType = committedPendingPlan.get("eventType")?.asString ?: ""
       val nextPlan = parseDebugNarrativePlan(committedPendingPlan)
       if (nextEventType.startsWith("on_mini_game") && nextEventType != "on_mini_game_finish") {
-        // 有下一个编排计划，继续处理
         if (hasActiveMiniGameInCurrentSession()) {
           logAndroidDebug("aiGame][miniGame", "链式 plan 继续 eventType=$nextEventType")
         }
@@ -6661,13 +6673,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       } else if (hasActiveMiniGameInCurrentSession()) {
         logAndroidDebug("aiGame][miniGame", "pendingNarrativePlan 不是小游戏相关 eventType=$nextEventType")
       }
-    } else if (hasActiveMiniGameInCurrentSession()) {
-      logAndroidDebug("aiGame][miniGame", "没有 pendingNarrativePlan，停止链式处理")
     }
     refreshSessionStoryInfo()
-    if (hasActiveMiniGameInCurrentSession()) {
-      return
-    }
   }
 
   /**
@@ -6845,12 +6852,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private suspend fun performContinueSessionNarrative() {
     if (currentSessionId.isBlank()) return
-    if (hasActiveMiniGameInCurrentSession()) return
+    // 不再对小游戏模式 early return，小游戏也走此编排流程
     sessionRuntimeStage = "继续编排下一轮剧情"
     try {
       var advanced = false
       for (attempt in 0 until 3) {
         if (hasActiveMiniGameInCurrentSession()) {
+          // 小游戏模式：使用 minigame 编排接口，只处理一个编排+台词周期后返回，让语音播放完成
+          val orchestration = repository.orchestrateMinigameSession(currentSessionId)
+          logAndroidDebug(
+            "orchestrateMinigame",
+            "result sessionId=${VueTagLogger.sanitize(currentSessionId, 120)} role=${orchestration.plan?.role.orEmpty()} eventType=${orchestration.plan?.eventType.orEmpty()} awaitUser=${orchestration.plan?.awaitUser}",
+          )
+          clearRuntimeRetryState()
+          runCatching {
+            applySessionOrchestrationResult(orchestration)
+          }.getOrElse {
+            VueTagLogger.error(
+              "story_flow",
+              "applySessionOrchestrationResult(minigame) failed sessionId=${VueTagLogger.sanitize(currentSessionId, 120)} message=${VueTagLogger.throwableMessage(it)}",
+              it,
+            )
+            throw it
+          }
+          val plan = orchestration.plan
+          val shouldStreamPlan = shouldStreamSessionPlanFromPlan(plan)
+          refreshSessionStoryInfo()
+          if (shouldStreamPlan) {
+            val history = conversationMessages()
+            streamSessionPlan(orchestration, history)
+          }
+          // 小游戏模式：只处理一个周期，然后返回让语音播放完成
           advanced = true
           break
         }
@@ -6878,10 +6910,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val plan = orchestration.plan
         val shouldStreamPlan = shouldStreamSessionPlanFromPlan(plan)
         refreshSessionStoryInfo()
-        if (hasActiveMiniGameInCurrentSession()) {
-          advanced = true
-          break
-        }
         if (shouldStreamPlan) {
           streamSessionPlan(orchestration, history)
         }
@@ -6912,7 +6940,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   suspend fun continueSessionNarrative(): Boolean {
     if (currentSessionId.isBlank()) return false
-    if (hasActiveMiniGameInCurrentSession()) return true
+    // 不再对小游戏模式 early return，小游戏也走 performContinueSessionNarrative 编排流程
     clearRuntimeRetryState()
     runtimeProcessingPending = true
     return runCatching {

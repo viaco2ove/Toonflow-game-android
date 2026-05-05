@@ -445,6 +445,17 @@ class GameRepository(private val settingsStore: SettingsStore) {
     )
   }
 
+  /**
+   * 小游戏编排专用接口，返回完整的 plan（含 eventType、presetContent 等）。
+   * 流程：编排 → streamlines → 语音预热 → 语音播放，每条消息串行处理。
+   */
+  suspend fun orchestrateMinigameSession(sessionId: String): SessionOrchestrationResult {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+    }
+    return unwrapEnvelope("game/orchestration/minigame", api().orchestrateMinigameSession(payload))
+  }
+
   suspend fun initChapter(sessionId: String, chapterId: Long? = null): InitChapterResult {
     val payload = JsonObject().apply {
       addProperty("sessionId", sessionId)

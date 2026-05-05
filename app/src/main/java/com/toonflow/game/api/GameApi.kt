@@ -154,6 +154,10 @@ interface GameApi {
   @POST("game/orchestration")
   suspend fun orchestrateSession(@Body payload: JsonObject): ApiEnvelope<SessionOrchestrationResult>
 
+  /** 小游戏编排专用接口，返回完整的 plan（含 eventType、presetContent 等） */
+  @POST("game/orchestration/minigame")
+  suspend fun orchestrateMinigameSession(@Body payload: JsonObject): ApiEnvelope<SessionOrchestrationResult>
+
   @POST("game/initchapter")
   suspend fun initChapter(@Body payload: JsonObject): ApiEnvelope<InitChapterResult>
 
