@@ -2258,6 +2258,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   /**
+   * 判断当前小游戏运行态是否已经明确结束。
+   *
+   * 用途：
+   * - 当服务端已经把小游戏 session 标记为 `finished/aborted` 时，
+   *   前端应立即移除旧面板，避免继续误导用户还在小游戏里；
+   * - 这里单独抽成函数，供 storyInfo 与 addMessage 两条链共用。
+   */
+  private fun isMiniGameSessionFinished(runtimeState: JsonElement?): Boolean {
+    val root = runtimeState?.takeIf { it.isJsonObject }?.asJsonObject?.getAsJsonObject("miniGame") ?: return false
+    val session = root.getAsJsonObject("session") ?: return false
+    val status = session.get("status")?.takeIf { it.isJsonPrimitive }?.asString?.trim().orEmpty()
+    return status == "finished" || status == "aborted"
+  }
+
+  /**
    * 从运行态里移除小游戏面板状态。
    *
    * 用途：
@@ -2272,6 +2287,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     root.remove("miniGame")
     logAndroidDebug("aiGame][miniGame", "clearVisibleMiniGameState remove stale miniGame")
     return root
+  }
+
+  /**
+   * 把 JsonObject 形式的 pendingNarrativePlan 转成安卓侧编排对象。
+   *
+   * 用途：
+   * - `/commitNarrativeTurn` 返回的 `state.pendingNarrativePlan` 仍是原始 Json；
+   * - 继续链式触发 `streamSessionPlan()` 前，需要先恢复成 `DebugNarrativePlan`。
+   */
+  private fun parseDebugNarrativePlan(plan: JsonObject?): DebugNarrativePlan? {
+    if (plan == null) return null
+    return try {
+      prettyGson.fromJson(plan, DebugNarrativePlan::class.java)
+    } catch (_: Exception) {
+      null
+    }
   }
 
   /**
@@ -6595,14 +6626,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val committedPendingPlan = committedState?.getAsJsonObject("pendingNarrativePlan")
     if (committedPendingPlan != null) {
       val nextEventType = committedPendingPlan.get("eventType")?.asString ?: ""
+      val nextPlan = parseDebugNarrativePlan(committedPendingPlan)
       if (nextEventType.startsWith("on_mini_game") && nextEventType != "on_mini_game_finish") {
         // 有下一个编排计划，继续处理
         if (hasActiveMiniGameInCurrentSession()) {
           logAndroidDebug("aiGame][miniGame", "链式 plan 继续 eventType=$nextEventType")
         }
         val nextHistory = messages.toList()
-        viewModelScope.launch {
-          streamSessionPlan(SessionOrchestrationResult(plan = committedPendingPlan), nextHistory)
+        if (nextPlan != null) {
+          viewModelScope.launch {
+            streamSessionPlan(SessionOrchestrationResult(plan = nextPlan), nextHistory)
+          }
         }
         return
       }
@@ -6612,13 +6646,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val pendingPlan = state?.getAsJsonObject("pendingNarrativePlan")
     if (pendingPlan != null) {
       val nextEventType = pendingPlan.get("eventType")?.asString ?: ""
+      val nextPlan = parseDebugNarrativePlan(pendingPlan)
       if (nextEventType.startsWith("on_mini_game") && nextEventType != "on_mini_game_finish") {
         if (hasActiveMiniGameInCurrentSession()) {
           logAndroidDebug("aiGame][miniGame", "pendingNarrativePlan 继续 eventType=$nextEventType")
         }
         val nextHistory = messages.toList()
-        viewModelScope.launch {
-          streamSessionPlan(SessionOrchestrationResult(plan = pendingPlan), nextHistory)
+        if (nextPlan != null) {
+          viewModelScope.launch {
+            streamSessionPlan(SessionOrchestrationResult(plan = nextPlan), nextHistory)
+          }
         }
         return
       } else if (hasActiveMiniGameInCurrentSession()) {
