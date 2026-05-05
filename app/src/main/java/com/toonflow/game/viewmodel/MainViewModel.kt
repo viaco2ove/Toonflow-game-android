@@ -1381,10 +1381,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         isEnemyVoice -> "敌方回合-语音播放"
         roleId.contains("陪练") -> "陪练角色回合-语音播放"
         else -> ""
-      }
-      if (voiceTag.isNotBlank()) {
-        logAndroidDebug("aiGame][miniGame", "$voiceTag roleId=$roleId text=${text.take(60)}")
-      }
+          }
+          if (voiceTag.isNotBlank() && hasActiveMiniGameInCurrentSession()) {
+            logAndroidDebug("aiGame][miniGame", "$voiceTag roleId=$roleId text=${text.take(60)}")
+          }
     }
     return url
   }
@@ -4517,9 +4517,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     syncRuntimeChatTraceLog()
   }
 
+  /**
+   * 判断是否需要流式播放编排计划。
+   *
+   * 对于小游戏场景，只要 eventType 包含 "on_mini_game" 就认为是有效 plan。
+   * 对于普通场景，检查 role 是否有效且不是 player。
+   */
   private fun shouldStreamSessionPlanFromPlan(plan: DebugNarrativePlan?): Boolean {
     if (plan == null) return false
-    return plan.role.isNotBlank() && !plan.roleType.trim().equals("player", ignoreCase = true)
+    // 小游戏场景：eventType 包含 on_mini_game
+    if (plan.eventType.isNotBlank() && plan.eventType.contains("on_mini_game")) {
+      return true
+    }
+    // 普通场景：检查 role 是否有效且不是 player
+    if (plan.role.isBlank()) return false
+    return !plan.roleType.trim().equals("player", ignoreCase = true)
   }
 
   private fun clearRuntimeRetryMessage() {
@@ -6205,8 +6217,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sendText = ""
     sendPending = true
     viewModelScope.launch {
-      // tag 1: 用户发送了信息
-      logAndroidDebug("aiGame][miniGame", "用户发送了信息：text=${VueTagLogger.sanitize(text, 120)}")
+      // tag 1: 用户发送了信息（只在小游戏模式中打印）
+      if (hasActiveMiniGameInCurrentSession()) {
+        logAndroidDebug("aiGame][miniGame", "用户发送了信息：text=${VueTagLogger.sanitize(text, 120)}")
+      }
       runCatching {
         performSessionPlayerMessage(sid, text, optimistic.id)
       }.onFailure {
@@ -6417,18 +6431,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       applySessionNarrativeResult(result, forceClearMiniGame = shouldCloseMiniGamePanel)
       // 检测小游戏编排计划，打 tags 2-4 和 11，并触发 streamSessionPlan
       val miniGamePlan = result.narrativePlan
-      if (miniGamePlan != null) {
-        val eventType = miniGamePlan.eventType ?: ""
-        if (eventType.startsWith("on_mini_game")) {
-          if (eventType == "on_mini_game_finish") {
-            logAndroidDebug("aiGame][miniGame", "退出小游戏") // tag 11
-          } else {
-            logAndroidDebug("aiGame][miniGame", "旁白播报-编排 eventType=$eventType") // tag 2
+      // 只有小游戏模式中才打印 miniGame 相关日志
+      if (hasActiveMiniGameInCurrentSession()) {
+        logAndroidDebug("aiGame][miniGame", "performSessionPlayerMessage: narrativePlan=${miniGamePlan?.eventType ?: "null"} role=${miniGamePlan?.role ?: ""} roleType=${miniGamePlan?.roleType ?: ""}")
+      }
+      // 使用 shouldStreamSessionPlanFromPlan 判断，避免空对象 {} 被误判为有效 plan
+      if (shouldStreamSessionPlanFromPlan(miniGamePlan)) {
+        val eventType = miniGamePlan?.eventType ?: ""
+        if (hasActiveMiniGameInCurrentSession()) {
+          if (eventType.startsWith("on_mini_game")) {
+            if (eventType == "on_mini_game_finish") {
+              logAndroidDebug("aiGame][miniGame", "退出小游戏") // tag 11
+            } else {
+              logAndroidDebug("aiGame][miniGame", "旁白播报-编排 eventType=$eventType") // tag 2
+            }
+          } else if (eventType.contains("enemy")) {
+            logAndroidDebug("aiGame][miniGame", "敌方回合-编排 eventType=$eventType") // tag 3
+          } else if (eventType.contains("陪练")) {
+            logAndroidDebug("aiGame][miniGame", "陪练角色回合-编排 eventType=$eventType") // tag 4
           }
-        } else if (eventType.contains("enemy")) {
-          logAndroidDebug("aiGame][miniGame", "敌方回合-编排 eventType=$eventType") // tag 3
-        } else if (eventType.contains("陪练")) {
-          logAndroidDebug("aiGame][miniGame", "陪练角色回合-编排 eventType=$eventType") // tag 4
         }
         // 有编排计划：直接走编排通道，触发旁白播报
         if (eventType.startsWith("on_mini_game") && eventType != "on_mini_game_finish") {
@@ -6438,6 +6459,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           }
           return
         }
+      } else {
+        logAndroidDebug("aiGame][miniGame", "shouldStreamSessionPlanFromPlan 返回 false: narrativePlan=${miniGamePlan?.eventType ?: "null"}")
       }
       // 这里必须读"已经合并到当前会话详情"的小游戏状态。
       // 某些中间响应会短暂缺失 miniGame，如果继续只看 result.state，
@@ -6522,15 +6545,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
               meta = buildRuntimeStreamMeta(current.meta, status = "generated", streaming = false),
             )
           }
-          // tags 5-7: 台词生成完成
+          // tags 5-7: 台词生成完成（只在小游戏模式中打印）
           val doneEventType = finalMessage?.get("eventType")?.asString?.trim() ?: ""
           val doneRoleType = finalMessage?.get("roleType")?.asString?.trim() ?: ""
-          if (doneRoleType == "narrator" && doneEventType.startsWith("on_mini_game")) {
-            logAndroidDebug("aiGame][miniGame", "旁白播报-台词 eventType=$doneEventType") // tag 5
-          } else if (doneRoleType != "player" && doneEventType.startsWith("on_mini_game")) {
-            logAndroidDebug("aiGame][miniGame", "敌方回合-台词 eventType=$doneEventType") // tag 6
-          } else if (doneEventType.contains("陪练")) {
-            logAndroidDebug("aiGame][miniGame", "陪练角色回合-台词 eventType=$doneEventType") // tag 7
+          if (hasActiveMiniGameInCurrentSession()) {
+            if (doneRoleType == "narrator" && doneEventType.startsWith("on_mini_game")) {
+              logAndroidDebug("aiGame][miniGame", "旁白播报-台词 eventType=$doneEventType") // tag 5
+            } else if (doneRoleType != "player" && doneEventType.startsWith("on_mini_game")) {
+              logAndroidDebug("aiGame][miniGame", "敌方回合-台词 eventType=$doneEventType") // tag 6
+            } else if (doneEventType.contains("陪练")) {
+              logAndroidDebug("aiGame][miniGame", "陪练角色回合-台词 eventType=$doneEventType") // tag 7
+            }
           }
         }
 
@@ -6563,6 +6588,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     messages.addAll(historyMessages)
     syncRuntimeChatTraceLog()
     applySessionNarrativeResult(committed)
+    // 检查是否有链式 plan: 从 committed.state 中读取 pendingNarrativePlan
+    val committedState = committed.state as? JsonObject
+    val committedPendingPlan = committedState?.getAsJsonObject("pendingNarrativePlan")
+    if (committedPendingPlan != null) {
+      val nextEventType = committedPendingPlan.get("eventType")?.asString ?: ""
+      if (nextEventType.startsWith("on_mini_game") && nextEventType != "on_mini_game_finish") {
+        // 有下一个编排计划，继续处理
+        if (hasActiveMiniGameInCurrentSession()) {
+          logAndroidDebug("aiGame][miniGame", "链式 plan 继续 eventType=$nextEventType")
+        }
+        val nextHistory = messages.toList()
+        viewModelScope.launch {
+          streamSessionPlan(SessionOrchestrationResult(plan = committedPendingPlan), nextHistory)
+        }
+        return
+      }
+    }
+    // 如果没有链式 plan，检查 sessionDetail 中是否还有
+    val state = sessionDetail?.state as? JsonObject
+    val pendingPlan = state?.getAsJsonObject("pendingNarrativePlan")
+    if (pendingPlan != null) {
+      val nextEventType = pendingPlan.get("eventType")?.asString ?: ""
+      if (nextEventType.startsWith("on_mini_game") && nextEventType != "on_mini_game_finish") {
+        if (hasActiveMiniGameInCurrentSession()) {
+          logAndroidDebug("aiGame][miniGame", "pendingNarrativePlan 继续 eventType=$nextEventType")
+        }
+        val nextHistory = messages.toList()
+        viewModelScope.launch {
+          streamSessionPlan(SessionOrchestrationResult(plan = pendingPlan), nextHistory)
+        }
+        return
+      } else if (hasActiveMiniGameInCurrentSession()) {
+        logAndroidDebug("aiGame][miniGame", "pendingNarrativePlan 不是小游戏相关 eventType=$nextEventType")
+      }
+    } else if (hasActiveMiniGameInCurrentSession()) {
+      logAndroidDebug("aiGame][miniGame", "没有 pendingNarrativePlan，停止链式处理")
+    }
     refreshSessionStoryInfo()
     if (hasActiveMiniGameInCurrentSession()) {
       return
