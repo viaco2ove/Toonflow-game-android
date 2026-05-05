@@ -2417,7 +2417,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   /**
    * 判断当前会话是否仍在“阻塞型小游戏”内。
    */
-  private fun hasActiveMiniGameInCurrentSession(): Boolean {
+  fun hasActiveMiniGameInCurrentSession(): Boolean {
     return hasActiveMiniGameInRuntimeState(sessionDetail?.state)
   }
 
@@ -4204,8 +4204,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     if (isStreamingRuntimeMessage(latest)) return
     val turnState = runtimeTurnStateRoot()
     val canPlayerSpeakNow = (turnState?.get("canPlayerSpeak")?.asBoolean ?: true) || isRuntimeReplyPromptMessage(latest)
-    val nextStatus = if (canPlayerSpeakNow) "waiting_player" else "waiting_next"
-    if (canPlayerSpeakNow) {
+    // 小游戏模式下，旁白/敌方回合的消息即使 canPlayerSpeak 为 true，也应保持 waiting_next，
+    // 确保自动推进能继续触发下一轮编排（敌方回合等）。
+    val isMiniGameMsg = (latest.eventType ?: "").contains("on_mini_game") && (latest.eventType ?: "") != "on_mini_game_finish"
+    val miniGameShouldContinue = hasActiveMiniGameInCurrentSession() && isMiniGameMsg
+    val nextStatus = if (canPlayerSpeakNow && !miniGameShouldContinue) "waiting_player" else "waiting_next"
+    if (canPlayerSpeakNow && !miniGameShouldContinue) {
       val detail = sessionDetail
       val stateRoot = detail?.state?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy()
       if (detail != null && stateRoot != null) {
@@ -4226,8 +4230,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
           current = current.meta,
           status = nextStatus,
           streaming = false,
-          nextRole = if (canPlayerSpeakNow) "用户" else "",
-          nextRoleType = if (canPlayerSpeakNow) "player" else "",
+          nextRole = if (canPlayerSpeakNow && !miniGameShouldContinue) "用户" else "",
+          nextRoleType = if (canPlayerSpeakNow && !miniGameShouldContinue) "player" else "",
         ),
       )
     }
