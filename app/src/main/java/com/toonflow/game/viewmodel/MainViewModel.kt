@@ -4280,6 +4280,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     if (forceClearMiniGame || shouldForceClearMiniGameStateFromMessages(incomingMessages)) {
       nextState = clearVisibleMiniGameState(nextState)
+    } else if (isMiniGameSessionFinished(nextState)) {
+      nextState = clearVisibleMiniGameState(nextState)
     }
     val lineStart = baseMessages.size
     val normalizedIncoming = incomingMessages.mapIndexed { index, message ->
@@ -4330,7 +4332,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   private fun applySessionStoryInfoResult(result: StoryInfoResult) {
     val existingDetail = sessionDetail
     var mergedState = mergeVisibleMiniGameState(result.state, existingDetail?.state)
-    if (shouldForceClearMiniGameStateFromMessages(messages.toList())) {
+    if (isMiniGameSessionFinished(mergedState)) {
       mergedState = clearVisibleMiniGameState(mergedState)
     }
     if (sessionAwaitUserPending && sessionAwaitUserSessionId == currentSessionId.trim()) {
