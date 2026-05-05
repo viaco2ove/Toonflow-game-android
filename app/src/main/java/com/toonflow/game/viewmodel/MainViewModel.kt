@@ -1359,7 +1359,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     format: String = "",
     sampleRate: Int? = null,
   ): String {
-    return repository.streamVoice(
+    val url = repository.streamVoice(
       configId = configId,
       text = text,
       mode = mode,
@@ -1372,6 +1372,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       format = format,
       sampleRate = sampleRate,
     )
+    // tags 8-10: 语音播放
+    if (url.isNotBlank()) {
+      val isNarratorVoice = roleId.isBlank() || roleId == "narrator" || roleId == "旁白"
+      val isEnemyVoice = roleId.contains("enemy") || roleId.contains("敌方")
+      val voiceTag = when {
+        isNarratorVoice -> "旁白播报-台词-语音播放"
+        isEnemyVoice -> "敌方回合-语音播放"
+        roleId.contains("陪练") -> "陪练角色回合-语音播放"
+        else -> ""
+      }
+      if (voiceTag.isNotBlank()) {
+        logAndroidDebug("aiGame][miniGame", "$voiceTag roleId=$roleId text=${text.take(60)}")
+      }
+    }
+    return url
   }
 
   /**
@@ -6190,6 +6205,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sendText = ""
     sendPending = true
     viewModelScope.launch {
+      // tag 1: 用户发送了信息
+      logAndroidDebug("aiGame][miniGame", "用户发送了信息：text=${VueTagLogger.sanitize(text, 120)}")
       runCatching {
         performSessionPlayerMessage(sid, text, optimistic.id)
       }.onFailure {
@@ -6398,7 +6415,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       sendText = ""
       clearRuntimeRetryState()
       applySessionNarrativeResult(result, forceClearMiniGame = shouldCloseMiniGamePanel)
-      // 这里必须读“已经合并到当前会话详情”的小游戏状态。
+      // 检测小游戏编排计划，打 tags 2-4 和 11，并触发 streamSessionPlan
+      val miniGamePlan = result.narrativePlan
+      if (miniGamePlan != null) {
+        val eventType = miniGamePlan.eventType ?: ""
+        if (eventType.startsWith("on_mini_game")) {
+          if (eventType == "on_mini_game_finish") {
+            logAndroidDebug("aiGame][miniGame", "退出小游戏") // tag 11
+          } else {
+            logAndroidDebug("aiGame][miniGame", "旁白播报-编排 eventType=$eventType") // tag 2
+          }
+        } else if (eventType.contains("enemy")) {
+          logAndroidDebug("aiGame][miniGame", "敌方回合-编排 eventType=$eventType") // tag 3
+        } else if (eventType.contains("陪练")) {
+          logAndroidDebug("aiGame][miniGame", "陪练角色回合-编排 eventType=$eventType") // tag 4
+        }
+        // 有编排计划：直接走编排通道，触发旁白播报
+        if (eventType.startsWith("on_mini_game") && eventType != "on_mini_game_finish") {
+          val history = messages.toList()
+          viewModelScope.launch {
+            streamSessionPlan(SessionOrchestrationResult(plan = miniGamePlan), history)
+          }
+          return
+        }
+      }
+      // 这里必须读"已经合并到当前会话详情"的小游戏状态。
       // 某些中间响应会短暂缺失 miniGame，如果继续只看 result.state，
       // 安卓会误判小游戏已经退出，随后继续主线 storyInfo / orchestration。
       if (hasActiveMiniGameInCurrentSession()) {
@@ -6480,6 +6521,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
               content = finalContent,
               meta = buildRuntimeStreamMeta(current.meta, status = "generated", streaming = false),
             )
+          }
+          // tags 5-7: 台词生成完成
+          val doneEventType = finalMessage?.get("eventType")?.asString?.trim() ?: ""
+          val doneRoleType = finalMessage?.get("roleType")?.asString?.trim() ?: ""
+          if (doneRoleType == "narrator" && doneEventType.startsWith("on_mini_game")) {
+            logAndroidDebug("aiGame][miniGame", "旁白播报-台词 eventType=$doneEventType") // tag 5
+          } else if (doneRoleType != "player" && doneEventType.startsWith("on_mini_game")) {
+            logAndroidDebug("aiGame][miniGame", "敌方回合-台词 eventType=$doneEventType") // tag 6
+          } else if (doneEventType.contains("陪练")) {
+            logAndroidDebug("aiGame][miniGame", "陪练角色回合-台词 eventType=$doneEventType") // tag 7
           }
         }
 
