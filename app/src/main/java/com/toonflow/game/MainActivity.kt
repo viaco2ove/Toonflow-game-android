@@ -3868,15 +3868,19 @@ private fun PlayScene(
       return@LaunchedEffect
     }
     val sameVoiceTarget = runtimeVoiceMessageKey == vm.messageUiKey(latest)
-    if (!sameVoiceTarget && latestStatus in listOf("", "orchestrated", "generated", "revealing", "voicing")) {
+    // 小游戏模式下，旁白/敌方回合的消息不应被 canPlayerSpeak 强制覆盖为 waiting_player
+    val isMiniGameActive = vm.hasActiveMiniGameInCurrentSession()
+    val isMiniGameMsg = (latest.eventType ?: "").contains("on_mini_game") && (latest.eventType ?: "") != "on_mini_game_finish"
+    val miniGameShouldContinue = isMiniGameActive && isMiniGameMsg
+    if (!miniGameShouldContinue && !sameVoiceTarget && latestStatus in listOf("", "orchestrated", "generated", "revealing", "voicing")) {
       latestStatus = if (canPlayerSpeakNow) "waiting_player" else "waiting_next"
       vm.setRuntimeMessageStatus(latest.id, latestStatus)
     }
     if (!debugAutoAdvancing && latestStatus == "auto_advancing") {
-      latestStatus = if (canPlayerSpeakNow) "waiting_player" else "waiting_next"
+      latestStatus = if (canPlayerSpeakNow && !miniGameShouldContinue) "waiting_player" else "waiting_next"
       vm.setRuntimeMessageStatus(latest.id, latestStatus)
     }
-    if (canPlayerSpeakNow) {
+    if (canPlayerSpeakNow && !miniGameShouldContinue) {
       return@LaunchedEffect
     }
     if (latestStatus != "waiting_next") {
