@@ -370,6 +370,14 @@ data class StoryInfoResult(
   @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
   @SerializedName("endDialog") val endDialog: String? = null,
   @SerializedName("endDialogDetail") val endDialogDetail: String? = null,
+  @SerializedName("miniGameConfig") val miniGameConfig: MiniGameConfig? = null,
+)
+
+/**
+ * 小游戏配置
+ */
+data class MiniGameConfig(
+  @SerializedName("audioProxyMinSec") val audioProxyMinSec: Int = 3,
 )
 
 data class AiTokenUsageLogItem(

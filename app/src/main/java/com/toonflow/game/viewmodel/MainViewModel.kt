@@ -408,6 +408,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var sessionEndDialogDetail by mutableStateOf("")
   var debugLoading by mutableStateOf(false)
   var debugLoadingStage by mutableStateOf("")
+  // 小游戏模式语音等待：记录上一句台词落库时间戳，用于等待语音播放完成后再继续编排
+  private var miniGameVoiceWaitEnd: Long = 0L
+  // 小游戏模式最小语音等待时间（秒），从后端 storyInfo 获取，默认3秒
+  private var miniGameAudioProxyMinSec: Int = 3
   private val debugRevisitSnapshots = mutableStateListOf<DebugRevisitSnapshot>()
   private var debugChapterSequence: List<ChapterItem> = emptyList()
   private var debugMessageSeed: Long = 1L
@@ -4395,6 +4399,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       eventDigestWindow = result.eventDigestWindow,
       eventDigestWindowText = result.eventDigestWindowText,
     )
+    // 从 storyInfo 提取小游戏配置（语音等待时间等）
+    // 后端返回 audioProxyMinSec，默认3秒
+    val newAudioProxyMinSec = result.miniGameConfig?.audioProxyMinSec ?: 3
+    if (miniGameAudioProxyMinSec != newAudioProxyMinSec) {
+      miniGameAudioProxyMinSec = newAudioProxyMinSec
+      logAndroidDebug("[aiGame][miniGame]", "更新语音等待配置: audioProxyMinSec=$newAudioProxyMinSec")
+    }
     sessionEndDialog = nextEndDialog
     sessionEndDialogDetail = nextEndDialogDetail
     mergedChapter?.let { chapter ->
@@ -6636,6 +6647,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // 语音播放完成后会通过自动推进触发下一轮 continueSessionNarrative
     if (hasActiveMiniGameInCurrentSession()) {
       refreshSessionStoryInfo()
+      // 设置小游戏语音等待时间，确保旁白语音播放完（或最小等待时间）后再获取下一句台词
+      // 规则：开语音-》上一个语音播放完（包括失败）-》获取当前台词
+      //       没开语音-》台词获取完（最小等待时间3s）-》获取当前台词
+      val waitMs = miniGameAudioProxyMinSec * 1000L
+      miniGameVoiceWaitEnd = System.currentTimeMillis() + waitMs
+      logAndroidDebug("[aiGame][miniGame]", "设置语音等待时间 waitMs=$waitMs")
       return
     }
     // 非小游戏模式：检查 committed.state 中是否有 pendingNarrativePlan
@@ -6944,6 +6961,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   suspend fun continueSessionNarrative(): Boolean {
     if (currentSessionId.isBlank()) return false
+    // 小游戏模式下需要等待语音播放完成（或最小等待时间）后再继续编排
+    // 规则：开语音-》上一个语音播放完（包括失败）-》获取当前台词
+    //       没开语音-》台词获取完（最小等待时间3s）-》获取当前台词
+    if (hasActiveMiniGameInCurrentSession()) {
+      val waitEndTime = miniGameVoiceWaitEnd
+      if (waitEndTime > 0) {
+        val now = System.currentTimeMillis()
+        val remainingMs = waitEndTime - now
+        // 使用后端配置的 audioProxyMinSec（默认3秒）
+        val waitSec = miniGameAudioProxyMinSec
+        if (remainingMs > 0) {
+          logAndroidDebug("[aiGame][miniGame]", "等待语音播放完成, remainingMs=$remainingMs, waitSec=$waitSec")
+          kotlinx.coroutines.delay(remainingMs)
+        }
+        // 等待完成后清除标记
+        miniGameVoiceWaitEnd = 0
+      }
+    }
     // 不再对小游戏模式 early return，小游戏也走 performContinueSessionNarrative 编排流程
     clearRuntimeRetryState()
     runtimeProcessingPending = true

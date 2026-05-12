@@ -6675,9 +6675,8 @@ private fun MiniGamePanel(
 ) {
   var expanded by remember { mutableStateOf(false) }
   LaunchedEffect(miniGame.gameType) {
-    // 修炼和任务都先靠文字引导用户输入或确认目标，默认收起能避免面板抢占对话焦点。
-    // 其它强状态小游戏仍保持默认展开，方便用户第一时间看到关键状态。
-    expanded = miniGame.gameType != "cultivation" && miniGame.gameType != "task"
+    // 小游戏面板默认折叠，用户手动点击"展开"才显示。
+    expanded = false
   }
   Card(
     modifier = Modifier
@@ -6720,6 +6719,21 @@ private fun MiniGamePanel(
             color = Color(0xFFDCEAFF),
             style = MaterialTheme.typography.labelSmall,
           )
+        }
+      }
+      // 折叠时显示前2条关键指标摘要
+      if (miniGame.stateItems.isNotEmpty()) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+          miniGame.stateItems.take(2).forEach { item ->
+            Text(
+              "${item.key}: ${item.value}",
+              color = Color(0xFFD1E4FF),
+              style = MaterialTheme.typography.labelSmall,
+            )
+          }
         }
       }
       if (expanded && miniGame.ruleSummary.isNotBlank()) {
