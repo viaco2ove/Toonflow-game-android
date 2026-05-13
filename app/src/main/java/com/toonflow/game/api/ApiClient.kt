@@ -13,7 +13,10 @@ object ApiClient {
     val client = OkHttpClient.Builder()
       .addInterceptor { chain ->
         val builder = chain.request().newBuilder()
-        val token = settingsStore.token.trim()
+        val token = settingsStore.token.trim().let {
+          // 防止 token 里已经有 Bearer 前缀（双重添加问题）
+          if (it.startsWith("Bearer ", ignoreCase = true)) it.substring(7).trim() else it
+        }
         if (token.isNotEmpty()) {
           builder.addHeader("Authorization", token)
         }
@@ -27,6 +30,27 @@ object ApiClient {
         }.getOrDefault("")
         val requestPath = request.url.encodedPath
         val startedAt = System.nanoTime()
+
+        // 安卓调试模式：输出 curl 格式日志
+        if (settingsStore.androidDebugEnabled) {
+          val curlCmd = buildString {
+            append("curl -X ${request.method} '${request.url.scheme}://${request.url.host}${requestPath}'")
+            if (token.isNotEmpty()) {
+              append(" \\\n  -H 'Authorization: Bearer ${token}'")
+            }
+            request.headers.forEach { (name, value) ->
+              if (name.lowercase() != "authorization") {
+                append(" \\\n  -H '$name: $value'")
+              }
+            }
+            if (requestBody.isNotBlank()) {
+              append(" \\\n  --data-raw '${requestBody.replace("'", "\\'")}'")
+            }
+            append(" \\\n  --insecure")
+          }
+          VueTagLogger.info("network", curlCmd)
+        }
+
         VueTagLogger.info(
           "network",
           "request ${request.method} $requestPath token=${if (token.isNotEmpty()) "attached" else "none"} body=${VueTagLogger.sanitize(requestBody)}",

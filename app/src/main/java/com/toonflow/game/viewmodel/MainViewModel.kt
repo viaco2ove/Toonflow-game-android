@@ -283,6 +283,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   var activeTab by mutableStateOf("主页")
   var loading by mutableStateOf(false)
 
+  /** 安卓调试开关：开启后输出 curl 格式日志到 Logcat */
+  var androidDebugEnabled by mutableStateOf(settingsStore.androidDebugEnabled)
+
   var userName by mutableStateOf("")
   var userNickname by mutableStateOf("")
   var userIntro by mutableStateOf("")
@@ -1245,6 +1248,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   fun saveConnection() {
     settingsStore.baseUrl = baseUrl
+    settingsStore.androidDebugEnabled = androidDebugEnabled
     if (token.isNotBlank()) {
       settingsStore.token = token
       notice = "连接设置已保存"

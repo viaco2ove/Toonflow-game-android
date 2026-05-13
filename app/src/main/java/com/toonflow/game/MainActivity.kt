@@ -9136,6 +9136,27 @@ private fun SettingsScene(vm: MainViewModel) {
       }
 
       SettingsSectionCard(title = "其他") {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0xFFF8FBFF))
+            .border(1.dp, Color(0xFFD8E3F3), RoundedCornerShape(10.dp))
+            .clickable { vm.androidDebugEnabled = !vm.androidDebugEnabled }
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text("安卓调试（输出 curl 日志）", color = Color(0xFF41597D))
+          Checkbox(
+            checked = vm.androidDebugEnabled,
+            onCheckedChange = { checked -> vm.androidDebugEnabled = checked },
+            colors = CheckboxDefaults.colors(
+              checkedColor = Color(0xFF4B74F0),
+              uncheckedColor = Color(0xFF8DA2C5),
+            ),
+          )
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           if (vm.token.isNotBlank()) {
             MiniBtn(text = "token消耗", onClick = { openTokenUsageDialog() })

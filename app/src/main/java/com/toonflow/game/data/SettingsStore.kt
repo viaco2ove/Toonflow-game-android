@@ -122,6 +122,15 @@ class SettingsStore(context: Context) {
     }
   }
 
+  /**
+   * 安卓调试开关：开启后所有网络请求会输出 curl 格式日志到 Logcat。
+   */
+  var androidDebugEnabled: Boolean
+    get() = prefs.getBoolean("android_debug", false)
+    set(value) {
+      prefs.edit().putBoolean("android_debug", value).apply()
+    }
+
   private fun messageReactionKey(sessionId: String, messageId: Long, createTime: Long): String {
     return "message_reaction_${sessionId}_${messageId}_${createTime}"
   }
