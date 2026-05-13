@@ -3284,6 +3284,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private fun worldsForRecommendation(): List<WorldItem> {
+    if (androidDebugEnabled) {
+      AndroidDebugLogUtil.log("vue_tag][home", "worldsForRecommendation: worlds.size=${worlds.size}, chapterCount>0 && published:")
+      worlds.forEach { w ->
+        val isMatch = (w.chapterCount ?: 0) > 0 && isWorldPublished(w)
+        AndroidDebugLogUtil.log("vue_tag][home", "  world[${w.id}] name=${w.name} chapterCount=${w.chapterCount} publishStatus=${w.publishStatus} settings.publishStatus=${w.settings?.publishStatus} isMatch=$isMatch")
+      }
+    }
     return worlds.filter { (it.chapterCount ?: 0) > 0 && isWorldPublished(it) }
   }
 
