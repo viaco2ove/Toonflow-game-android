@@ -481,7 +481,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   init {
-    AndroidDebugLogUtil.sync(settingsStore)
     if (token.isBlank()) {
       resetRuntimeData()
       notice = "请先登录账号"
@@ -3284,12 +3283,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private fun worldsForRecommendation(): List<WorldItem> {
-    if (androidDebugEnabled) {
-      AndroidDebugLogUtil.log("vue_tag][home", "worldsForRecommendation: worlds.size=${worlds.size}, chapterCount>0 && published:")
-      worlds.forEach { w ->
-        val isMatch = (w.chapterCount ?: 0) > 0 && isWorldPublished(w)
-        AndroidDebugLogUtil.log("vue_tag][home", "  world[${w.id}] name=${w.name} chapterCount=${w.chapterCount} publishStatus=${w.publishStatus} settings.publishStatus=${w.settings?.publishStatus} isMatch=$isMatch")
-      }
+    AndroidDebugLogUtil.log("home", "worldsForRecommendation: worlds.size=${worlds.size}, chapterCount>0 && published:")
+    worlds.forEach { w ->
+      val isMatch = (w.chapterCount ?: 0) > 0 && isWorldPublished(w)
+      AndroidDebugLogUtil.log("home", "  world[${w.id}] name=${w.name} chapterCount=${w.chapterCount} publishStatus=${w.publishStatus} settings.publishStatus=${w.settings?.publishStatus} isMatch=$isMatch")
     }
     return worlds.filter { (it.chapterCount ?: 0) > 0 && isWorldPublished(it) }
   }
@@ -3403,7 +3400,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   fun recommendedWorld(): WorldItem? {
+    if (androidDebugEnabled) {
+      AndroidDebugLogUtil.log("home", "recommendedWorld: called, homeRecommendWorldId=$homeRecommendWorldId, worlds.size=${worlds.size}")
+    }
     val pool = worldsForRecommendation()
+    if (androidDebugEnabled) {
+      AndroidDebugLogUtil.log("home", "recommendedWorld: pool.size=${pool.size}")
+    }
     if (pool.isEmpty()) return null
     val picked = pool.firstOrNull { it.id == homeRecommendWorldId }
     return picked ?: pool.first().also { homeRecommendWorldId = it.id }
@@ -6353,9 +6356,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
   }
 
   private suspend fun loadWorlds() {
+    AndroidDebugLogUtil.log("home", "loadWorlds: starting...")
     val rows = repository.listWorlds(includePublicPublished = true)
     worlds.clear()
     worlds.addAll(rows)
+    AndroidDebugLogUtil.log("home", "loadWorlds: loaded ${rows.size} worlds")
+    rows.forEach { w ->
+      AndroidDebugLogUtil.log("home", "  world[${w.id}] name=${w.name} chapterCount=${w.chapterCount} publishStatus=${w.publishStatus} settings.publishStatus=${w.settings?.publishStatus}")
+    }
   }
 
   private suspend fun loadCurrentWorld(autoCreate: Boolean) {
