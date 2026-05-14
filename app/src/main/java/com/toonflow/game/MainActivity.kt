@@ -192,6 +192,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import android.util.Base64
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.ui.unit.min
 import kotlin.coroutines.resume
 import kotlin.math.roundToInt
@@ -4723,7 +4724,7 @@ private fun LiveStoryCard(
         .fillMaxWidth()
         .padding(top = 10.dp),
       colors = CardDefaults.cardColors(
-        containerColor = if (isPlayer) Color(0xE2203657) else Color(0xF6F7FBFF),
+        containerColor = if (isPlayer) Color(0x99203657) else Color(0x99F7FBFF),
       ),
       shape = RoundedCornerShape(22.dp),
     ) {
@@ -4967,7 +4968,7 @@ private fun Bubble(
       }
       Card(
         modifier = Modifier
-          .fillMaxWidth(0.84f)
+          .wrapContentWidth()
           .onGloballyPositioned { coordinates ->
             bubbleBounds = coordinates.boundsInWindow()
           }
@@ -4977,7 +4978,7 @@ private fun Bubble(
               onLongPress = { bubbleBounds?.let { bounds -> onOpenMenu?.invoke(bounds) } },
             )
           },
-        colors = CardDefaults.cardColors(containerColor = if (isPlayer) Color(0xB3274568) else Color(0xE6FFFFFF)),
+        colors = CardDefaults.cardColors(containerColor = if (isPlayer) Color(0x99274568) else Color(0x99FFFFFF)),
         shape = RoundedCornerShape(12.dp),
       ) {
         Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -6278,7 +6279,7 @@ private fun FooterBar(
         text = "当前目标：$chapterObjectivePreview",
         onClick = onOpenObjective,
         modifier = Modifier
-          .padding(bottom = 2.dp)
+          .padding(bottom = 0.dp)
           .widthIn(max = 220.dp),
       )
     }
@@ -6306,26 +6307,30 @@ private fun FooterBar(
             modifier = Modifier.size(14.dp).rotate(180f),
           )
         }
-        Text(
-          text = storySubtitle,
-          color = Color(0xFFD7E7FF),
-          style = MaterialTheme.typography.labelSmall,
-        )
-        if (runtimeChatDebug != null) {
-          Spacer(modifier = Modifier.width(6.dp))
-          Box(
-            modifier = Modifier
-              .size(18.dp)
-              .border(BorderStroke(1.dp, Color(0x47D8E8FF)), CircleShape)
-              .clickable { onToggleDebugPanel() },
-            contentAlignment = Alignment.Center,
-          ) {
-            Icon(
-              imageVector = Icons.Outlined.Info,
-              contentDescription = if (debugPanelOpen) "隐藏调试状态" else "显示调试状态",
-              tint = Color(0xFFDCE9FF),
-              modifier = Modifier.size(11.dp),
-            )
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Text(
+            text = storySubtitle,
+            color = Color(0xFFD7E7FF),
+            style = MaterialTheme.typography.labelSmall,
+          )
+          if (runtimeChatDebug != null) {
+            Spacer(modifier = Modifier.width(4.dp))
+            Box(
+              modifier = Modifier
+                .size(18.dp)
+                .border(BorderStroke(1.dp, Color(0x47D8E8FF)), CircleShape)
+                .clickable { onToggleDebugPanel() },
+              contentAlignment = Alignment.Center,
+            ) {
+              Icon(
+                imageVector = Icons.Outlined.Info,
+                contentDescription = if (debugPanelOpen) "隐藏调试状态" else "显示调试状态",
+                tint = Color(0xFFDCE9FF),
+                modifier = Modifier.size(11.dp),
+              )
+            }
           }
         }
       }
