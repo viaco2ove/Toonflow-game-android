@@ -5,6 +5,22 @@ import android.content.Context
 class SettingsStore(context: Context) {
   private val prefs = context.getSharedPreferences("toonflow_game_settings", Context.MODE_PRIVATE)
 
+  /**
+   * 判断当前是否开启安卓端的调试日志输出。
+   *
+   * 兼容形式：
+   * - `debug=true`
+   * - `toonflow.debug=true`
+   * - SharedPreferences 中直接写入布尔值 `true`
+   */
+  fun isDebugLoggingEnabled(): Boolean {
+    val debugString = prefs.getString("debug", "")?.trim()?.lowercase().orEmpty()
+    val toonflowDebugString = prefs.getString("toonflow.debug", "")?.trim()?.lowercase().orEmpty()
+    val debugBoolean = prefs.getBoolean("debug", false)
+    val toonflowDebugBoolean = prefs.getBoolean("toonflow.debug", false)
+    return debugString == "true" || toonflowDebugString == "true" || debugBoolean || toonflowDebugBoolean
+  }
+
   var baseUrl: String
     get() = prefs.getString("base_url", "http://10.0.2.2:60002") ?: "http://10.0.2.2:60002"
     set(value) {
@@ -33,6 +49,21 @@ class SettingsStore(context: Context) {
 
   fun clearRuntimeChatTrace() {
     prefs.edit().remove("toonflow.chat").apply()
+  }
+
+  fun getDebugRevisitSnapshotsJson(conversationId: String): String {
+    if (conversationId.isBlank()) return "[]"
+    return prefs.getString("debug_revisit_$conversationId", "[]") ?: "[]"
+  }
+
+  fun setDebugRevisitSnapshotsJson(conversationId: String, value: String) {
+    if (conversationId.isBlank()) return
+    prefs.edit().putString("debug_revisit_$conversationId", value).apply()
+  }
+
+  fun clearDebugRevisitSnapshots(conversationId: String) {
+    if (conversationId.isBlank()) return
+    prefs.edit().remove("debug_revisit_$conversationId").apply()
   }
 
   fun getAvatarPath(userId: Long): String {
@@ -90,6 +121,15 @@ class SettingsStore(context: Context) {
       prefs.edit().putString(key, value).apply()
     }
   }
+
+  /**
+   * 安卓调试开关：开启后所有网络请求会输出 curl 格式日志到 Logcat。
+   */
+  var androidDebugEnabled: Boolean
+    get() = prefs.getBoolean("android_debug", false)
+    set(value) {
+      prefs.edit().putBoolean("android_debug", value).apply()
+    }
 
   private fun messageReactionKey(sessionId: String, messageId: Long, createTime: Long): String {
     return "message_reaction_${sessionId}_${messageId}_${createTime}"

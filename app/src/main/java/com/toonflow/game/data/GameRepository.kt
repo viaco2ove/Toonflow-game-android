@@ -27,6 +27,8 @@ class GameRepository(private val settingsStore: SettingsStore) {
   private val gson = Gson()
   private val roleAvatarTaskPollIntervalMs = 1000L
   private val roleAvatarTaskTimeoutMs = 180000L
+  private val avatarVideoTaskPollIntervalMs = 2000L
+  private val avatarVideoTaskTimeoutMs = 30L * 60L * 1000L
   private val debugStreamIdleTimeoutMs = 15000L
   private val debugStreamWatchdogPollMs = 500L
 
@@ -52,7 +54,23 @@ class GameRepository(private val settingsStore: SettingsStore) {
       foregroundFilePath = task.foregroundFilePath,
       backgroundPath = task.backgroundPath,
       backgroundFilePath = task.backgroundFilePath,
+      foregroundExt = task.foregroundExt,
     )
+  }
+
+  /**
+   * 把视频头像队列状态转换为可直接显示的进度文案。
+   */
+  private fun avatarVideoProgressText(task: RoleAvatarTaskResult): String {
+    val status = task.status.trim().lowercase()
+    val progressText = task.progress?.takeIf { it > 0 }?.let { " ${it}%" }.orEmpty()
+    return when (status) {
+      "queued" -> if ((task.queuePosition ?: 0) > 0) "排队中，第 ${task.queuePosition} 个$progressText" else "排队中$progressText"
+      "running" -> task.message.ifBlank { "生成中" } + progressText
+      "success" -> "生成完成 100%"
+      "failed" -> task.errorMessage.ifBlank { task.message.ifBlank { "生成失败" } }
+      else -> task.message.ifBlank { "头像任务处理中" }
+    }
   }
 
   suspend fun login(username: String, password: String): JsonObject {
@@ -127,11 +145,27 @@ class GameRepository(private val settingsStore: SettingsStore) {
       if (projectId != null && projectId > 0L) addProperty("projectId", projectId)
       if (includePublicPublished) addProperty("includePublicPublished", true)
     }
-    return runCatching { unwrapEnvelope("game/listWorlds", api().listWorlds(payload)) }.getOrElse { emptyList() }
+    VueTagLogger.info("api", "listWorlds: starting... projectId=$projectId includePublicPublished=$includePublicPublished")
+    val startedAt = System.currentTimeMillis()
+    val result = runCatching { unwrapEnvelope("game/listWorlds", api().listWorlds(payload)) }
+    val costMs = System.currentTimeMillis() - startedAt
+    VueTagLogger.info("api", "listWorlds: done in ${costMs}ms result=${if (result.isSuccess) "success(${result.getOrNull()?.size ?: 0} items)" else "failed: ${result.exceptionOrNull()?.message}" }")
+    return result.getOrElse { emptyList() }
   }
 
   suspend fun saveWorld(payload: JsonObject): WorldItem {
     return unwrapEnvelope("game/saveWorld", api().saveWorld(payload))
+  }
+
+  /**
+   * 复制现有故事为新的草稿世界。
+   * 后端会把封面、章节资源和世界配置都复制成独立副本。
+   */
+  suspend fun copyWorld(worldId: Long): WorldItem {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+    }
+    return unwrapEnvelope("game/copyWorld", api().copyWorld(payload))
   }
 
   suspend fun deleteWorld(worldId: Long) {
@@ -187,13 +221,33 @@ class GameRepository(private val settingsStore: SettingsStore) {
     projectId: Long? = null,
     base64Data: String,
     fileName: String = "avatar.mp4",
+    preferGif: Boolean = false,
+    onProgress: (String) -> Unit = {},
   ): SeparatedRoleImageResult {
     val payload = JsonObject().apply {
       if (projectId != null && projectId > 0L) addProperty("projectId", projectId)
       addProperty("base64Data", base64Data)
       if (fileName.isNotBlank()) addProperty("fileName", fileName)
+      if (preferGif) addProperty("preferGif", true)
     }
-    return unwrapEnvelope("game/convertAvatarVideoToGif", api().convertAvatarVideoToGif(payload))
+    val task = unwrapEnvelope("game/convertAvatarVideoToGif", api().convertAvatarVideoToGif(payload))
+    val taskId = task.taskId.takeIf { it > 0L } ?: task.jobId
+    if (taskId <= 0L) {
+      error("MP4 转 GIF 任务创建失败")
+    }
+    val startedAt = System.currentTimeMillis()
+    while (System.currentTimeMillis() - startedAt < avatarVideoTaskTimeoutMs) {
+      val status = unwrapEnvelope("game/convertAvatarVideoToGif/status", api().convertAvatarVideoToGifStatus(JsonObject().apply {
+        addProperty("taskId", taskId)
+      }))
+      onProgress(avatarVideoProgressText(status))
+      when (status.status.trim().lowercase()) {
+        "success" -> return resolveRoleAvatarResult(status)
+        "failed" -> error(status.errorMessage.ifBlank { status.message.ifBlank { "MP4 转 GIF 失败" } })
+      }
+      delay(avatarVideoTaskPollIntervalMs)
+    }
+    error("MP4 转 GIF 处理超时，请稍后重试")
   }
 
   suspend fun separateRoleAvatar(
@@ -239,6 +293,21 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return unwrapEnvelope("game/saveChapter", api().saveChapter(payload))
   }
 
+  /**
+   * 删除一个已保存章节。
+   * 后端会校验故事归属，并清理该章节关联的会话、任务和触发器。
+   */
+  suspend fun deleteChapter(chapterId: Long) {
+    val payload = JsonObject().apply {
+      addProperty("chapterId", chapterId)
+    }
+    unwrapEnvelope<JsonElement>("game/deleteChapter", api().deleteChapter(payload))
+  }
+
+  suspend fun previewRuntimeOutline(payload: JsonObject): JsonObject {
+    return unwrapEnvelope("game/previewRuntimeOutline", api().previewRuntimeOutline(payload))
+  }
+
   suspend fun startSession(worldId: Long, projectId: Long, chapterId: Long?): String {
     val payload = JsonObject().apply {
       addProperty("worldId", worldId)
@@ -246,6 +315,31 @@ class GameRepository(private val settingsStore: SettingsStore) {
       if (chapterId != null) addProperty("chapterId", chapterId)
     }
     return unwrapEnvelope("game/startSession", api().startSession(payload)).get("sessionId")?.asString ?: ""
+  }
+
+  suspend fun initStory(
+    worldId: Long,
+    projectId: Long,
+    title: String,
+    skipOpening: Boolean = false,
+  ): StoryInitResult {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+      addProperty("projectId", projectId)
+      if (title.isNotBlank()) addProperty("title", title)
+      if (skipOpening) addProperty("skipOpening", true)
+    }
+    return unwrapEnvelope("game/initStory", api().initStory(payload))
+  }
+
+  /**
+   * 正式游玩开场白独立请求，和章节调试保持同一启动顺序。
+   */
+  suspend fun introduceStory(sessionId: String): SessionOrchestrationResult {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+    }
+    return unwrapEnvelope("game/introduction", api().introduceStory(payload))
   }
 
   suspend fun listSession(projectId: Long? = null, worldId: Long? = null): List<SessionItem> {
@@ -284,6 +378,22 @@ class GameRepository(private val settingsStore: SettingsStore) {
     api().deleteMessage(payload)
   }
 
+  suspend fun revisitMessage(sessionId: String, messageId: Long) {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+      addProperty("messageId", messageId)
+    }
+    api().revisitMessage(payload)
+  }
+
+  suspend fun debugRevisitMessage(debugRuntimeKey: String, messageCount: Int): DebugRevisitResult {
+    val payload = JsonObject().apply {
+      addProperty("debugRuntimeKey", debugRuntimeKey)
+      addProperty("messageCount", messageCount)
+    }
+    return unwrapEnvelope("game/debugRuntimeShared/revisit", api().debugRevisitMessage(payload))
+  }
+
   suspend fun getMessages(sessionId: String): List<MessageItem> {
     val payload = JsonObject().apply {
       addProperty("sessionId", sessionId)
@@ -306,11 +416,17 @@ class GameRepository(private val settingsStore: SettingsStore) {
 
   suspend fun commitNarrativeTurn(
     sessionId: String,
+    role: String,
+    roleType: String,
+    eventType: String,
     content: String,
     createTime: Long,
   ): SessionNarrativeResult {
     val payload = JsonObject().apply {
       addProperty("sessionId", sessionId)
+      addProperty("role", role)
+      addProperty("roleType", roleType)
+      addProperty("eventType", eventType)
       addProperty("content", content)
       addProperty("createTime", createTime)
       addProperty("saveSnapshot", true)
@@ -329,7 +445,70 @@ class GameRepository(private val settingsStore: SettingsStore) {
     val payload = JsonObject().apply {
       addProperty("sessionId", sessionId)
     }
-    return unwrapEnvelope("game/orchestration", api().orchestrateSession(payload))
+    return normalizeSessionOrchestrationPlan(
+      unwrapEnvelope("game/orchestration", api().orchestrateSession(payload)),
+    )
+  }
+
+  /**
+   * 小游戏编排专用接口，返回完整的 plan（含 eventType、presetContent 等）。
+   * 流程：编排 → streamlines → 语音预热 → 语音播放，每条消息串行处理。
+   */
+  suspend fun orchestrateMinigameSession(sessionId: String): SessionOrchestrationResult {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+    }
+    return unwrapEnvelope("game/orchestration/minigame", api().orchestrateMinigameSession(payload))
+  }
+
+  suspend fun initChapter(sessionId: String, chapterId: Long? = null): InitChapterResult {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+      if (chapterId != null && chapterId > 0L) {
+        addProperty("chapterId", chapterId)
+      }
+    }
+    return unwrapEnvelope("game/initChapter", api().initChapter(payload))
+  }
+
+  /**
+   * 将 /game/orchestration 的最小 data 响应包装成旧业务层继续消费的 plan。
+   *
+   * 后端现在只允许 data 返回 role/roleType/motive；
+   * 安卓上层仍统一从 plan 读取要生成的台词目标，正式会话的用户回合交还改由 storyInfo.turnState 决定。
+   */
+  private fun normalizeSessionOrchestrationPlan(result: SessionOrchestrationResult): SessionOrchestrationResult {
+    if (result.plan != null) return result
+    if (result.role.isBlank() && result.motive.isBlank()) return result
+    return result.copy(
+      plan = DebugNarrativePlan(
+        role = result.role.trim(),
+        roleType = result.roleType.trim().ifBlank { "narrator" },
+        motive = result.motive.trim(),
+      ),
+    )
+  }
+
+  /**
+   * 统一读取正式会话或章节调试的故事运行信息。
+   *
+   * 用途：
+   * - 让故事设定、当前章节事件、调试锚点都从单独接口读取；
+   * - 避免继续依赖 orchestration/streamlines 的附带状态。
+   */
+  suspend fun storyInfo(
+    sessionId: String? = null,
+    worldId: Long? = null,
+    chapterId: Long? = null,
+    state: JsonElement? = null,
+  ): StoryInfoResult {
+    val payload = JsonObject().apply {
+      if (!sessionId.isNullOrBlank()) addProperty("sessionId", sessionId)
+      if (worldId != null && worldId > 0L) addProperty("worldId", worldId)
+      if (chapterId != null && chapterId > 0L) addProperty("chapterId", chapterId)
+      if (state != null && !state.isJsonNull) add("state", state)
+    }
+    return unwrapEnvelope("game/storyInfo", api().storyInfo(payload))
   }
 
   suspend fun debugStep(
@@ -367,7 +546,58 @@ class GameRepository(private val settingsStore: SettingsStore) {
       }
       add("messages", gson.toJsonTree(messages))
     }
-    return api().orchestrateDebug(payload).data
+    return normalizeDebugOrchestrationPlan(api().orchestrateDebug(payload).data)
+  }
+
+  /**
+   * 将调试编排的最小 data 响应包装成 DebugNarrativePlan。
+   *
+   * 这样 UI 和流式台词生成链路不需要感知后端接口已经瘦身。
+   */
+  private fun normalizeDebugOrchestrationPlan(result: DebugOrchestrationResult): DebugOrchestrationResult {
+    if (result.plan != null) return result
+    if (result.role.isBlank() && result.motive.isBlank()) return result
+    return result.copy(
+      plan = DebugNarrativePlan(
+        role = result.role.trim(),
+        roleType = result.roleType.trim().ifBlank { "narrator" },
+        motive = result.motive.trim(),
+      ),
+    )
+  }
+
+  suspend fun debugIntroduction(
+    worldId: Long,
+    chapterId: Long?,
+    state: JsonElement?,
+    messages: List<MessageItem>,
+  ): DebugOrchestrationResult {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+      if (chapterId != null && chapterId > 0L) addProperty("chapterId", chapterId)
+      if (state != null && !state.isJsonNull) {
+        add("state", state)
+      }
+      add("messages", gson.toJsonTree(messages))
+    }
+    return api().introduceDebug(payload).data
+  }
+
+  suspend fun initDebug(
+    worldId: Long,
+    chapterId: Long?,
+    state: JsonElement?,
+    messages: List<MessageItem>,
+  ): DebugInitResult {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+      if (chapterId != null && chapterId > 0L) addProperty("chapterId", chapterId)
+      if (state != null && !state.isJsonNull) {
+        add("state", state)
+      }
+      add("messages", gson.toJsonTree(messages))
+    }
+    return unwrapEnvelope("game/initDebug", api().initDebug(payload))
   }
 
   suspend fun streamDebugLines(
@@ -528,6 +758,132 @@ class GameRepository(private val settingsStore: SettingsStore) {
     }
   }
 
+  /**
+   * 开场白专用流接口。
+   *
+   * 用途：
+   * - opening 是章节写死文案，不能再走普通 streamlines 的 speaker 改写链；
+   * - 这里只消费后端 `/game/streamlines/introduction` 返回的 preset 分片事件；
+   * - 安卓正式游玩和 Web 保持一致，先播完 opening，再进入第一章正文编排。
+   */
+  suspend fun streamSessionIntroductionLines(
+    sessionId: String,
+    plan: DebugNarrativePlan,
+    onEvent: suspend (JsonObject) -> Unit,
+  ) {
+    val payload = JsonObject().apply {
+      addProperty("sessionId", sessionId)
+      add("plan", gson.toJsonTree(plan))
+    }
+    streamIntroductionPayload(payload, onEvent)
+  }
+
+  /**
+   * 调试 opening 专用流接口。
+   *
+   * 用途：
+   * - 调试首开也要直接播放章节写死的 opening 文案；
+   * - 这里把 debug state 和 messages 一起带给后端，让它同步推进调试运行态；
+   * - 这样 opening 播完后，后续 debug orchestration 才会基于正确状态继续跑。
+   */
+  suspend fun streamDebugIntroductionLines(
+    worldId: Long,
+    chapterId: Long?,
+    state: JsonElement?,
+    messages: List<MessageItem>,
+    plan: DebugNarrativePlan,
+    onEvent: suspend (JsonObject) -> Unit,
+  ) {
+    val payload = JsonObject().apply {
+      addProperty("worldId", worldId)
+      if (chapterId != null && chapterId > 0L) {
+        addProperty("chapterId", chapterId)
+      }
+      if (state != null && !state.isJsonNull) {
+        add("state", state)
+      }
+      add("messages", gson.toJsonTree(messages))
+      add("plan", gson.toJsonTree(plan))
+    }
+    streamIntroductionPayload(payload, onEvent)
+  }
+
+  /**
+   * 统一执行 opening 专用流请求。
+   *
+   * 用途：
+   * - 正式游玩和调试 opening 共用同一条 `/game/streamlines/introduction`；
+   * - 避免两端各自复制一套 NDJSON 读取、超时和事件分发逻辑。
+   */
+  private suspend fun streamIntroductionPayload(
+    payload: JsonObject,
+    onEvent: suspend (JsonObject) -> Unit,
+  ) {
+    val baseUrl = settingsStore.baseUrl.trim().removeSuffix("/")
+    val request = Request.Builder()
+      .url("$baseUrl/game/streamlines/introduction")
+      .post(gson.toJson(payload).toRequestBody("application/json; charset=utf-8".toMediaType()))
+      .apply {
+        val token = settingsStore.token.trim()
+        if (token.isNotEmpty()) {
+          header("Authorization", token)
+        }
+      }
+      .build()
+    val logger = HttpLoggingInterceptor().apply {
+      level = HttpLoggingInterceptor.Level.BASIC
+    }
+    val client = OkHttpClient.Builder()
+      .addInterceptor(logger)
+      .connectTimeout(20, TimeUnit.SECONDS)
+      .readTimeout(0, TimeUnit.SECONDS)
+      .writeTimeout(30, TimeUnit.SECONDS)
+      .build()
+    coroutineScope {
+      val call = client.newCall(request)
+      val timedOut = AtomicBoolean(false)
+      val lastEventAt = AtomicLong(System.currentTimeMillis())
+      val watchdog = launch(Dispatchers.IO) {
+        while (isActive) {
+          delay(debugStreamWatchdogPollMs)
+          if (System.currentTimeMillis() - lastEventAt.get() < debugStreamIdleTimeoutMs) continue
+          timedOut.set(true)
+          call.cancel()
+          break
+        }
+      }
+      try {
+        withContext(Dispatchers.IO) {
+          call.execute().use { response ->
+            if (!response.isSuccessful) {
+              error("HTTP ${response.code}")
+            }
+            val body = response.body ?: error("未返回开场白流正文")
+            val source = body.source()
+            source.timeout().timeout(debugStreamIdleTimeoutMs, TimeUnit.MILLISECONDS)
+            while (true) {
+              val raw = source.readUtf8Line() ?: break
+              val line = raw.trim()
+              if (line.isBlank()) continue
+              lastEventAt.set(System.currentTimeMillis())
+              val event = gson.fromJson(line, JsonObject::class.java)
+              withContext(Dispatchers.Main.immediate) {
+                onEvent(event)
+              }
+            }
+          }
+        }
+      } catch (err: Throwable) {
+        if (timedOut.get() || err is InterruptedIOException || err is SocketTimeoutException) {
+          error("开场白流空闲超时")
+        }
+        throw err
+      } finally {
+        watchdog.cancel()
+      }
+    }
+  }
+
   suspend fun getVoiceModels(): List<VoiceModelConfig> {
     return runCatching { api().getVoiceModelList().data }.getOrElse { emptyList() }
   }
@@ -536,7 +892,19 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return runCatching { api().getModelConfigs().data }.getOrElse { emptyList() }
   }
 
-  suspend fun addModelConfig(type: String, model: String, baseUrl: String, apiKey: String, modelType: String, manufacturer: String) {
+  suspend fun addModelConfig(
+    type: String,
+    model: String,
+    baseUrl: String,
+    apiKey: String,
+    modelType: String,
+    manufacturer: String,
+    inputPricePer1M: Double,
+    outputPricePer1M: Double,
+    cacheReadPricePer1M: Double,
+    currency: String,
+    reasoningEffort: String,
+  ) {
     val payload = JsonObject().apply {
       addProperty("type", type)
       addProperty("model", model)
@@ -544,11 +912,29 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("apiKey", apiKey)
       addProperty("modelType", modelType)
       addProperty("manufacturer", manufacturer)
+      addProperty("inputPricePer1M", inputPricePer1M)
+      addProperty("outputPricePer1M", outputPricePer1M)
+      addProperty("cacheReadPricePer1M", cacheReadPricePer1M)
+      addProperty("currency", currency)
+      addProperty("reasoningEffort", reasoningEffort)
     }
     api().addModelConfig(payload)
   }
 
-  suspend fun updateModelConfig(id: Long, type: String, model: String, baseUrl: String, apiKey: String, modelType: String, manufacturer: String) {
+  suspend fun updateModelConfig(
+    id: Long,
+    type: String,
+    model: String,
+    baseUrl: String,
+    apiKey: String,
+    modelType: String,
+    manufacturer: String,
+    inputPricePer1M: Double,
+    outputPricePer1M: Double,
+    cacheReadPricePer1M: Double,
+    currency: String,
+    reasoningEffort: String,
+  ) {
     val payload = JsonObject().apply {
       addProperty("id", id)
       addProperty("type", type)
@@ -557,6 +943,11 @@ class GameRepository(private val settingsStore: SettingsStore) {
       addProperty("apiKey", apiKey)
       addProperty("modelType", modelType)
       addProperty("manufacturer", manufacturer)
+      addProperty("inputPricePer1M", inputPricePer1M)
+      addProperty("outputPricePer1M", outputPricePer1M)
+      addProperty("cacheReadPricePer1M", cacheReadPricePer1M)
+      addProperty("currency", currency)
+      addProperty("reasoningEffort", reasoningEffort)
     }
     api().updateModelConfig(payload)
   }
@@ -595,12 +986,39 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return runCatching { api().getAiModelList(payload).data }.getOrElse { emptyMap() }
   }
 
+  suspend fun getAiTokenUsageLog(startTime: String, endTime: String, type: String): List<AiTokenUsageLogItem> {
+    val payload = JsonObject().apply {
+      if (startTime.isNotBlank()) addProperty("startTime", startTime)
+      if (endTime.isNotBlank()) addProperty("endTime", endTime)
+      if (type.isNotBlank()) addProperty("type", type)
+      addProperty("limit", 200)
+    }
+    return unwrapEnvelope("setting/getAiTokenUsageLog", api().getAiTokenUsageLog(payload))
+  }
+
+  suspend fun getAiTokenUsageStats(startTime: String, endTime: String, type: String, granularity: String): List<AiTokenUsageStatsItem> {
+    val payload = JsonObject().apply {
+      if (startTime.isNotBlank()) addProperty("startTime", startTime)
+      if (endTime.isNotBlank()) addProperty("endTime", endTime)
+      if (type.isNotBlank()) addProperty("type", type)
+      addProperty("granularity", granularity.ifBlank { "day" })
+    }
+    return unwrapEnvelope("setting/getAiTokenUsageStats", api().getAiTokenUsageStats(payload))
+  }
+
   suspend fun bindModelConfig(id: Long, configId: Long) {
     val payload = JsonObject().apply {
       addProperty("id", id)
       addProperty("configId", configId)
     }
     api().bindModelConfig(payload)
+  }
+
+  suspend fun saveStoryRuntimeConfig(mode: String): StoryRuntimeConfig {
+    val payload = JsonObject().apply {
+      addProperty("storyOrchestratorPayloadMode", if (mode == "advanced") "advanced" else "compact")
+    }
+    return unwrapEnvelope("setting/saveStoryRuntimeConfig", api().saveStoryRuntimeConfig(payload))
   }
 
   suspend fun getPrompts(): List<PromptItem> {
@@ -673,6 +1091,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
     configId: Long?,
     text: String,
     mode: String = "text",
+    roleId: String = "",
     voiceId: String = "",
     referenceAudioPath: String = "",
     referenceText: String = "",
@@ -683,6 +1102,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
   ): String {
     val payload = JsonObject().apply {
       if (configId != null && configId > 0L) addProperty("configId", configId)
+      if (roleId.isNotBlank()) addProperty("roleId", roleId)
       addProperty("text", text)
       addProperty("mode", mode)
       if (format.isNotBlank()) addProperty("format", format)
@@ -708,7 +1128,18 @@ class GameRepository(private val settingsStore: SettingsStore) {
           })
         }
         "prompt_voice" -> if (promptText.isNotBlank()) {
+          if (voiceId.isNotBlank()) addProperty("voiceId", voiceId)
           addProperty("promptText", promptText)
+          add("mixVoices", JsonArray().apply {
+            mixVoices
+              .filter { it.voiceId.isNotBlank() }
+              .forEach { item ->
+                add(JsonObject().apply {
+                  addProperty("voiceId", item.voiceId)
+                  addProperty("weight", item.weight)
+                })
+              }
+          })
         }
       }
     }
@@ -716,10 +1147,67 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return data.get("audioUrl")?.asString?.trim().orEmpty()
   }
 
+  /**
+   * 先按当前绑定模式生成稳定参考音频文件，供运行时统一转 clone 通道使用。
+   */
+  suspend fun generateVoiceBinding(
+    configId: Long?,
+    mode: String,
+    roleId: String = "",
+    voiceId: String = "",
+    referenceAudioPath: String = "",
+    referenceText: String = "",
+    promptText: String = "",
+    mixVoices: List<VoiceMixItem> = emptyList(),
+  ): GeneratedVoiceBindingResult {
+    val payload = JsonObject().apply {
+      if (configId != null && configId > 0L) addProperty("configId", configId)
+      if (roleId.isNotBlank()) addProperty("roleId", roleId)
+      addProperty("mode", mode)
+      when (mode) {
+        "text" -> if (voiceId.isNotBlank()) {
+          addProperty("voiceId", voiceId)
+        }
+        "clone" -> {
+          if (referenceAudioPath.isNotBlank()) addProperty("referenceAudioPath", referenceAudioPath)
+          if (referenceText.isNotBlank()) addProperty("referenceText", referenceText)
+        }
+        "mix" -> {
+          add("mixVoices", JsonArray().apply {
+            mixVoices
+              .filter { it.voiceId.isNotBlank() }
+              .forEach { item ->
+                add(JsonObject().apply {
+                  addProperty("voiceId", item.voiceId)
+                  addProperty("weight", item.weight)
+                })
+              }
+          })
+        }
+        "prompt_voice" -> if (promptText.isNotBlank()) {
+          if (voiceId.isNotBlank()) addProperty("voiceId", voiceId)
+          addProperty("promptText", promptText)
+          add("mixVoices", JsonArray().apply {
+            mixVoices
+              .filter { it.voiceId.isNotBlank() }
+              .forEach { item ->
+                add(JsonObject().apply {
+                  addProperty("voiceId", item.voiceId)
+                  addProperty("weight", item.weight)
+                })
+              }
+          })
+        }
+      }
+    }
+    return unwrapEnvelope("voice/generateBindingVoice", api().generateBindingVoice(payload))
+  }
+
   suspend fun streamVoice(
     configId: Long?,
     text: String,
     mode: String = "text",
+    roleId: String = "",
     voiceId: String = "",
     referenceAudioPath: String = "",
     referenceText: String = "",
@@ -730,6 +1218,7 @@ class GameRepository(private val settingsStore: SettingsStore) {
   ): String {
     val payload = JsonObject().apply {
       if (configId != null && configId > 0L) addProperty("configId", configId)
+      if (roleId.isNotBlank()) addProperty("roleId", roleId)
       addProperty("text", text)
       addProperty("mode", mode)
       if (format.isNotBlank()) addProperty("format", format)
@@ -755,7 +1244,18 @@ class GameRepository(private val settingsStore: SettingsStore) {
           })
         }
         "prompt_voice" -> if (promptText.isNotBlank()) {
+          if (voiceId.isNotBlank()) addProperty("voiceId", voiceId)
           addProperty("promptText", promptText)
+          add("mixVoices", JsonArray().apply {
+            mixVoices
+              .filter { it.voiceId.isNotBlank() }
+              .forEach { item ->
+                add(JsonObject().apply {
+                  addProperty("voiceId", item.voiceId)
+                  addProperty("weight", item.weight)
+                })
+              }
+          })
         }
       }
     }
@@ -780,21 +1280,32 @@ class GameRepository(private val settingsStore: SettingsStore) {
     return data.get("text")?.asString?.trim().orEmpty()
   }
 
-  suspend fun polishVoicePrompt(text: String, style: String = ""): String {
+  /**
+   * 根据当前模式与语音配置，把润色请求交给后端选择更合适的策略。
+   */
+  suspend fun polishVoicePrompt(
+    text: String,
+    configId: Long? = null,
+    mode: String = "",
+    provider: String = "",
+  ): String {
     val payload = JsonObject().apply {
       addProperty("text", text)
-      if (style.isNotBlank()) addProperty("style", style)
+      if (configId != null && configId > 0L) addProperty("configId", configId)
+      if (mode.isNotBlank()) addProperty("mode", mode)
+      if (provider.isNotBlank()) addProperty("provider", provider)
     }
     val data = api().polishVoicePrompt(payload).data
     return data.get("prompt")?.asString?.trim().orEmpty()
   }
 
-  suspend fun testTextModel(model: String, apiKey: String, baseUrl: String, manufacturer: String): String {
+  suspend fun testTextModel(model: String, apiKey: String, baseUrl: String, manufacturer: String, reasoningEffort: String): String {
     val payload = JsonObject().apply {
       addProperty("modelName", model)
       addProperty("apiKey", apiKey)
       if (baseUrl.isNotBlank()) addProperty("baseURL", baseUrl)
       addProperty("manufacturer", manufacturer)
+      addProperty("reasoningEffort", reasoningEffort.ifBlank { "minimal" })
     }
     return api().testTextModel(payload).data
   }

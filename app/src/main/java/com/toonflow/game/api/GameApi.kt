@@ -5,10 +5,15 @@ import com.google.gson.JsonObject
 import com.toonflow.game.data.ApiEnvelope
 import com.toonflow.game.data.AiModelOptionItem
 import com.toonflow.game.data.AiModelMapItem
+import com.toonflow.game.data.AiTokenUsageLogItem
+import com.toonflow.game.data.AiTokenUsageStatsItem
 import com.toonflow.game.data.ChapterItem
+import com.toonflow.game.data.DebugInitResult
 import com.toonflow.game.data.DebugOrchestrationResult
+import com.toonflow.game.data.DebugRevisitResult
 import com.toonflow.game.data.DebugStepResult
 import com.toonflow.game.data.GeneratedImageResult
+import com.toonflow.game.data.InitChapterResult
 import com.toonflow.game.data.LocalAvatarMattingStatus
 import com.toonflow.game.data.MessageItem
 import com.toonflow.game.data.ModelConfigItem
@@ -20,7 +25,11 @@ import com.toonflow.game.data.SessionDetail
 import com.toonflow.game.data.SessionItem
 import com.toonflow.game.data.SessionNarrativeResult
 import com.toonflow.game.data.SessionOrchestrationResult
+import com.toonflow.game.data.StoryRuntimeConfig
+import com.toonflow.game.data.StoryInitResult
+import com.toonflow.game.data.StoryInfoResult
 import com.toonflow.game.data.UploadedVoiceAudioResult
+import com.toonflow.game.data.GeneratedVoiceBindingResult
 import com.toonflow.game.data.VoiceModelConfig
 import com.toonflow.game.data.WorldItem
 import retrofit2.http.Body
@@ -55,6 +64,9 @@ interface GameApi {
   @POST("game/saveWorld")
   suspend fun saveWorld(@Body payload: JsonObject): ApiEnvelope<WorldItem>
 
+  @POST("game/copyWorld")
+  suspend fun copyWorld(@Body payload: JsonObject): ApiEnvelope<WorldItem>
+
   @POST("game/deleteWorld")
   suspend fun deleteWorld(@Body payload: JsonObject): ApiEnvelope<JsonElement>
 
@@ -65,7 +77,10 @@ interface GameApi {
   suspend fun uploadImage(@Body payload: JsonObject): ApiEnvelope<GeneratedImageResult>
 
   @POST("game/convertAvatarVideoToGif")
-  suspend fun convertAvatarVideoToGif(@Body payload: JsonObject): ApiEnvelope<SeparatedRoleImageResult>
+  suspend fun convertAvatarVideoToGif(@Body payload: JsonObject): ApiEnvelope<RoleAvatarTaskResult>
+
+  @POST("game/convertAvatarVideoToGif/status")
+  suspend fun convertAvatarVideoToGifStatus(@Body payload: JsonObject): ApiEnvelope<RoleAvatarTaskResult>
 
   @POST("game/separateRoleAvatar")
   suspend fun separateRoleAvatar(@Body payload: JsonObject): ApiEnvelope<RoleAvatarTaskResult>
@@ -78,6 +93,12 @@ interface GameApi {
 
   @POST("game/saveChapter")
   suspend fun saveChapter(@Body payload: JsonObject): ApiEnvelope<ChapterItem>
+
+  @POST("game/deleteChapter")
+  suspend fun deleteChapter(@Body payload: JsonObject): ApiEnvelope<JsonElement>
+
+  @POST("game/previewRuntimeOutline")
+  suspend fun previewRuntimeOutline(@Body payload: JsonObject): ApiEnvelope<JsonObject>
 
   @POST("game/startSession")
   suspend fun startSession(@Body payload: JsonObject): ApiEnvelope<JsonObject>
@@ -94,6 +115,9 @@ interface GameApi {
   @POST("game/deleteMessage")
   suspend fun deleteMessage(@Body payload: JsonObject): ApiEnvelope<JsonElement>
 
+  @POST("game/revisitMessage")
+  suspend fun revisitMessage(@Body payload: JsonObject): ApiEnvelope<JsonElement>
+
   @POST("game/getMessage")
   suspend fun getMessage(@Body payload: JsonObject): ApiEnvelope<List<MessageItem>>
 
@@ -109,11 +133,36 @@ interface GameApi {
   @POST("game/debugStep")
   suspend fun debugStep(@Body payload: JsonObject): ApiEnvelope<DebugStepResult>
 
+  @POST("game/introduction")
+  suspend fun introduceDebug(@Body payload: JsonObject): ApiEnvelope<DebugOrchestrationResult>
+
   @POST("game/orchestration")
   suspend fun orchestrateDebug(@Body payload: JsonObject): ApiEnvelope<DebugOrchestrationResult>
 
+  @POST("game/initDebug")
+  suspend fun initDebug(@Body payload: JsonObject): ApiEnvelope<DebugInitResult>
+
+  @POST("game/debugRuntimeShared/revisit")
+  suspend fun debugRevisitMessage(@Body payload: JsonObject): ApiEnvelope<DebugRevisitResult>
+
+  @POST("game/initStory")
+  suspend fun initStory(@Body payload: JsonObject): ApiEnvelope<StoryInitResult>
+
+  @POST("game/introduction")
+  suspend fun introduceStory(@Body payload: JsonObject): ApiEnvelope<SessionOrchestrationResult>
+
   @POST("game/orchestration")
   suspend fun orchestrateSession(@Body payload: JsonObject): ApiEnvelope<SessionOrchestrationResult>
+
+  /** 小游戏编排专用接口，返回完整的 plan（含 eventType、presetContent 等） */
+  @POST("game/orchestration/minigame")
+  suspend fun orchestrateMinigameSession(@Body payload: JsonObject): ApiEnvelope<SessionOrchestrationResult>
+
+  @POST("game/initchapter")
+  suspend fun initChapter(@Body payload: JsonObject): ApiEnvelope<InitChapterResult>
+
+  @POST("game/storyInfo")
+  suspend fun storyInfo(@Body payload: JsonObject): ApiEnvelope<StoryInfoResult>
 
   @POST("setting/getVoiceModelList")
   suspend fun getVoiceModelList(@Body payload: JsonObject = JsonObject()): ApiEnvelope<List<VoiceModelConfig>>
@@ -136,8 +185,17 @@ interface GameApi {
   @POST("setting/getAiModelList")
   suspend fun getAiModelList(@Body payload: JsonObject): ApiEnvelope<Map<String, List<AiModelOptionItem>>>
 
+  @POST("setting/getAiTokenUsageLog")
+  suspend fun getAiTokenUsageLog(@Body payload: JsonObject): ApiEnvelope<List<AiTokenUsageLogItem>>
+
+  @POST("setting/getAiTokenUsageStats")
+  suspend fun getAiTokenUsageStats(@Body payload: JsonObject): ApiEnvelope<List<AiTokenUsageStatsItem>>
+
   @POST("setting/configurationModel")
   suspend fun bindModelConfig(@Body payload: JsonObject): ApiEnvelope<String>
+
+  @POST("setting/saveStoryRuntimeConfig")
+  suspend fun saveStoryRuntimeConfig(@Body payload: JsonObject): ApiEnvelope<StoryRuntimeConfig>
 
   @POST("setting/localAvatarMatting/status")
   suspend fun getLocalAvatarMattingStatus(@Body payload: JsonObject): ApiEnvelope<LocalAvatarMattingStatus>
@@ -159,6 +217,9 @@ interface GameApi {
 
   @POST("voice/preview")
   suspend fun previewVoice(@Body payload: JsonObject): ApiEnvelope<JsonObject>
+
+  @POST("voice/generateBindingVoice")
+  suspend fun generateBindingVoice(@Body payload: JsonObject): ApiEnvelope<GeneratedVoiceBindingResult>
 
   @POST("game/streamvoice")
   suspend fun streamVoice(@Body payload: JsonObject): ApiEnvelope<JsonObject>
