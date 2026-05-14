@@ -1573,6 +1573,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     return text.toIntOrNull()
   }
 
+  private fun runtimeLongValue(input: JsonElement?): Long? {
+    val text = scalarRuntimeText(input)
+    if (text.isBlank() || !text.matches(Regex("^\\d{1,12}$"))) return null
+    return text.toLongOrNull()
+  }
+
   private fun runtimeMixVoices(input: JsonElement?): List<VoiceMixItem> {
     if (input == null || input.isJsonNull || !input.isJsonArray) return emptyList()
     return input.asJsonArray.mapNotNull { item ->
@@ -1615,7 +1621,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       nextLevelExp = runtimeIntValue(obj.get("next_level_exp")) ?: runtimeIntValue(obj.get("nextLevelExp")) ?: 100,
       hp = runtimeIntValue(obj.get("hp")) ?: 100,
       mp = runtimeIntValue(obj.get("mp")) ?: 0,
-      money = runtimeIntValue(obj.get("money")) ?: 0,
+      money = runtimeLongValue(obj.get("money")) ?: 0L,
       other = arrayValues("other"),
       executingTask = obj.get("executing_task") ?: obj.get("executingTask"),
     )

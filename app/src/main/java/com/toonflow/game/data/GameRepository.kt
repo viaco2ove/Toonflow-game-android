@@ -145,7 +145,12 @@ class GameRepository(private val settingsStore: SettingsStore) {
       if (projectId != null && projectId > 0L) addProperty("projectId", projectId)
       if (includePublicPublished) addProperty("includePublicPublished", true)
     }
-    return runCatching { unwrapEnvelope("game/listWorlds", api().listWorlds(payload)) }.getOrElse { emptyList() }
+    VueTagLogger.info("api", "listWorlds: starting... projectId=$projectId includePublicPublished=$includePublicPublished")
+    val startedAt = System.currentTimeMillis()
+    val result = runCatching { unwrapEnvelope("game/listWorlds", api().listWorlds(payload)) }
+    val costMs = System.currentTimeMillis() - startedAt
+    VueTagLogger.info("api", "listWorlds: done in ${costMs}ms result=${if (result.isSuccess) "success(${result.getOrNull()?.size ?: 0} items)" else "failed: ${result.exceptionOrNull()?.message}" }")
+    return result.getOrElse { emptyList() }
   }
 
   suspend fun saveWorld(payload: JsonObject): WorldItem {
