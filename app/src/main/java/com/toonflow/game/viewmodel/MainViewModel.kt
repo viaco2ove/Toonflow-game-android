@@ -4354,12 +4354,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
       sessionId = result.sessionId.ifBlank { existingDetail?.sessionId.orEmpty() },
       title = existingDetail?.title.orEmpty(),
       status = result.status.ifBlank { existingDetail?.status.orEmpty() },
+      endDialog = existingDetail?.endDialog,
+      endDialogDetail = existingDetail?.endDialogDetail,
       chapterId = result.chapterId ?: existingDetail?.chapterId,
       state = nextState,
       latestSnapshot = com.toonflow.game.data.SessionSnapshot(state = nextState),
       world = existingDetail?.world,
       chapter = result.chapter ?: existingDetail?.chapter,
       messages = mergedMessages,
+      currentEventDigest = result.currentEventDigest ?: existingDetail?.currentEventDigest,
+      eventDigestWindow = if (result.eventDigestWindow.isNotEmpty()) result.eventDigestWindow else existingDetail?.eventDigestWindow ?: emptyList(),
+      eventDigestWindowText = result.eventDigestWindowText.ifBlank { existingDetail?.eventDigestWindowText ?: "" },
     )
     messages.clear()
     messages.addAll(mergedMessages)
@@ -4485,16 +4490,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
   private fun applySessionOrchestrationResult(result: SessionOrchestrationResult) {
     val existingDetail = sessionDetail
+    // 保留现有的 state、eventDigestWindow 和 currentEventDigest
+    // 如果 orchestration 返回了 state，也需要合并进来
+    val existingState = existingDetail?.state
+    val returnedState = result.state?.takeIf { !it.isJsonNull }
+    val mergedState = when {
+      returnedState != null && existingState != null && !existingState.isJsonNull -> {
+        mergeVisibleMiniGameState(returnedState, existingState)
+      }
+      returnedState != null -> returnedState
+      else -> existingState
+    }
     sessionDetail = SessionDetail(
       sessionId = result.sessionId.ifBlank { existingDetail?.sessionId.orEmpty() },
       title = existingDetail?.title.orEmpty(),
       status = result.status.ifBlank { existingDetail?.status.orEmpty() },
+      endDialog = existingDetail?.endDialog,
+      endDialogDetail = existingDetail?.endDialogDetail,
       chapterId = result.chapterId ?: existingDetail?.chapterId,
-      state = existingDetail?.state,
+      state = mergedState,
       latestSnapshot = existingDetail?.latestSnapshot,
       world = existingDetail?.world,
       chapter = existingDetail?.chapter,
       messages = existingDetail?.messages ?: messages.toList(),
+      currentEventDigest = result.currentEventDigest ?: existingDetail?.currentEventDigest,
+      eventDigestWindow = if (result.eventDigestWindow.isNotEmpty()) result.eventDigestWindow else existingDetail?.eventDigestWindow ?: emptyList(),
+      eventDigestWindowText = result.eventDigestWindowText.ifBlank { existingDetail?.eventDigestWindowText ?: "" },
     )
     // 正式会话的用户回合与切章都改由服务端 storyInfo/state 驱动，
     // orchestration 响应只保留最小 role/roleType/motive，这里不再本地改 turnState。
@@ -6720,7 +6741,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         logAndroidDebug("aiGame][miniGame", "pendingNarrativePlan 不是小游戏相关 eventType=$nextEventType")
       }
     }
+    // 非小游戏模式：刷新 storyInfo 后自动继续编排
     refreshSessionStoryInfo()
+    // 如果不是用户回合，自动继续编排下一句
+    if (!playCanPlayerSpeak()) {
+      viewModelScope.launch {
+        continueSessionNarrative()
+      }
+    }
   }
 
   /**

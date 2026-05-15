@@ -247,6 +247,7 @@ data class SessionOrchestrationResult(
   @SerializedName("expectedRole") val expectedRole: String = "",
   @SerializedName("expectedRoleType") val expectedRoleType: String = "",
   @SerializedName("plan") val plan: DebugNarrativePlan? = null,
+  @SerializedName("state") val state: JsonElement? = null,
   @SerializedName("currentEventDigest") val currentEventDigest: RuntimeEventDigestItem? = null,
   @SerializedName("eventDigestWindow") val eventDigestWindow: List<RuntimeEventDigestItem> = emptyList(),
   @SerializedName("eventDigestWindowText") val eventDigestWindowText: String = "",
