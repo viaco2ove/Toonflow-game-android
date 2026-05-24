@@ -1,6 +1,7 @@
 package com.toonflow.game
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
@@ -2137,66 +2138,90 @@ private fun CreateScene(
 
     if (showChapterWritingGuideDialog) {
       AlertDialog(
+
         onDismissRequest = { showChapterWritingGuideDialog = false },
-        title = { Text(“章节编写说明”) },
+        title = { Text("章节编写说明") },
         text = {
           Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             ChapterWritingGuideSection(
-              title = “怎么写章节内容”,
+              title = "怎么写章节内容",
               lines = listOf(
-                “这里写的是这一章真正会发生的内容，例如场景变化、人物行动、冲突推进、用户会被要求做什么。”,
-                “对白请直接写成\”@角色名：台词\”，旁白也一样。”,
-                “提及用户扮演的角色时，请统一写\”用户\”，不要混用\”你\”或别的代称。”,
-                “章节内容使用**Markdown格式**，通过二级标题(`##`)划分阶段，三级标题(`###`)划分事件。”
+                "这里写的是这一章真正会发生的内容，例如场景变化、人物行动、冲突推进、用户会被要求做什么。",
+                "对白请直接写成\"@角色名：台词\"，旁白也一样。",
+                "提及用户扮演的角色时，请统一写\"用户\"，不要混用\"你\"或别的代称。",
+                "章节内容使用**Markdown格式**，通过二级标题(`##`)划分阶段，三级标题(`###`)划分事件。"
               ),
             )
             ChapterWritingGuideSection(
-              title = “阶段与事件结构”,
+              title = "阶段与事件结构",
               lines = listOf(
-                “`## 阶段名` 定义一个阶段（Phase），系统会按顺序推进各阶段。”,
-                “`### 事件名` 定义阶段内的事件，可以是台词、场景描述或用户发言节点。”,
-                “`### 用户发言` 单独一行表示等待用户输入，系统会自动切换到等待用户状态。”,
+                "`## 阶段名` 定义一个阶段（Phase），系统会按顺序推进各阶段。",
+                "`### 事件名` 定义阶段内的事件，可以是台词、场景描述或用户发言节点。",
+                "`### 用户发言` 单独一行表示等待用户输入，系统会自动切换到等待用户状态。",
               ),
             )
             ChapterWritingGuideSection(
-              title = “随机编排NPC”,
+              title = "随机编排NPC",
               lines = listOf(
-                “使用\”随机\”关键字可以让AI随机编排NPC发言，例如：`随机 遇见各种npc @角色A @角色B @角色C`。”,
-                “可以指定条件：`聊天5轮对话后进入下个事件，也就是用户发言5次`。”,
-                “AI会根据条件判断是否满足，不满足则随机选择NPC发言来引导用户。”,
+                "使用\"随机\"关键字可以让AI随机编排NPC发言，例如：`随机 遇见各种npc @角色A @角色B @角色C`。",
+                "可以指定条件：`聊天5轮对话后进入下个事件，也就是用户发言5次`。",
+                "AI会根据条件判断是否满足，不满足则随机选择NPC发言来引导用户。",
               ),
             )
             ChapterWritingGuideSection(
-              title = “事件进度状态”,
+              title = "事件进度状态",
               lines = listOf(
-                “每个事件都有进度状态标记：`[]`未开始、`[i]`进行中、`[s]`完成、`[f]`失败。”,
-                “系统会自动追踪事件进度，例如：`[s]开场 → [i]交流 → []结束`。”,
-                “AI编排师会根据当前事件和进度决定谁来发言、剧情如何推进。”,
+                "每个事件都有进度状态标记：`[]`未开始、`[i]`进行中、`[s]`完成、`[f]`失败。",
+                "系统会自动追踪事件进度，例如：`[s]开场 → [i]交流 → []结束`。",
+                "AI编排师会根据当前事件和进度决定谁来发言、剧情如何推进。",
               ),
             )
             ChapterWritingGuideSection(
-              title = “非事件标记”,
+              title = "非事件标记",
               lines = listOf(
-                “使用`## 非事件: 名称`可以标记不参与事件流程的内容，仅供旁白参考。”,
-                “非事件内容不会影响进度追踪，但会作为上下文提供给AI。”,
+                "使用`## 非事件: 名称`可以标记不参与事件流程的内容，仅供旁白参考。",
+                "非事件内容不会影响进度追踪，但会作为上下文提供给AI。",
               ),
             )
             ChapterWritingGuideSection(
-              title = “推荐写法”,
+              title = "推荐写法",
               lines = listOf(
-                “先写本章开场和场景，再写角色互动，最后写用户需要完成的目标。”,
-                “成功条件里只写结局判断，例如\”用户选择了跟随A或B\”或\”用户发言达到5次\”。”,
-                “利用随机编排功能可以让章节更具可玩性，不需要为每个NPC写死台词。”,
+                "先写本章开场和场景，再写角色互动，最后写用户需要完成的目标。",
+                "成功条件里只写结局判断，例如\"用户选择了跟随A或B\"或\"用户发言达到5次\"。",
+                "利用随机编排功能可以让章节更具可玩性，不需要为每个NPC写死台词。",
               ),
+            )
+            // 1. 先在外部定义好文本变量，视觉上非常清晰
+            val exampleText = """
+                示例：
+                ## 苏醒
+
+                ### 石板硌着后背
+                @旁白：冰冷的石板硌着后背，你猛地睁开眼。
+
+                ## 探索
+                ### 黑术暗影君王的窥探
+                @路人甲: (饰演黑术暗影君王)此片世界时空有点不太稳定
+
+                ### 旁白引导剧情
+                @旁白：你在这片天地探索，前面看见一些人影
+
+                ### 遇见与交流
+                随机 遇见各种npc @薰儿 @纳兰嫣然 @海波东 @美杜莎
+                聊天5轮对话后进入下个事件，用户发言5次。
+                ### 记忆管理
+                @记忆管理 标记用户选择的阵营到用户的角色卡的“其他”字段里
+            """.trimIndent()
+
+            // 2. 在 UI 组件中直接引用
+            Text(
+                text = exampleText,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF415673),
+                lineHeight = 20.sp,
             )
             Text(
-              “示例：\n## 苏醒\n\n### 石板硌着后背\n@旁白：冰冷的石板硌着后背，你猛地睁开眼。\n\n## 探索\n### 黑术暗影君王的窥探\n@路人甲: (饰演黑术暗影君王)此片世界时空有点不太稳定\n### 旁白引导剧情\n@旁白：你在这片天地探索，前面看见一些人影\n\n### 遇见与交流\n随机 遇见各种npc @薰儿 @纳兰嫣然 @海波东 @美杜莎\n聊天5轮对话后进入下个事件，用户发言5次。”,
-              style = MaterialTheme.typography.bodySmall,
-              color = Color(0xFF415673),
-              lineHeight = 20.sp,
-            )
-            Text(
-              “示例:自由章节\n\n## 任务推荐\n### 说明自由行动状态\n@旁白：你当前处于自由行动状态。\n\n## 非事件:任务分类（只是提供给旁白用来推荐任务）\n### 生存类\n- 收集止血草与基础药材\n- 寻找临时修炼地点\n- 避开城外魔兽巡游区”,
+              "示例:自由章节\n\n## 任务推荐\n### 说明自由行动状态\n@旁白：你当前处于自由行动状态。\n\n## 非事件:任务分类（只是提供给旁白用来推荐任务）\n### 生存类\n- 收集止血草与基础药材\n- 寻找临时修炼地点\n- 避开城外魔兽巡游区",
               style = MaterialTheme.typography.bodySmall,
               color = Color(0xFF415673),
               lineHeight = 20.sp,
@@ -2205,7 +2230,7 @@ private fun CreateScene(
         },
         confirmButton = {
           TextButton(onClick = { showChapterWritingGuideDialog = false }) {
-            Text(“知道了”)
+            Text("知道了")
           }
         },
       )
@@ -2755,6 +2780,7 @@ private fun HistoryCard(
   }
 }
 
+@SuppressLint("UnusedBoxWithConstraintsScope")
 @Composable
 private fun PlayScene(
   vm: MainViewModel,
