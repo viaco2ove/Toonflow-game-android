@@ -8655,7 +8655,7 @@ private fun ImageGenerateDialog(
           ) {
             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
               Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("形象描述", color = Color(0xFF8996AA), style = MaterialTheme.typography.bodySmall)
+                Text("ai生图形象描述", color = Color(0xFF8996AA), style = MaterialTheme.typography.bodySmall)
                 TextButton(
                   onClick = { onPromptChange(selectedPreset.promptHint) },
                   contentPadding = PaddingValues(0.dp),
