@@ -415,21 +415,10 @@ private val settingsManufacturers = listOf(
     textBaseUrl = "https://open.bigmodel.cn/api/paas/v4",
   ),
   SettingsManufacturerOption(
-    value = "qwen",
-    label = "阿里千问",
+    value = "aliyun_direct",
+    label = "阿里百炼",
     website = "https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key",
     textBaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1",
-  ),
-  SettingsManufacturerOption(
-    value = "aliyun",
-    label = "local阿里云",
-    website = "https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key",
-    voiceBaseUrl = "http://127.0.0.1:8000",
-  ),
-  SettingsManufacturerOption(
-    value = "aliyun_direct",
-    label = "阿里云直连",
-    website = "https://bailian.console.aliyun.com/cn-beijing/?tab=model#/api-key",
     voiceBaseUrl = "https://dashscope.aliyuncs.com",
   ),
   SettingsManufacturerOption(
@@ -451,7 +440,7 @@ private fun isVoiceDesignSlot(slot: MainViewModel.SettingsModelSlot): Boolean {
 }
 
 private fun isVoiceDesignManufacturer(value: String): Boolean {
-  return value.trim().equals("qwen", ignoreCase = true)
+  return value.trim().equals("aliyun_direct", ignoreCase = true)
 }
 
 private fun isAutoDlTextManufacturer(value: String): Boolean {
@@ -471,7 +460,7 @@ private fun isVoiceDesignModelName(model: String): Boolean {
 
 private fun settingsManufacturersFor(type: String): List<SettingsManufacturerOption> {
   if (type == "voice_design") {
-    return settingsManufacturers.filter { it.value == "qwen" }
+    return settingsManufacturers.filter { it.value == "aliyun_direct" }
   }
   if (type == "text") {
     return settingsManufacturers.filter {
@@ -487,7 +476,7 @@ private fun settingsManufacturersFor(type: String): List<SettingsManufacturerOpt
   }
   if (type == "voice") {
     return settingsManufacturers.filter {
-      it.value != "qwen" && it.value != "lmstudio" && it.value != "autodl_chat"
+      it.value != "aliyun_direct" && it.value != "lmstudio" && it.value != "autodl_chat"
     }
   }
   return settingsManufacturers.filter {
@@ -506,7 +495,7 @@ private fun settingsManufacturersFor(type: String): List<SettingsManufacturerOpt
 
 private fun settingsManufacturersForSlot(slot: MainViewModel.SettingsModelSlot): List<SettingsManufacturerOption> {
   if (isVoiceDesignSlot(slot)) {
-    return settingsManufacturers.filter { it.value == "qwen" }
+    return settingsManufacturers.filter { it.value == "aliyun_direct" }
   }
   if (slot.key == "storyAvatarMattingModel") {
     return settingsManufacturers.filter {
@@ -542,13 +531,13 @@ private fun defaultSettingsModelTypeForSlot(slot: MainViewModel.SettingsModelSlo
 }
 
 private fun defaultSettingsManufacturer(type: String): String {
-  if (type == "voice_design") return "qwen"
+  if (type == "voice_design") return "aliyun_direct"
   return if (type == "voice") "ai_voice_tts" else "volcengine"
 }
 
 private fun defaultSettingsManufacturerForSlot(slot: MainViewModel.SettingsModelSlot): String {
   return when {
-    isVoiceDesignSlot(slot) -> "qwen"
+    isVoiceDesignSlot(slot) -> "aliyun_direct"
     slot.key == "storyAvatarMattingModel" -> "bria"
     slot.configType == "voice" && slot.key == "storyAsrModel" -> "aliyun_direct"
     else -> defaultSettingsManufacturer(slot.configType)
@@ -556,7 +545,7 @@ private fun defaultSettingsManufacturerForSlot(slot: MainViewModel.SettingsModel
 }
 
 private fun defaultSettingsBaseUrl(manufacturer: String, type: String, modelType: String = defaultSettingsModelType(type)): String {
-  if (type == "voice_design" && manufacturer == "qwen") {
+  if (type == "voice_design" && manufacturer == "aliyun_direct") {
     return "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/customization"
   }
   if (type == "voice" && manufacturer == "aliyun_direct") {
@@ -580,7 +569,7 @@ private fun defaultSettingsModelName(manufacturer: String, type: String, modelTy
   if (type == "text" && manufacturer == "lmstudio") {
     return "qwen3.5-9b"
   }
-  if (type == "voice_design" && manufacturer == "qwen") {
+  if (type == "voice_design" && manufacturer == "aliyun_direct") {
     return "qwen3-tts-vd-2026-01-26"
   }
   if (type == "image" && manufacturer == "bria") {
@@ -615,7 +604,7 @@ private fun defaultSettingsModelNameForSlot(
   manufacturer: String,
   modelType: String = defaultSettingsModelType(slot.configType),
 ): String {
-  if (isVoiceDesignSlot(slot) && manufacturer == "qwen") {
+  if (isVoiceDesignSlot(slot) && manufacturer == "aliyun_direct") {
     return "qwen3-tts-vd-2026-01-26"
   }
   return defaultSettingsModelName(manufacturer, slot.configType, modelType)
@@ -7875,7 +7864,7 @@ private fun VoicePickerDialog(
    * 判断当前试听文本是否满足 CosyVoice 的最小可播放要求。
    *
    * 用途：
-   * - 阿里云直连 CosyVoice 会拒绝“纯编号 / 纯标点 / 纯空白”文本；
+   * - 阿里百炼 CosyVoice 会拒绝“纯编号 / 纯标点 / 纯空白”文本；
    * - 安卓端提前校验，避免请求已经发出后才收到 500/400 报错。
    */
   fun isPlayableCosyVoicePreviewText(input: String): Boolean {
